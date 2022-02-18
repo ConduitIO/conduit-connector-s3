@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
+	sdk "github.com/conduitio/connector-plugin-sdk"
 )
 
 func Test_ParseRecordPosition(t *testing.T) {

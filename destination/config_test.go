@@ -17,7 +17,7 @@ package destination
 import (
 	"testing"
 
-	"github.com/conduitio/conduit/pkg/plugins/s3/destination/format"
+	"github.com/conduitio/conduit-plugin-s3/destination/format"
 )
 
 var exampleConfig = map[string]string{

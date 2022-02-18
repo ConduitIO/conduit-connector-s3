@@ -17,8 +17,8 @@ package source
 import (
 	"time"
 
+	"github.com/conduitio/conduit-plugin-s3/config"
 	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugins/s3/config"
 )
 
 const (

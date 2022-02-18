@@ -16,7 +16,7 @@ package format
 
 import (
 	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
+	sdk "github.com/conduitio/connector-plugin-sdk"
 )
 
 // Format defines the format the data will be persisted in by Destination

@@ -21,9 +21,9 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/conduitio/conduit-plugin-s3/source/position"
 	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
-	"github.com/conduitio/conduit/pkg/plugins/s3/source/position"
+	sdk "github.com/conduitio/connector-plugin-sdk"
 )
 
 // SnapshotIterator to iterate through S3 objects in a specific bucket.

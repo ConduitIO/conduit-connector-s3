@@ -20,7 +20,7 @@ import (
 	"io/ioutil"
 	"path"
 
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
+	sdk "github.com/conduitio/connector-plugin-sdk"
 )
 
 // Local writer dumps bytes into a local file. The file will be placed in a
