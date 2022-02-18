@@ -15,7 +15,8 @@
 package format
 
 import (
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
+	"fmt"
+
 	sdk "github.com/conduitio/connector-plugin-sdk"
 )
 
@@ -44,7 +45,7 @@ func Parse(name string) (Format, error) {
 	case "json":
 		return JSON, nil
 	default:
-		return "", cerrors.Errorf("unsupported format: %q", name)
+		return "", fmt.Errorf("unsupported format: %q", name)
 	}
 }
 
@@ -78,6 +79,6 @@ func (f Format) MakeBytes(records []sdk.Record) ([]byte, error) {
 	case JSON:
 		return makeJSONBytes(records)
 	default:
-		return nil, cerrors.Errorf("unsupported format: %s", f)
+		return nil, fmt.Errorf("unsupported format: %s", f)
 	}
 }

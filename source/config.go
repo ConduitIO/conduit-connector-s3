@@ -15,10 +15,10 @@
 package source
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/conduitio/conduit-plugin-s3/config"
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
 )
 
 const (
@@ -49,13 +49,13 @@ func Parse(cfg map[string]string) (Config, error) {
 	}
 	pollingPeriod, err := time.ParseDuration(pollingPeriodString)
 	if err != nil {
-		return Config{}, cerrors.Errorf(
+		return Config{}, fmt.Errorf(
 			"%q config value should be a valid duration",
 			ConfigKeyPollingPeriod,
 		)
 	}
 	if pollingPeriod <= 0 {
-		return Config{}, cerrors.Errorf(
+		return Config{}, fmt.Errorf(
 			"%q config value should be positive, got %s",
 			ConfigKeyPollingPeriod,
 			pollingPeriod,

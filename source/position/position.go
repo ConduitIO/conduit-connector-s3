@@ -15,12 +15,12 @@
 package position
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
 	sdk "github.com/conduitio/connector-plugin-sdk"
 )
 
@@ -50,15 +50,15 @@ func ParseRecordPosition(p sdk.Position) (Position, error) {
 	s := string(p)
 	index := strings.LastIndex(s, "_")
 	if index == -1 {
-		return Position{}, cerrors.New("invalid position format, no '_' found")
+		return Position{}, errors.New("invalid position format, no '_' found")
 	}
 	seconds, err := strconv.ParseInt(s[index+2:], 10, 64)
 	if err != nil {
-		return Position{}, cerrors.Errorf("could not parse the position timestamp: %w", err)
+		return Position{}, fmt.Errorf("could not parse the position timestamp: %w", err)
 	}
 
 	if s[index+1] != cdcPrefixChar && s[index+1] != snapshotPrefixChar {
-		return Position{}, cerrors.Errorf("invalid position format, no '%c' or '%c' after '_'\n", snapshotPrefixChar, cdcPrefixChar)
+		return Position{}, fmt.Errorf("invalid position format, no '%c' or '%c' after '_'\n", snapshotPrefixChar, cdcPrefixChar)
 	}
 	pType := TypeSnapshot
 	if s[index+1] == cdcPrefixChar {

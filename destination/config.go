@@ -21,7 +21,6 @@ import (
 
 	"github.com/conduitio/conduit-plugin-s3/config"
 	"github.com/conduitio/conduit-plugin-s3/destination/format"
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
 )
 
 const (
@@ -68,14 +67,14 @@ func Parse(cfg map[string]string) (Config, error) {
 	bufferSize, err := strconv.ParseUint(bufferSizeString, 10, 32)
 
 	if err != nil {
-		return Config{}, cerrors.Errorf(
+		return Config{}, fmt.Errorf(
 			"%q config value should be a positive integer",
 			ConfigKeyBufferSize,
 		)
 	}
 
 	if bufferSize > MaxBufferSize {
-		return Config{}, cerrors.Errorf(
+		return Config{}, fmt.Errorf(
 			"%q config value should not be bigger than %d, got %d",
 			ConfigKeyBufferSize,
 			MaxBufferSize,
@@ -98,7 +97,7 @@ func Parse(cfg map[string]string) (Config, error) {
 			allFormats = append(allFormats, string(f))
 		}
 
-		return Config{}, cerrors.Errorf(
+		return Config{}, fmt.Errorf(
 			"%q config value should be one of (%s)",
 			ConfigKeyFormat,
 			strings.Join(allFormats, ", "),
@@ -118,5 +117,5 @@ func Parse(cfg map[string]string) (Config, error) {
 }
 
 func requiredConfigErr(name string) error {
-	return cerrors.Errorf("%q config value must be set", name)
+	return fmt.Errorf("%q config value must be set", name)
 }

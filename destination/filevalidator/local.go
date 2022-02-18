@@ -15,11 +15,10 @@
 package filevalidator
 
 import (
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
-
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
 )
 
 // Local validates files against local filesystem
@@ -43,7 +42,7 @@ func (lfv *Local) Validate(name string, reference []byte) error {
 	err = compareBytes(fileBytes, reference)
 
 	if err != nil {
-		return cerrors.Errorf(
+		return fmt.Errorf(
 			"%s (%dB) and its reference (%dB) have different bytes: %w",
 			name,
 			len(fileBytes),
@@ -55,7 +54,7 @@ func (lfv *Local) Validate(name string, reference []byte) error {
 	err = os.Remove(filePath)
 
 	if err != nil {
-		return cerrors.Errorf("could not remove %s: %w", filePath, err)
+		return fmt.Errorf("could not remove %s: %w", filePath, err)
 	}
 
 	return nil

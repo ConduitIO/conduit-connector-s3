@@ -15,7 +15,8 @@
 package filevalidator
 
 import (
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
+	"errors"
+	"fmt"
 )
 
 // FileValidator can take a file name and a slice of bytes and validate that the
@@ -27,12 +28,12 @@ type FileValidator interface {
 
 func compareBytes(data []byte, reference []byte) error {
 	if len(data) != len(reference) {
-		return cerrors.New("different length")
+		return errors.New("different length")
 	}
 
 	for i, b := range data {
 		if b != reference[i] {
-			return cerrors.Errorf("bytes at position %d do not match", i)
+			return fmt.Errorf("bytes at position %d do not match", i)
 		}
 	}
 
