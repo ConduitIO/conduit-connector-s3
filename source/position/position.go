@@ -58,7 +58,7 @@ func ParseRecordPosition(p sdk.Position) (Position, error) {
 	}
 
 	if s[index+1] != cdcPrefixChar && s[index+1] != snapshotPrefixChar {
-		return Position{}, fmt.Errorf("invalid position format, no '%c' or '%c' after '_'\n", snapshotPrefixChar, cdcPrefixChar)
+		return Position{}, fmt.Errorf("invalid position format, no '%c' or '%c' after '_'", snapshotPrefixChar, cdcPrefixChar)
 	}
 	pType := TypeSnapshot
 	if s[index+1] == cdcPrefixChar {
