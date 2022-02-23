@@ -14,7 +14,7 @@
 
 package config
 
-import "github.com/conduitio/conduit/pkg/foundation/cerrors"
+import "fmt"
 
 const (
 	// ConfigKeyAWSAccessKeyID is the config name for AWS access secret key
@@ -75,5 +75,5 @@ func Parse(cfg map[string]string) (Config, error) {
 }
 
 func requiredConfigErr(name string) error {
-	return cerrors.Errorf("%q config value must be set", name)
+	return fmt.Errorf("%q config value must be set", name)
 }

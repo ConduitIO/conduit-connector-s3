@@ -12,12 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:build integration
-
 package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -29,10 +28,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
-	"github.com/conduitio/conduit/pkg/plugins/s3/config"
-	"github.com/conduitio/conduit/pkg/plugins/s3/source/position"
+	"github.com/conduitio/conduit-plugin-s3/config"
+	"github.com/conduitio/conduit-plugin-s3/source/position"
+	sdk "github.com/conduitio/connector-plugin-sdk"
 	"github.com/google/uuid"
 )
 
@@ -75,7 +73,7 @@ func TestSource_SuccessfulSnapshot(t *testing.T) {
 	}
 
 	_, err = source.Read(ctx)
-	if !cerrors.Is(err, sdk.ErrBackoffRetry) {
+	if !errors.Is(err, sdk.ErrBackoffRetry) {
 		t.Fatalf("expected a BackoffRetry error, got: %v", err)
 	}
 
@@ -127,7 +125,7 @@ func TestSource_EmptyBucket(t *testing.T) {
 
 	_, err = source.Read(ctx)
 
-	if !cerrors.Is(err, sdk.ErrBackoffRetry) {
+	if !errors.Is(err, sdk.ErrBackoffRetry) {
 		t.Fatalf("expected a BackoffRetry error, got: %v", err)
 	}
 	_ = source.Teardown(ctx)
@@ -151,7 +149,7 @@ func TestSource_StartCDCAfterEmptyBucket(t *testing.T) {
 	// read bucket while empty
 	_, err = source.Read(ctx)
 
-	if !cerrors.Is(err, sdk.ErrBackoffRetry) {
+	if !errors.Is(err, sdk.ErrBackoffRetry) {
 		t.Fatalf("expected a BackoffRetry error, got: %v", err)
 	}
 
@@ -404,7 +402,7 @@ func TestSource_CDC_EmptyBucketWithDeletedObjects(t *testing.T) {
 	// read and assert
 	for _, file := range testFiles {
 		_, err := readAndAssert(ctx, t, source, file)
-		if !cerrors.Is(err, sdk.ErrBackoffRetry) {
+		if !errors.Is(err, sdk.ErrBackoffRetry) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
@@ -412,7 +410,7 @@ func TestSource_CDC_EmptyBucketWithDeletedObjects(t *testing.T) {
 	// should have changed to CDC
 	// CDC should NOT read the deleted object
 	_, err = readWithTimeout(ctx, source, time.Second)
-	if !cerrors.Is(err, context.DeadlineExceeded) {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error should be DeadlineExceeded")
 	}
 
@@ -614,17 +612,17 @@ func parseIntegrationConfig() (map[string]string, error) {
 	awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
 
 	if awsAccessKeyID == "" {
-		return map[string]string{}, cerrors.New("AWS_ACCESS_KEY_ID env var must be set")
+		return map[string]string{}, errors.New("AWS_ACCESS_KEY_ID env var must be set")
 	}
 
 	awsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 	if awsSecretAccessKey == "" {
-		return map[string]string{}, cerrors.New("AWS_SECRET_ACCESS_KEY env var must be set")
+		return map[string]string{}, errors.New("AWS_SECRET_ACCESS_KEY env var must be set")
 	}
 
 	awsRegion := os.Getenv("AWS_REGION")
 	if awsRegion == "" {
-		return map[string]string{}, cerrors.New("AWS_REGION env var must be set")
+		return map[string]string{}, errors.New("AWS_REGION env var must be set")
 	}
 
 	return map[string]string{
@@ -664,7 +662,7 @@ func readWithTimeout(ctx context.Context, source *Source, timeout time.Duration)
 
 	for {
 		rec, err := source.Read(ctx)
-		if !cerrors.Is(err, sdk.ErrBackoffRetry) {
+		if !errors.Is(err, sdk.ErrBackoffRetry) {
 			return rec, err
 		}
 

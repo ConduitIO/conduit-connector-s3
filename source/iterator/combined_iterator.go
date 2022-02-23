@@ -16,13 +16,13 @@ package iterator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
-	"github.com/conduitio/conduit/pkg/plugins/s3/source/position"
+	"github.com/conduitio/conduit-plugin-s3/source/position"
+	sdk "github.com/conduitio/connector-plugin-sdk"
 )
 
 type CombinedIterator struct {
@@ -55,15 +55,15 @@ func NewCombinedIterator(
 		p = position.Position{} // always start snapshot from the beginning, so position is nil
 		c.snapshotIterator, err = NewSnapshotIterator(bucket, client, p)
 		if err != nil {
-			return nil, cerrors.Errorf("could not create the snapshot iterator: %w", err)
+			return nil, fmt.Errorf("could not create the snapshot iterator: %w", err)
 		}
 	case position.TypeCDC:
 		c.cdcIterator, err = NewCDCIterator(bucket, pollingPeriod, client, p.Timestamp)
 		if err != nil {
-			return nil, cerrors.Errorf("could not create the CDC iterator: %w", err)
+			return nil, fmt.Errorf("could not create the CDC iterator: %w", err)
 		}
 	default:
-		return nil, cerrors.Errorf("invalid position type (%d)", p.Type)
+		return nil, fmt.Errorf("invalid position type (%d)", p.Type)
 	}
 	return c, nil
 }
@@ -111,7 +111,7 @@ func (c *CombinedIterator) Next(ctx context.Context) (sdk.Record, error) {
 	case c.cdcIterator != nil:
 		return c.cdcIterator.Next(ctx)
 	default:
-		return sdk.Record{}, cerrors.New("no initialized iterator")
+		return sdk.Record{}, errors.New("no initialized iterator")
 	}
 }
 
@@ -130,7 +130,7 @@ func (c *CombinedIterator) switchToCDCIterator() error {
 	}
 	c.cdcIterator, err = NewCDCIterator(c.bucket, c.pollingPeriod, c.client, timestamp)
 	if err != nil {
-		return cerrors.Errorf("could not create cdc iterator: %w", err)
+		return fmt.Errorf("could not create cdc iterator: %w", err)
 	}
 	c.snapshotIterator = nil
 	return nil

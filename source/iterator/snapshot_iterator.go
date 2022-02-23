@@ -16,14 +16,14 @@ package iterator
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
-	"github.com/conduitio/conduit/pkg/plugins/s3/source/position"
+	"github.com/conduitio/conduit-plugin-s3/source/position"
+	sdk "github.com/conduitio/connector-plugin-sdk"
 )
 
 // SnapshotIterator to iterate through S3 objects in a specific bucket.
@@ -64,7 +64,7 @@ func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
 	for w.paginator.HasMorePages() {
 		nextPage, err := w.paginator.NextPage(ctx)
 		if err != nil {
-			return cerrors.Errorf("could not fetch next page: %w", err)
+			return fmt.Errorf("could not fetch next page: %w", err)
 		}
 		if len(nextPage.Contents) > 0 {
 			w.page = nextPage
@@ -108,7 +108,7 @@ func (w *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		Key:    key,
 	})
 	if err != nil {
-		return sdk.Record{}, cerrors.Errorf("could not fetch the next object: %w", err)
+		return sdk.Record{}, fmt.Errorf("could not fetch the next object: %w", err)
 	}
 
 	// check if maxLastModified should be updated
@@ -118,7 +118,7 @@ func (w *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 
 	rawBody, err := ioutil.ReadAll(object.Body)
 	if err != nil {
-		return sdk.Record{}, cerrors.Errorf("could not read the object's body: %w", err)
+		return sdk.Record{}, fmt.Errorf("could not read the object's body: %w", err)
 	}
 
 	p := position.Position{

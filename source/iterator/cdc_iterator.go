@@ -16,15 +16,16 @@ package iterator
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io/ioutil"
 	"sort"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
-	"github.com/conduitio/conduit/pkg/plugin/sdk"
-	"github.com/conduitio/conduit/pkg/plugins/s3/source/position"
+	"github.com/conduitio/conduit-plugin-s3/source/position"
+	sdk "github.com/conduitio/connector-plugin-sdk"
 	"gopkg.in/tomb.v2"
 )
 
@@ -88,7 +89,7 @@ func (w *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
 func (w *CDCIterator) Stop() {
 	// stop the two goRoutines
 	w.ticker.Stop()
-	w.tomb.Kill(cerrors.New("cdc iterator is stopped"))
+	w.tomb.Kill(errors.New("cdc iterator is stopped"))
 }
 
 // startCDC scans the S3 bucket every polling period for changes
@@ -185,7 +186,7 @@ func (w *CDCIterator) getLatestObjects(ctx context.Context) ([]CacheEntry, error
 	}
 	objects, err := w.client.ListObjectVersions(ctx, listObjectInput)
 	if err != nil {
-		return nil, cerrors.Errorf("couldn't get latest objects: %w", err)
+		return nil, fmt.Errorf("couldn't get latest objects: %w", err)
 	}
 
 	cache := make([]CacheEntry, 0, 1000)

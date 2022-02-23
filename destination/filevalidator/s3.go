@@ -16,13 +16,13 @@ package filevalidator
 
 import (
 	"context"
+	"fmt"
 	"io/ioutil"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/conduitio/conduit/pkg/foundation/cerrors"
 )
 
 // S3 validates S3 files
@@ -76,7 +76,7 @@ func (v *S3) Validate(name string, reference []byte) error {
 	err = compareBytes(data, reference)
 
 	if err != nil {
-		return cerrors.Errorf(
+		return fmt.Errorf(
 			"%s (%dB) and its reference (%dB) have different bytes: %w",
 			name,
 			len(data),
