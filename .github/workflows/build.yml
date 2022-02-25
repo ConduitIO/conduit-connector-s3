@@ -22,4 +22,4 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: us-east-1
           AWS_S3_BUCKET: conduit-s3-testing
-        run: go test -v ./...
+        run: make test GOTEST_FLAGS="-v -count=1"
