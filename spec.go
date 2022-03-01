@@ -18,7 +18,7 @@ import (
 	"github.com/conduitio/conduit-plugin-s3/config"
 	"github.com/conduitio/conduit-plugin-s3/destination"
 	"github.com/conduitio/conduit-plugin-s3/source"
-	sdk "github.com/conduitio/connector-plugin-sdk"
+	sdk "github.com/conduitio/conduit-plugin-sdk"
 )
 
 type Spec struct{}

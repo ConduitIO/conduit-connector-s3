@@ -18,7 +18,7 @@ import (
 	"io/ioutil"
 	"os"
 
-	sdk "github.com/conduitio/connector-plugin-sdk"
+	sdk "github.com/conduitio/conduit-plugin-sdk"
 	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"

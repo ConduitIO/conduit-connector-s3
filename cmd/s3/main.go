@@ -18,7 +18,7 @@ import (
 	s3 "github.com/conduitio/conduit-plugin-s3"
 	"github.com/conduitio/conduit-plugin-s3/destination"
 	"github.com/conduitio/conduit-plugin-s3/source"
-	sdk "github.com/conduitio/connector-plugin-sdk"
+	sdk "github.com/conduitio/conduit-plugin-sdk"
 )
 
 func main() {

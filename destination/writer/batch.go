@@ -16,7 +16,7 @@ package writer
 
 import (
 	"github.com/conduitio/conduit-plugin-s3/destination/format"
-	sdk "github.com/conduitio/connector-plugin-sdk"
+	sdk "github.com/conduitio/conduit-plugin-sdk"
 )
 
 // Batch describes the data that needs to be saved by the Writer

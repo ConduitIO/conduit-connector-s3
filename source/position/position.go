@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	sdk "github.com/conduitio/connector-plugin-sdk"
+	sdk "github.com/conduitio/conduit-plugin-sdk"
 )
 
 const (

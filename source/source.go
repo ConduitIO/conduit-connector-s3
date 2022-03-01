@@ -24,7 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/conduitio/conduit-plugin-s3/source/iterator"
 	"github.com/conduitio/conduit-plugin-s3/source/position"
-	sdk "github.com/conduitio/connector-plugin-sdk"
+	sdk "github.com/conduitio/conduit-plugin-sdk"
 )
 
 // Source connector

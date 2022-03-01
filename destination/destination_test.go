@@ -26,7 +26,7 @@ import (
 
 	"github.com/conduitio/conduit-plugin-s3/destination/filevalidator"
 	"github.com/conduitio/conduit-plugin-s3/destination/writer"
-	sdk "github.com/conduitio/connector-plugin-sdk"
+	sdk "github.com/conduitio/conduit-plugin-sdk"
 )
 
 func TestLocalParquet(t *testing.T) {
