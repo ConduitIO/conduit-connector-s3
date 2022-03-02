@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/conduitio/conduit-plugin-s3/source/position"
-	sdk "github.com/conduitio/conduit-plugin-sdk"
+	"github.com/conduitio/conduit-connector-s3/source/position"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 type CombinedIterator struct {

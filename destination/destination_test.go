@@ -24,9 +24,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/conduitio/conduit-plugin-s3/destination/filevalidator"
-	"github.com/conduitio/conduit-plugin-s3/destination/writer"
-	sdk "github.com/conduitio/conduit-plugin-sdk"
+	"github.com/conduitio/conduit-connector-s3/destination/filevalidator"
+	"github.com/conduitio/conduit-connector-s3/destination/writer"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 func TestLocalParquet(t *testing.T) {

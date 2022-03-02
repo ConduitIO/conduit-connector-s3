@@ -2,4 +2,4 @@
 .idea
 
 # Binary built with `make build`
-/conduit-plugin-s3
+/conduit-connector-s3

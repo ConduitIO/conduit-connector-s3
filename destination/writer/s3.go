@@ -26,7 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	sdk "github.com/conduitio/conduit-plugin-sdk"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 // S3FilesWrittenLength defines the number of last filenames an S3 Writer keep

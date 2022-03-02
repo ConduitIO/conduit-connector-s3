@@ -15,10 +15,10 @@
 package s3
 
 import (
-	"github.com/conduitio/conduit-plugin-s3/config"
-	"github.com/conduitio/conduit-plugin-s3/destination"
-	"github.com/conduitio/conduit-plugin-s3/source"
-	sdk "github.com/conduitio/conduit-plugin-sdk"
+	"github.com/conduitio/conduit-connector-s3/config"
+	"github.com/conduitio/conduit-connector-s3/destination"
+	"github.com/conduitio/conduit-connector-s3/source"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 type Spec struct{}

@@ -17,7 +17,7 @@ package writer
 import (
 	"context"
 
-	sdk "github.com/conduitio/conduit-plugin-sdk"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 // Writer is an interface that is responsible for persisting record that Destination

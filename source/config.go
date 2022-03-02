@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/conduitio/conduit-plugin-s3/config"
+	"github.com/conduitio/conduit-connector-s3/config"
 )
 
 const (

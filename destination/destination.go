@@ -18,8 +18,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/conduitio/conduit-plugin-s3/destination/writer"
-	sdk "github.com/conduitio/conduit-plugin-sdk"
+	"github.com/conduitio/conduit-connector-s3/destination/writer"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 // Destination S3 Connector persists records to an S3 storage. The records are usually

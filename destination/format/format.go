@@ -17,7 +17,7 @@ package format
 import (
 	"fmt"
 
-	sdk "github.com/conduitio/conduit-plugin-sdk"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 // Format defines the format the data will be persisted in by Destination

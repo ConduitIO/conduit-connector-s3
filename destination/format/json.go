@@ -18,7 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	sdk "github.com/conduitio/conduit-plugin-sdk"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 type jsonRecord struct {

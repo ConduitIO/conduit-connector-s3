@@ -19,8 +19,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/conduitio/conduit-plugin-s3/config"
-	"github.com/conduitio/conduit-plugin-s3/destination/format"
+	"github.com/conduitio/conduit-connector-s3/config"
+	"github.com/conduitio/conduit-connector-s3/destination/format"
 )
 
 const (

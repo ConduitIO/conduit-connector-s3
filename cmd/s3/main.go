@@ -15,10 +15,10 @@
 package main
 
 import (
-	s3 "github.com/conduitio/conduit-plugin-s3"
-	"github.com/conduitio/conduit-plugin-s3/destination"
-	"github.com/conduitio/conduit-plugin-s3/source"
-	sdk "github.com/conduitio/conduit-plugin-sdk"
+	s3 "github.com/conduitio/conduit-connector-s3"
+	"github.com/conduitio/conduit-connector-s3/destination"
+	"github.com/conduitio/conduit-connector-s3/source"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 func main() {
