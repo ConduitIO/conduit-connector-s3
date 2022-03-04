@@ -3,7 +3,7 @@ The S3 connector is one of [Conduit](https://github.com/ConduitIO/conduit) built
 It provides both, a source and a destination S3 connectors.
 
 ### How to build it
-Run `make build`.
+Run `make`.
 
 ### Testing
 Run `make test` to run all the tests.
