@@ -1,4 +1,6 @@
-# General
+# Conduit Connector S3
+
+### General
 The S3 connector is one of [Conduit](https://github.com/ConduitIO/conduit) builtin plugins.
 It provides both, a source and a destination S3 connectors.
 
