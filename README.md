@@ -1,6 +1,16 @@
-# S3 Connector
+# General
+The S3 connector is one of [Conduit](https://github.com/ConduitIO/conduit) builtin plugins.
+It provides both, a source and a destination S3 connectors.
 
-## Source
+### How to build it
+Run `make build`.
+
+### Testing
+Run `make test` to run all the tests.
+You must set the environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`)
+before you run all the tests. If not set, the tests that use these variables will be ignored.
+
+## S3 Source
 The S3 Source Connector connects to a S3 bucket with the provided configurations, using
 `aws.bucket`, `aws.access-key-id`,`aws.secret-access-key` and `aws.region`. Then will
 call `Configure` to parse the configurations and make sure the bucket exists, If the
@@ -16,13 +26,7 @@ Read request.
   record will have a metadata of `"action":"delete"`.
 * To capture "insert" or "update" actions, the bucket versioning doesn't matter, and no
   metadata is added for these actions.
-
-### Testing
-You must set the environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`)
-before you can run the tests.
-The tests have the tag "integration", so they can be run using `make test-integration`.
-
-
+  
 #### Position Handling
 The connector goes through two modes.
 * Snapshot mode: which loops through the S3 bucket and returns the objects that are
@@ -45,7 +49,7 @@ The S3 object key uniquely identifies the objects in an Amazon S3 bucket, which 
 record key is the key read from the S3 bucket.
 
 ### Configuration
-The config passed to `Open` can contain the following fields.
+The config passed to `Configure` can contain the following fields.
 
 | name                  | description                                                                            | required  | example             |
 |-----------------------|----------------------------------------------------------------------------------------|-----------|---------------------|
@@ -61,7 +65,7 @@ The config passed to `Open` can contain the following fields.
   objects from the beginning of the bucket, which could result in duplications.
 
 
-## Destination
+## S3 Destination
 The S3 Destination Connector connects to an S3 bucket with the provided configurations, using
 `aws.bucket`, `aws.access-key-id`,`aws.secret-access-key` and `aws.region`. Then will
 call `Configure` to parse the configurations, If parsing was not successful, then an 
@@ -75,7 +79,7 @@ all the records from it will be written to the S3 bucket, and an ack function wi
 called for each record after being written.
 
 ### Configuration
-The config passed to `Open` can contain the following fields.
+The config passed to `Configure` can contain the following fields.
 
 | name                  | description                                                                                                     | required | example             |
 |-----------------------|-----------------------------------------------------------------------------------------------------------------|----------|---------------------|
