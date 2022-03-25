@@ -23,7 +23,7 @@ import (
 
 const (
 	// ConfigKeyPollingPeriod is the config name for the S3 CDC polling period
-	ConfigKeyPollingPeriod = "polling-period"
+	ConfigKeyPollingPeriod = "pollingPeriod"
 
 	// DefaultPollingPeriod is the value assumed for the pooling period when the
 	// config omits the polling period parameter

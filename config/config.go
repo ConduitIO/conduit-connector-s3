@@ -18,10 +18,10 @@ import "fmt"
 
 const (
 	// ConfigKeyAWSAccessKeyID is the config name for AWS access secret key
-	ConfigKeyAWSAccessKeyID = "aws.access-key-id"
+	ConfigKeyAWSAccessKeyID = "aws.accessKeyId"
 
 	// ConfigKeyAWSSecretAccessKey is the config name for AWS secret access key
-	ConfigKeyAWSSecretAccessKey = "aws.secret-access-key" // nolint:gosec // false positive
+	ConfigKeyAWSSecretAccessKey = "aws.secretAccessKey" // nolint:gosec // false positive
 
 	// ConfigKeyAWSRegion is the config name for AWS region
 	ConfigKeyAWSRegion = "aws.region"

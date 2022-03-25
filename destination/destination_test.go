@@ -34,12 +34,12 @@ func TestLocalParquet(t *testing.T) {
 	destination := &Destination{}
 
 	err := destination.Configure(ctx, map[string]string{
-		"aws.access-key-id":     "123",
-		"aws.secret-access-key": "secret",
-		"aws.region":            "us-west-2",
-		"aws.bucket":            "foobucket",
-		"buffer-size":           "25",
-		"format":                "parquet",
+		"aws.accessKeyId":     "123",
+		"aws.secretAccessKey": "secret",
+		"aws.region":          "us-west-2",
+		"aws.bucket":          "foobucket",
+		"bufferSize":          "25",
+		"format":              "parquet",
 	})
 	if err != nil {
 		t.Fatalf("failed to parse the Configuration: %v", err)
@@ -87,12 +87,12 @@ func TestLocalJSON(t *testing.T) {
 	destination := &Destination{}
 
 	err := destination.Configure(ctx, map[string]string{
-		"aws.access-key-id":     "123",
-		"aws.secret-access-key": "secret",
-		"aws.region":            "us-west-2",
-		"aws.bucket":            "foobucket",
-		"buffer-size":           "25",
-		"format":                "json",
+		"aws.accessKeyId":     "123",
+		"aws.secretAccessKey": "secret",
+		"aws.region":          "us-west-2",
+		"aws.bucket":          "foobucket",
+		"bufferSize":          "25",
+		"format":              "json",
 	})
 	if err != nil {
 		t.Fatalf("failed to parse the Configuration: %v", err)
@@ -166,14 +166,14 @@ func TestS3Parquet(t *testing.T) {
 	destination := &Destination{}
 
 	err := destination.Configure(ctx, map[string]string{
-		"aws.access-key-id":     awsAccessKeyID,
-		"aws.secret-access-key": awsSecretAccessKey,
-		"aws.session-token":     awsSessionToken,
-		"aws.region":            awsRegion,
-		"aws.bucket":            awsBucketName,
-		"buffer-size":           "25",
-		"format":                "parquet",
-		"prefix":                "test",
+		"aws.accessKeyId":     awsAccessKeyID,
+		"aws.secretAccessKey": awsSecretAccessKey,
+		"aws.session-token":   awsSessionToken,
+		"aws.region":          awsRegion,
+		"aws.bucket":          awsBucketName,
+		"bufferSize":          "25",
+		"format":              "parquet",
+		"prefix":              "test",
 	})
 	if err != nil {
 		t.Fatalf("failed to parse the Configuration: %v", err)
