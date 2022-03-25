@@ -21,7 +21,7 @@ const (
 	ConfigKeyAWSAccessKeyID = "aws.accessKeyId"
 
 	// ConfigKeyAWSSecretAccessKey is the config name for AWS secret access key
-	ConfigKeyAWSSecretAccessKey = "aws.secretAccessKey" // nolint:gosec // false positive
+	ConfigKeyAWSSecretAccessKey = "aws.secretAccessKey"
 
 	// ConfigKeyAWSRegion is the config name for AWS region
 	ConfigKeyAWSRegion = "aws.region"
