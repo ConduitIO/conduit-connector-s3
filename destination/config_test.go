@@ -21,11 +21,11 @@ import (
 )
 
 var exampleConfig = map[string]string{
-	"aws.access-key-id":     "access-key-123",
-	"aws.secret-access-key": "secret-key-321",
-	"aws.region":            "us-west-2",
-	"aws.bucket":            "foobucket",
-	"format":                "json",
+	"aws.accessKeyId":     "access-key-123",
+	"aws.secretAccessKey": "secret-key-321",
+	"aws.region":          "us-west-2",
+	"aws.bucket":          "foobucket",
+	"format":              "json",
 }
 
 func configWith(pairs ...string) map[string]string {

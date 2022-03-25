@@ -14,14 +14,14 @@ before you run all the tests. If not set, the tests that use these variables wil
 
 ## S3 Source
 The S3 Source Connector connects to a S3 bucket with the provided configurations, using
-`aws.bucket`, `aws.access-key-id`,`aws.secret-access-key` and `aws.region`. Then will
+`aws.bucket`, `aws.accessKeyId`,`aws.secretAccessKey` and `aws.region`. Then will
 call `Configure` to parse the configurations and make sure the bucket exists, If the
 bucket doesn't exist, or the permissions fail, then an error will occur. After that, the
 `Open` method is called to start the connection from the provided position.
 
 ### Change Data Capture (CDC)
 This connector implements CDC features for S3 by scanning the bucket for changes every
-`polling-period` and detecting any change that happened after a certain timestamp. These
+`pollingPeriod` and detecting any change that happened after a certain timestamp. These
 changes (update, delete, insert) are then inserted into a buffer that is checked on each
 Read request.
 * To capture "delete" actions, the S3 bucket versioning must be enabled, and the output
@@ -38,7 +38,7 @@ The connector goes through two modes.
   mode it is and what object it last read. The _maxLastModifiedDate_ will be used when
   changing to CDC mode, the iterator will capture changes that happened after that.
 
-* CDC mode: this mode iterates through the S3 bucket every `polling-period` and captures
+* CDC mode: this mode iterates through the S3 bucket every `pollingPeriod` and captures
   new actions made on the bucket. the _Position_ during this mode is the object key
   attached to an underscore, a "c" for CDC, and the object's _lastModifiedDate_ in seconds.
   As an example: "thisIsAKey_c1634049397".
@@ -55,11 +55,11 @@ The config passed to `Configure` can contain the following fields.
 
 | name                  | description                                                                            | required  | example             |
 |-----------------------|----------------------------------------------------------------------------------------|-----------|---------------------|
-| aws.access-key-id     | AWS access key id                                                                      | yes       | "THE_ACCESS_KEY_ID" |
-| aws.secret-access-key | AWS secret access key                                                                  | yes       | "SECRET_ACCESS_KEY" |
+| aws.accessKeyId       | AWS access key id                                                                      | yes       | "THE_ACCESS_KEY_ID" |
+| aws.secretAccessKey   | AWS secret access key                                                                  | yes       | "SECRET_ACCESS_KEY" |
 | aws.region            | the AWS S3 bucket region                                                               | yes       | "us-east-1"         |
 | aws.bucket            | the AWS S3 bucket name                                                                 | yes       | "bucket_name"       |
-| polling-period        | polling period for the CDC mode, formatted as a time.Duration string. default is "1s"  | no        | "2s", "500ms"       |
+| pollingPeriod         | polling period for the CDC mode, formatted as a time.Duration string. default is "1s"  | no        | "2s", "500ms"       |
 
 
 ### Known Limitations
@@ -69,13 +69,13 @@ The config passed to `Configure` can contain the following fields.
 
 ## S3 Destination
 The S3 Destination Connector connects to an S3 bucket with the provided configurations, using
-`aws.bucket`, `aws.access-key-id`,`aws.secret-access-key` and `aws.region`. Then will
+`aws.bucket`, `aws.accessKeyId`,`aws.secretAccessKey` and `aws.region`. Then will
 call `Configure` to parse the configurations, If parsing was not successful, then an 
 error will occur. After that, the `Open` method is called to start the connection. If
 the permissions fail, the connector will not be ready for writing to S3.
 
 ### Writer
-The S3 destination writer has a buffer with the size of `buffer-size`, for each time
+The S3 destination writer has a buffer with the size of `bufferSize`, for each time
 `Write` is called, a new record is added to the buffer. When the buffer is full,
 all the records from it will be written to the S3 bucket, and an ack function will be
 called for each record after being written.
@@ -85,10 +85,10 @@ The config passed to `Configure` can contain the following fields.
 
 | name                  | description                                                                                                     | required | example             |
 |-----------------------|-----------------------------------------------------------------------------------------------------------------|----------|---------------------|
-| aws.access-key-id     | AWS access key id                                                                                               | yes      | "THE_ACCESS_KEY_ID" |
-| aws.secret-access-key | AWS secret access key                                                                                           | yes      | "SECRET_ACCESS_KEY" |
+| aws.accessKeyId       | AWS access key id                                                                                               | yes      | "THE_ACCESS_KEY_ID" |
+| aws.secretAccessKey   | AWS secret access key                                                                                           | yes      | "SECRET_ACCESS_KEY" |
 | aws.region            | the AWS S3 bucket region                                                                                        | yes      | "us-east-1"         |
 | aws.bucket            | the AWS S3 bucket name                                                                                          | yes      | "bucket_name"       |
 | format                | the destination format, either "json" or "parquet"                                                              | yes      | "json"              |
-| buffer-size           | the buffer size {when full, the files will be written to destination}, default is "1000", max is "100000"       | no       | "100"               |
+| bufferSize            | the buffer size {when full, the files will be written to destination}, default is "1000", max is "100000"       | no       | "100"               |
 | prefix                | the key prefix for S3 destination                                                                               | no       | "conduit-"          |

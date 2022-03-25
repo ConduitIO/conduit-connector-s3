@@ -19,10 +19,10 @@ import (
 )
 
 var exampleConfig = map[string]string{
-	"aws.access-key-id":     "access-key-123",
-	"aws.secret-access-key": "secret-key-321",
-	"aws.region":            "us-west-2",
-	"aws.bucket":            "foobucket",
+	"aws.accessKeyId":     "access-key-123",
+	"aws.secretAccessKey": "secret-key-321",
+	"aws.region":          "us-west-2",
+	"aws.bucket":          "foobucket",
 }
 
 func configWith(pairs ...string) map[string]string {
@@ -57,7 +57,7 @@ func configWithout(keys ...string) map[string]string {
 
 func TestAWSAccessKeyID(t *testing.T) {
 	t.Run("Successful", func(t *testing.T) {
-		c, err := Parse(configWith("aws.access-key-id", "some-value"))
+		c, err := Parse(configWith("aws.accessKeyId", "some-value"))
 
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
@@ -69,13 +69,13 @@ func TestAWSAccessKeyID(t *testing.T) {
 	})
 
 	t.Run("Missing", func(t *testing.T) {
-		_, err := Parse(configWithout("aws.access-key-id"))
+		_, err := Parse(configWithout("aws.accessKeyId"))
 
 		if err == nil {
 			t.Fatal("expected error, got nothing")
 		}
 
-		expectedErrMsg := `"aws.access-key-id" config value must be set`
+		expectedErrMsg := `"aws.accessKeyId" config value must be set`
 
 		if err.Error() != expectedErrMsg {
 			t.Fatalf("expected error msg to be %q, got %q", expectedErrMsg, err.Error())
@@ -85,7 +85,7 @@ func TestAWSAccessKeyID(t *testing.T) {
 
 func TestAWSSecretAccessKey(t *testing.T) {
 	t.Run("Successful", func(t *testing.T) {
-		c, err := Parse(configWith("aws.secret-access-key", "some-value"))
+		c, err := Parse(configWith("aws.secretAccessKey", "some-value"))
 
 		if err != nil {
 			t.Fatalf("expected no error, got %v", err)
@@ -97,13 +97,13 @@ func TestAWSSecretAccessKey(t *testing.T) {
 	})
 
 	t.Run("Missing", func(t *testing.T) {
-		_, err := Parse(configWithout("aws.secret-access-key"))
+		_, err := Parse(configWithout("aws.secretAccessKey"))
 
 		if err == nil {
 			t.Fatal("expected error, got nothing")
 		}
 
-		expectedErrMsg := `"aws.secret-access-key" config value must be set`
+		expectedErrMsg := `"aws.secretAccessKey" config value must be set`
 
 		if err.Error() != expectedErrMsg {
 			t.Fatalf("expected error msg to be %q, got %q", expectedErrMsg, err.Error())

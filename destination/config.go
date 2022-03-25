@@ -25,7 +25,7 @@ import (
 
 const (
 	// ConfigKeyBufferSize is the config name for buffer size.
-	ConfigKeyBufferSize = "buffer-size"
+	ConfigKeyBufferSize = "bufferSize"
 
 	// ConfigKeyFormat is the config name for destination format.
 	ConfigKeyFormat = "format"
