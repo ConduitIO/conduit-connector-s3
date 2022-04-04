@@ -45,8 +45,8 @@ The connector goes through two modes.
   happened after that.
 
 * CDC mode: this mode iterates through the S3 bucket every `pollingPeriod` and captures new actions made on the bucket.
-  the _Position_ during this mode is the object key attached to an underscore, a "c" for CDC, and the object's _
-  lastModifiedDate_ in seconds. As an example: "thisIsAKey_c1634049397". This position is used to return only the
+  the _Position_ during this mode is the object key attached to an underscore, a "c" for CDC, and the object's
+  _lastModifiedDate_ in seconds. As an example: "thisIsAKey_c1634049397". This position is used to return only the
   actions with a _lastModifiedDate_ higher than the last record returned, which will ensure that no duplications are in
   place.
 
