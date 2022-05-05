@@ -48,22 +48,27 @@ func NewSource() sdk.Source {
 // Configure parses and stores the configurations
 // returns an error in case of invalid config
 func (s *Source) Configure(ctx context.Context, cfg map[string]string) error {
-	config2, err := Parse(cfg)
+	config, err := Parse(cfg)
 	if err != nil {
 		return err
 	}
 
-	s.config = config2
+	s.config = config
 
+	return nil
+}
+
+// Open prepare the plugin to start sending records from the given position
+func (s *Source) Open(ctx context.Context, rp sdk.Position) error {
 	awsCredsProvider := credentials.NewStaticCredentialsProvider(
-		config2.AWSAccessKeyID,
-		config2.AWSSecretAccessKey,
+		s.config.AWSAccessKeyID,
+		s.config.AWSSecretAccessKey,
 		"",
 	)
 
 	s3Config, err := awsConfig.LoadDefaultConfig(
 		ctx,
-		awsConfig.WithRegion(config2.AWSRegion),
+		awsConfig.WithRegion(s.config.AWSRegion),
 		awsConfig.WithCredentialsProvider(awsCredsProvider),
 	)
 	if err != nil {
@@ -72,16 +77,13 @@ func (s *Source) Configure(ctx context.Context, cfg map[string]string) error {
 
 	s.client = s3.NewFromConfig(s3Config)
 
+	// check if bucket exists
 	err = s.bucketExists(ctx, s.config.AWSBucket)
 	if err != nil {
 		return err
 	}
 
-	return nil
-}
-
-// Open prepare the plugin to start sending records from the given position
-func (s *Source) Open(ctx context.Context, rp sdk.Position) error {
+	// parse position to start from
 	p, err := position.ParseRecordPosition(rp)
 	if err != nil {
 		return err

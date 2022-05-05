@@ -177,6 +177,12 @@ func TestSource_NonExistentBucket(t *testing.T) {
 	cfg[config.ConfigKeyAWSBucket] = uuid.NewString()
 
 	err := source.Configure(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// bucket existence check at "Open"
+	err = source.Open(context.Background(), nil)
 	if err == nil {
 		t.Fatal("should return an error for non existent buckets")
 	}
