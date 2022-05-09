@@ -90,6 +90,7 @@ func (w *CDCIterator) Stop() {
 	// stop the two goRoutines
 	w.ticker.Stop()
 	w.tomb.Kill(errors.New("cdc iterator is stopped"))
+	_ = w.tomb.Wait()
 }
 
 // startCDC scans the S3 bucket every polling period for changes

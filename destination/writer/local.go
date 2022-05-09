@@ -64,3 +64,5 @@ func (w *Local) Write(ctx context.Context, batch *Batch) error {
 func (w *Local) LastPosition() sdk.Position {
 	return w.Position
 }
+
+func (w *Local) Close() {}

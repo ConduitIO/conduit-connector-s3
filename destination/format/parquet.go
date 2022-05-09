@@ -15,11 +15,9 @@
 package format
 
 import (
-	"io/ioutil"
-	"os"
+	"bytes"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"
 )
@@ -34,31 +32,9 @@ type parquetRecord struct {
 }
 
 func makeParquetBytes(records []sdk.Record) ([]byte, error) {
-	var err error
+	var buf bytes.Buffer
 
-	// TODO: make this less dumb
-
-	// Lol we literally open a tmpfile just for a name.
-	tmpFile, err := ioutil.TempFile(os.TempDir(), "s3destination-parquet-")
-
-	if err != nil {
-		return nil, err
-	}
-
-	err = tmpFile.Close()
-
-	if err != nil {
-		return nil, err
-	}
-
-	fw, err := local.NewLocalFileWriter(tmpFile.Name())
-
-	if err != nil {
-		return nil, err
-	}
-
-	pw, err := writer.NewParquetWriter(fw, new(parquetRecord), int64(len(records)))
-
+	pw, err := writer.NewParquetWriterFromWriter(&buf, new(parquetRecord), int64(len(records)))
 	if err != nil {
 		return nil, err
 	}
@@ -83,23 +59,5 @@ func makeParquetBytes(records []sdk.Record) ([]byte, error) {
 		return nil, err
 	}
 
-	err = fw.Close()
-
-	if err != nil {
-		return nil, err
-	}
-
-	bytes, err := ioutil.ReadFile(tmpFile.Name())
-
-	if err != nil {
-		return nil, err
-	}
-
-	err = os.Remove(tmpFile.Name())
-
-	if err != nil {
-		return nil, err
-	}
-
-	return bytes, nil
+	return buf.Bytes(), nil
 }

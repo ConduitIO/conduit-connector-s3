@@ -106,7 +106,10 @@ func (d *Destination) WriteAsync(ctx context.Context, r sdk.Record, ackFunc sdk.
 
 // Teardown gracefully disconnects the client
 func (d *Destination) Teardown(ctx context.Context) error {
-	return nil // TODO
+	if d.Writer != nil {
+		d.Writer.Close()
+	}
+	return nil
 }
 
 func (d *Destination) Flush(ctx context.Context) error {

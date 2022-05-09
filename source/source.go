@@ -17,8 +17,10 @@ package source
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -30,9 +32,10 @@ import (
 // Source connector
 type Source struct {
 	sdk.UnimplementedSource
-	config   Config
-	iterator Iterator
-	client   *s3.Client
+	config    Config
+	iterator  Iterator
+	client    *s3.Client
+	transport *http.Transport
 }
 
 type Iterator interface {
@@ -65,11 +68,13 @@ func (s *Source) Configure(ctx context.Context, cfg map[string]string) error {
 		ctx,
 		awsConfig.WithRegion(config2.AWSRegion),
 		awsConfig.WithCredentialsProvider(awsCredsProvider),
+		awsConfig.WithHTTPClient(awshttp.NewBuildableClient()),
 	)
 	if err != nil {
 		return err
 	}
 
+	s.transport = s3Config.HTTPClient.(*awshttp.BuildableClient).GetTransport()
 	s.client = s3.NewFromConfig(s3Config)
 
 	err = s.bucketExists(ctx, s.config.AWSBucket)
@@ -110,6 +115,9 @@ func (s *Source) Teardown(ctx context.Context) error {
 	if s.iterator != nil {
 		s.iterator.Stop()
 		s.iterator = nil
+	}
+	if s.transport != nil {
+		s.transport.CloseIdleConnections()
 	}
 	return nil
 }

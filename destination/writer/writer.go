@@ -26,4 +26,5 @@ import (
 type Writer interface {
 	Write(context.Context, *Batch) error
 	LastPosition() sdk.Position
+	Close()
 }

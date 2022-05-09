@@ -26,10 +26,11 @@ type Spec struct{}
 // Specification returns the Plugin's Specification.
 func Specification() sdk.Specification {
 	return sdk.Specification{
-		Name:    "s3",
-		Summary: "An S3 source and destination plugin for Conduit, written in Go.",
-		Version: "v0.1.0",
-		Author:  "Meroxa, Inc.",
+		Name:        "s3",
+		Summary:     "An S3 source and destination plugin for Conduit, written in Go.",
+		Description: "TODO",
+		Version:     "v0.1.0",
+		Author:      "Meroxa, Inc.",
 		DestinationParams: map[string]sdk.Parameter{
 			config.ConfigKeyAWSAccessKeyID: {
 				Default:     "",

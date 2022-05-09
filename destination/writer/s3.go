@@ -18,10 +18,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"path"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -41,6 +43,8 @@ type S3 struct {
 	Error        error
 	FilesWritten []string
 	Client       *s3.Client
+
+	transport *http.Transport
 }
 
 var _ Writer = (*S3)(nil)
@@ -67,17 +71,20 @@ func NewS3(ctx context.Context, cfg *S3Config) (*S3, error) {
 		ctx,
 		config.WithRegion(cfg.Region),
 		config.WithCredentialsProvider(awsCredsProvider),
+		config.WithHTTPClient(awshttp.NewBuildableClient()),
 	)
-
 	if err != nil {
 		return nil, err
 	}
+	client := awsConfig.HTTPClient.(*awshttp.BuildableClient)
 
 	return &S3{
 		Bucket:       cfg.Bucket,
 		KeyPrefix:    cfg.KeyPrefix,
 		FilesWritten: make([]string, 0, S3FilesWrittenLength),
 		Client:       s3.NewFromConfig(awsConfig),
+
+		transport: client.GetTransport(),
 	}, nil
 }
 
@@ -130,4 +137,10 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 // LastPosition returns the last persisted position
 func (w *S3) LastPosition() sdk.Position {
 	return w.Position
+}
+
+func (w *S3) Close() {
+	if w.transport != nil {
+		w.transport.CloseIdleConnections()
+	}
 }
