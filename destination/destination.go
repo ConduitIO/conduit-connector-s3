@@ -110,6 +110,10 @@ func (d *Destination) Teardown(ctx context.Context) error {
 }
 
 func (d *Destination) Flush(ctx context.Context) error {
+	if len(d.Buffer) == 0 {
+		return nil
+	}
+
 	bufferedRecords := d.Buffer
 	d.Buffer = d.Buffer[:0]
 
