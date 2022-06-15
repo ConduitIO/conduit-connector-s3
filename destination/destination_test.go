@@ -62,6 +62,16 @@ func TestLocalParquet(t *testing.T) {
 		}
 	}
 
+	err = destination.Flush(ctx)
+	if err != nil {
+		t.Fatalf("failed to Flush: %v", err)
+	}
+
+	err = destination.Teardown(ctx)
+	if err != nil {
+		t.Fatalf("failed to Teardown: %v", err)
+	}
+
 	// The code above should produce two files in the fixtures directory:
 	// - local-0001.parquet
 	// - local-0002.parquet
@@ -113,6 +123,16 @@ func TestLocalJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Write returned an error: %v", err)
 		}
+	}
+
+	err = destination.Flush(ctx)
+	if err != nil {
+		t.Fatalf("failed to Flush: %v", err)
+	}
+
+	err = destination.Teardown(ctx)
+	if err != nil {
+		t.Fatalf("failed to Teardown: %v", err)
 	}
 
 	// The code above should produce two files in the fixtures directory:
@@ -198,6 +218,17 @@ func TestS3Parquet(t *testing.T) {
 		t.Fatalf("Destination writer expected to be writer.S3, but is actually %+v", writer)
 	}
 
+	err = destination.Flush(ctx)
+	if err != nil {
+		t.Fatalf("failed to Flush: %v", err)
+	}
+
+	err = destination.Teardown(ctx)
+	if err != nil {
+		t.Fatalf("failed to Teardown: %v", err)
+	}
+
+	// check if only two files are written
 	if len(writer.FilesWritten) != 2 {
 		t.Fatalf("Expected writer to have written 2 files, got %d", len(writer.FilesWritten))
 	}
