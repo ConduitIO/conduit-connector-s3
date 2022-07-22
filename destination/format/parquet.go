@@ -26,11 +26,11 @@ import (
 
 type parquetRecord struct {
 	// TODO save schema type
+	Operation string            `parquet:"name=operation, type=BYTE_ARRAY"`
 	Position  string            `parquet:"name=position, type=BYTE_ARRAY"`
 	Payload   string            `parquet:"name=payload, type=BYTE_ARRAY"`
 	Key       string            `parquet:"name=key, type=BYTE_ARRAY"`
 	Metadata  map[string]string `parquet:"name=metadata, type=MAP, convertedtype=MAP, keytype=BYTE_ARRAY, keyconvertedtype=UTF8, valuetype=BYTE_ARRAY, valueconvertedtype=UTF8"`
-	Timestamp int64             `parquet:"name=timestamp, type=INT64, convertedtype=TIME_MICROS"`
 }
 
 func makeParquetBytes(records []sdk.Record) ([]byte, error) {
@@ -67,11 +67,11 @@ func makeParquetBytes(records []sdk.Record) ([]byte, error) {
 
 	for _, r := range records {
 		pr := &parquetRecord{
+			Operation: r.Operation.String(),
 			Position:  string(r.Position),
-			Payload:   string(r.Payload.Bytes()),
+			Payload:   string(r.Payload.After.Bytes()),
 			Key:       string(r.Key.Bytes()),
 			Metadata:  r.Metadata,
-			Timestamp: r.CreatedAt.UnixNano(),
 		}
 
 		if err = pw.Write(pr); err != nil {

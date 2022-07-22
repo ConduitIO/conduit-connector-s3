@@ -31,6 +31,8 @@ import (
 
 // CDCIterator scans the bucket periodically and detects changes made to it.
 type CDCIterator struct {
+	sdk.SourceUtil
+
 	bucket        string
 	client        *s3.Client
 	buffer        chan sdk.Record
@@ -226,15 +228,14 @@ func (w *CDCIterator) createRecord(entry CacheEntry, object *s3.GetObjectOutput)
 		Type:      position.TypeCDC,
 	}
 
-	return sdk.Record{
-		Metadata: map[string]string{
-			"content-type": *object.ContentType,
+	return w.NewRecordCreate(
+		p.ToRecordPosition(),
+		map[string]string{
+			MetadataContentType: *object.ContentType,
 		},
-		Position:  p.ToRecordPosition(),
-		Payload:   sdk.RawData(rawBody),
-		Key:       sdk.RawData(entry.key),
-		CreatedAt: *object.LastModified,
-	}, nil
+		sdk.RawData(entry.key),
+		sdk.RawData(rawBody),
+	), nil
 }
 
 // createDeletedRecord creates the record for the object fetched from S3 (for deletes)
@@ -244,12 +245,9 @@ func (w *CDCIterator) createDeletedRecord(entry CacheEntry) sdk.Record {
 		Timestamp: entry.lastModified,
 		Type:      position.TypeCDC,
 	}
-	return sdk.Record{
-		Metadata: map[string]string{
-			"action": "delete",
-		},
-		Position:  p.ToRecordPosition(),
-		Key:       sdk.RawData(entry.key),
-		CreatedAt: entry.lastModified,
-	}
+	return w.NewRecordDelete(
+		p.ToRecordPosition(),
+		nil,
+		sdk.RawData(entry.key),
+	)
 }

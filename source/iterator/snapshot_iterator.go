@@ -28,6 +28,8 @@ import (
 
 // SnapshotIterator to iterate through S3 objects in a specific bucket.
 type SnapshotIterator struct {
+	sdk.SourceUtil
+
 	bucket          string
 	client          *s3.Client
 	paginator       *s3.ListObjectsV2Paginator
@@ -128,17 +130,14 @@ func (w *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 	}
 
 	// create the record
-	output := sdk.Record{
-		Metadata: map[string]string{
-			"content-type": *object.ContentType,
+	return w.NewRecordSnapshot(
+		p.ToRecordPosition(),
+		map[string]string{
+			MetadataContentType: *object.ContentType,
 		},
-		Position:  p.ToRecordPosition(),
-		Payload:   sdk.RawData(rawBody),
-		Key:       sdk.RawData(*key),
-		CreatedAt: *object.LastModified,
-	}
-
-	return output, nil
+		sdk.RawData(*key),
+		sdk.RawData(rawBody),
+	), nil
 }
 func (w *SnapshotIterator) Stop() {
 	// nothing to stop

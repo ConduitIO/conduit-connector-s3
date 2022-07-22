@@ -690,7 +690,7 @@ func readAndAssert(ctx context.Context, t *testing.T, source *Source, want Objec
 	}
 
 	gotKey := string(got.Key.Bytes())
-	gotPayload := string(got.Payload.Bytes())
+	gotPayload := string(got.Payload.After.Bytes())
 	if gotKey != want.key {
 		t.Fatalf("expected key: %s\n got: %s", want.key, gotKey)
 	}
