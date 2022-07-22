@@ -33,35 +33,31 @@ import (
 type CDCIterator struct {
 	sdk.SourceUtil
 
-	bucket        string
-	client        *s3.Client
-	buffer        chan sdk.Record
-	ticker        *time.Ticker
-	lastModified  time.Time
-	caches        chan []CacheEntry
-	isTruncated   bool
-	nextKeyMarker *string
-	tomb          *tomb.Tomb
+	bucket       string
+	client       *s3.Client
+	buffer       chan sdk.Record
+	ticker       *time.Ticker
+	lastModified time.Time
+	caches       chan []CacheEntry
+	tomb         *tomb.Tomb
 }
 
 type CacheEntry struct {
 	key          string
+	operation    sdk.Operation
 	lastModified time.Time
-	deleteMarker bool
 }
 
 // NewCDCIterator returns a CDCIterator and starts the process of listening to changes every pollingPeriod.
 func NewCDCIterator(bucket string, pollingPeriod time.Duration, client *s3.Client, from time.Time) (*CDCIterator, error) {
 	cdc := CDCIterator{
-		bucket:        bucket,
-		client:        client,
-		buffer:        make(chan sdk.Record, 1),
-		caches:        make(chan []CacheEntry),
-		ticker:        time.NewTicker(pollingPeriod),
-		isTruncated:   true,
-		nextKeyMarker: nil,
-		tomb:          &tomb.Tomb{},
-		lastModified:  from,
+		bucket:       bucket,
+		client:       client,
+		buffer:       make(chan sdk.Record, 1),
+		caches:       make(chan []CacheEntry),
+		ticker:       time.NewTicker(pollingPeriod),
+		tomb:         &tomb.Tomb{},
+		lastModified: from,
 	}
 
 	// start listening to changes
@@ -99,25 +95,17 @@ func (w *CDCIterator) Stop() {
 func (w *CDCIterator) startCDC() error {
 	defer close(w.caches)
 
+	// we initialize two caches that we reuse so we don't allocate a new one every time
+	cache := make([]CacheEntry, 0)
+	nextCache := make([]CacheEntry, 0)
 	for {
 		select {
 		case <-w.tomb.Dying():
 			return w.tomb.Err()
 		case <-w.ticker.C: // detect changes every polling period
-			cache := make([]CacheEntry, 0, 1000)
-			w.isTruncated = true
-			for w.isTruncated {
-				latest, err := w.getLatestObjects(w.tomb.Context(nil)) // nolint:staticcheck // SA1012 tomb expects nil
-				if err != nil {
-					return err
-				}
-				for _, object := range latest {
-					// should "equal" check be here?
-					if object.lastModified.Before(w.lastModified) || object.lastModified.Equal(w.lastModified) {
-						continue
-					}
-					cache = append(cache, object)
-				}
+			err := w.populateCache(w.tomb.Context(nil), cache, nil) //nolint:staticcheck // SA1012 tomb expects nil
+			if err != nil {
+				return err
 			}
 			if len(cache) == 0 {
 				continue
@@ -128,8 +116,10 @@ func (w *CDCIterator) startCDC() error {
 
 			select {
 			case w.caches <- cache:
-				w.lastModified = cache[len(cache)-1].lastModified
 				// worked fine
+				w.lastModified = cache[len(cache)-1].lastModified
+				cache, nextCache = nextCache, cache // switch caches
+				cache = cache[:0]                   // empty cache
 			case <-w.tomb.Dying():
 				return w.tomb.Err()
 			}
@@ -146,25 +136,10 @@ func (w *CDCIterator) flush() error {
 		case <-w.tomb.Dying():
 			return w.tomb.Err()
 		case cache := <-w.caches:
-			for i := 0; i < len(cache); i++ {
-				entry := cache[i]
-				var output sdk.Record
-
-				if entry.deleteMarker {
-					output = w.createDeletedRecord(entry)
-				} else {
-					object, err := w.client.GetObject(w.tomb.Context(nil), // nolint:staticcheck // SA1012 tomb expects nil
-						&s3.GetObjectInput{
-							Bucket: aws.String(w.bucket),
-							Key:    aws.String(entry.key),
-						})
-					if err != nil {
-						return err
-					}
-					output, err = w.createRecord(entry, object)
-					if err != nil {
-						return err
-					}
+			for _, entry := range cache {
+				output, err := w.buildRecord(entry)
+				if err != nil {
+					return fmt.Errorf("could not build record for %q: %w", entry.key, err)
 				}
 
 				select {
@@ -179,75 +154,111 @@ func (w *CDCIterator) flush() error {
 }
 
 // getLatestObjects gets all the latest version of objects in S3 bucket
-func (w *CDCIterator) getLatestObjects(ctx context.Context) ([]CacheEntry, error) {
+func (w *CDCIterator) populateCache(ctx context.Context, cache []CacheEntry, keyMarker *string) error {
 	listObjectInput := &s3.ListObjectVersionsInput{ // default is 1000 keys max
-		Bucket: aws.String(w.bucket),
-	}
-	if w.nextKeyMarker != nil {
-		listObjectInput.KeyMarker = w.nextKeyMarker
+		Bucket:    aws.String(w.bucket),
+		KeyMarker: keyMarker,
 	}
 	objects, err := w.client.ListObjectVersions(ctx, listObjectInput)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't get latest objects: %w", err)
+		return fmt.Errorf("couldn't get latest objects: %w", err)
 	}
 
-	cache := make([]CacheEntry, 0, 1000)
+	updatedObjects := make(map[string]bool)
+
 	for _, v := range objects.Versions {
-		if v.IsLatest {
-			cache = append(cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, deleteMarker: false})
+		if v.IsLatest && v.LastModified.After(w.lastModified) {
+			cache = append(cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationCreate})
+		} else {
+			// this is a version that is not the latest, this means this object
+			// was updated
+			updatedObjects[*v.Key] = true
 		}
 	}
+	for i, entry := range cache {
+		if updatedObjects[entry.key] {
+			entry.operation = sdk.OperationUpdate
+			cache[i] = entry
+		}
+	}
+
 	for _, v := range objects.DeleteMarkers {
-		if v.IsLatest {
-			cache = append(cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, deleteMarker: true})
+		if v.IsLatest && v.LastModified.After(w.lastModified) {
+			cache = append(cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationDelete})
 		}
 	}
 
-	// check if there is other pages to read
 	if objects.IsTruncated {
-		w.isTruncated = true
-		w.nextKeyMarker = objects.NextKeyMarker
-	} else {
-		w.isTruncated = false
-		w.nextKeyMarker = nil
+		return w.populateCache(ctx, cache, objects.NextKeyMarker)
+	}
+	return nil
+}
+
+func (w *CDCIterator) fetchS3Object(entry CacheEntry) (*s3.GetObjectOutput, []byte, error) {
+	object, err := w.client.GetObject(w.tomb.Context(nil), // nolint:staticcheck // SA1012 tomb expects nil
+		&s3.GetObjectInput{
+			Bucket: aws.String(w.bucket),
+			Key:    aws.String(entry.key),
+		})
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not get S3 object: %w", err)
 	}
 
-	return cache, nil
+	rawBody, err := ioutil.ReadAll(object.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("could not read S3 object body: %w", err)
+	}
+
+	return object, rawBody, nil
 }
 
 // createRecord creates the record for the object fetched from S3 (for updates and inserts)
-func (w *CDCIterator) createRecord(entry CacheEntry, object *s3.GetObjectOutput) (sdk.Record, error) {
-	// build record
-	rawBody, err := ioutil.ReadAll(object.Body)
-	if err != nil {
-		return sdk.Record{}, err
+func (w *CDCIterator) buildRecord(entry CacheEntry) (sdk.Record, error) {
+	var object *s3.GetObjectOutput
+	var payload []byte
+
+	switch entry.operation {
+	case sdk.OperationCreate, sdk.OperationUpdate:
+		var err error
+		object, payload, err = w.fetchS3Object(entry)
+		if err != nil {
+			return sdk.Record{}, fmt.Errorf("could not fetch S3 object for %v: %w", entry.key, err)
+		}
 	}
+
 	p := position.Position{
 		Key:       entry.key,
 		Timestamp: entry.lastModified,
 		Type:      position.TypeCDC,
 	}
 
-	return w.NewRecordCreate(
-		p.ToRecordPosition(),
-		map[string]string{
-			MetadataContentType: *object.ContentType,
-		},
-		sdk.RawData(entry.key),
-		sdk.RawData(rawBody),
-	), nil
-}
-
-// createDeletedRecord creates the record for the object fetched from S3 (for deletes)
-func (w *CDCIterator) createDeletedRecord(entry CacheEntry) sdk.Record {
-	p := position.Position{
-		Key:       entry.key,
-		Timestamp: entry.lastModified,
-		Type:      position.TypeCDC,
+	switch entry.operation {
+	case sdk.OperationCreate:
+		return w.NewRecordCreate(
+			p.ToRecordPosition(),
+			map[string]string{
+				MetadataContentType: *object.ContentType,
+			},
+			sdk.RawData(entry.key),
+			sdk.RawData(payload),
+		), nil
+	case sdk.OperationUpdate:
+		return w.NewRecordUpdate(
+			p.ToRecordPosition(),
+			map[string]string{
+				MetadataContentType: *object.ContentType,
+			},
+			sdk.RawData(entry.key),
+			nil, // TODO we could actually attach last version
+			sdk.RawData(payload),
+		), nil
+	case sdk.OperationDelete:
+		return w.NewRecordDelete(
+			p.ToRecordPosition(),
+			nil,
+			sdk.RawData(entry.key),
+		), nil
 	}
-	return w.NewRecordDelete(
-		p.ToRecordPosition(),
-		nil,
-		sdk.RawData(entry.key),
-	)
+
+	return sdk.Record{}, fmt.Errorf("invalid operation %v", entry.operation)
 }
