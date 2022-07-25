@@ -11,8 +11,8 @@ Run `make`.
 
 ### Testing
 
-Run `make test` to run all the tests. You must set the environment variables (`AWS_ACCESS_KEY_ID`
-, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`)
+Run `make test` to run all the tests. You must set the environment variables (`AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_REGION`)
 before you run all the tests. If not set, the tests that use these variables will be ignored.
 
 ## S3 Source
@@ -26,13 +26,11 @@ occur. After that, the
 ### Change Data Capture (CDC)
 
 This connector implements CDC features for S3 by scanning the bucket for changes every
-`pollingPeriod` and detecting any change that happened after a certain timestamp. These changes (update, delete, insert)
+`pollingPeriod` and detecting any change that happened after a certain timestamp. These changes (update, delete, create)
 are then inserted into a buffer that is checked on each Read request.
 
-* To capture "delete" actions, the S3 bucket versioning must be enabled, and the output record will have a metadata
-  of `"action":"delete"`.
-* To capture "insert" or "update" actions, the bucket versioning doesn't matter, and no metadata is added for these
-  actions.
+* To capture "delete" and "update", the S3 bucket versioning must be enabled.
+* To capture "create" actions, the bucket versioning doesn't matter.
 
 #### Position Handling
 
