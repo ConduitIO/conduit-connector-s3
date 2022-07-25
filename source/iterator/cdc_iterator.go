@@ -103,7 +103,7 @@ func (w *CDCIterator) startCDC() error {
 		case <-w.tomb.Dying():
 			return w.tomb.Err()
 		case <-w.ticker.C: // detect changes every polling period
-			err := w.populateCache(w.tomb.Context(nil), cache, nil) //nolint:staticcheck // SA1012 tomb expects nil
+			err := w.populateCache(w.tomb.Context(nil), &cache, nil) //nolint:staticcheck // SA1012 tomb expects nil
 			if err != nil {
 				return err
 			}
@@ -154,7 +154,7 @@ func (w *CDCIterator) flush() error {
 }
 
 // getLatestObjects gets all the latest version of objects in S3 bucket
-func (w *CDCIterator) populateCache(ctx context.Context, cache []CacheEntry, keyMarker *string) error {
+func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, keyMarker *string) error {
 	listObjectInput := &s3.ListObjectVersionsInput{ // default is 1000 keys max
 		Bucket:    aws.String(w.bucket),
 		KeyMarker: keyMarker,
@@ -168,23 +168,23 @@ func (w *CDCIterator) populateCache(ctx context.Context, cache []CacheEntry, key
 
 	for _, v := range objects.Versions {
 		if v.IsLatest && v.LastModified.After(w.lastModified) {
-			cache = append(cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationCreate})
+			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationCreate})
 		} else {
 			// this is a version that is not the latest, this means this object
 			// was updated
 			updatedObjects[*v.Key] = true
 		}
 	}
-	for i, entry := range cache {
+	for i, entry := range *cache {
 		if updatedObjects[entry.key] {
 			entry.operation = sdk.OperationUpdate
-			cache[i] = entry
+			(*cache)[i] = entry
 		}
 	}
 
 	for _, v := range objects.DeleteMarkers {
 		if v.IsLatest && v.LastModified.After(w.lastModified) {
-			cache = append(cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationDelete})
+			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationDelete})
 		}
 	}
 

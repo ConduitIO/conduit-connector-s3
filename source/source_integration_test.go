@@ -244,13 +244,23 @@ func TestSource_CDC_ReadRecordsInsert(t *testing.T) {
 	_ = source.Teardown(ctx)
 }
 
-func TestSource_CDC_ReadRecordsUpdate(t *testing.T) {
+func TestSource_CDC_UpdateWithVersioning(t *testing.T) {
 	client, cfg := prepareIntegrationTest(t)
 
 	ctx := context.Background()
 	testBucket := cfg[config.ConfigKeyAWSBucket]
 	source := &Source{}
-	err := source.Configure(context.Background(), cfg)
+
+	// make the bucket versioned
+	_, err := client.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{
+		Bucket:                  aws.String(testBucket),
+		VersioningConfiguration: &types.VersioningConfiguration{Status: types.BucketVersioningStatusEnabled},
+	})
+	if err != nil {
+		t.Fatalf("couldn't create a versioned bucket: %v", err)
+	}
+
+	err = source.Configure(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,14 +269,12 @@ func TestSource_CDC_ReadRecordsUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testFiles := addObjectsToBucket(ctx, t, testBucket, client, 3)
+	testFiles := addObjectsToBucket(ctx, t, testBucket, client, 1)
 
 	// read and assert
-	for _, file := range testFiles {
-		_, err := readAndAssert(ctx, t, source, file)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+	_, err = readAndAssert(ctx, t, source, testFiles[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// make sure the update action has a different lastModifiedDate
@@ -275,7 +283,8 @@ func TestSource_CDC_ReadRecordsUpdate(t *testing.T) {
 
 	content := uuid.NewString()
 	buf := strings.NewReader(content)
-	testFileName := "file0000" // already exists in the bucket
+	testFileName := testFiles[0].key
+	expectedOperation := sdk.OperationUpdate
 	// PutObject here will update an already existing object, this would just change the lastModified date
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(testBucket),
@@ -295,6 +304,12 @@ func TestSource_CDC_ReadRecordsUpdate(t *testing.T) {
 	// the update should be detected
 	if strings.Compare(string(obj.Key.Bytes()), testFileName) != 0 {
 		t.Fatalf("expected key: %s, got: %s", testFileName, string(obj.Key.Bytes()))
+	}
+	if strings.Compare(string(obj.Payload.After.Bytes()), content) != 0 {
+		t.Fatalf("expected payload: %s, got: %s", content, string(obj.Payload.After.Bytes()))
+	}
+	if obj.Operation != expectedOperation {
+		t.Fatalf("expected operation: %s, got: %s", expectedOperation, obj.Operation)
 	}
 
 	_ = source.Teardown(ctx)
@@ -323,7 +338,7 @@ func TestSource_CDC_DeleteWithVersioning(t *testing.T) {
 		VersioningConfiguration: &types.VersioningConfiguration{Status: types.BucketVersioningStatusEnabled},
 	})
 	if err != nil {
-		t.Fatalf("couldn't create a versioned bucket")
+		t.Fatalf("couldn't create a versioned bucket: %v", err)
 	}
 
 	// read and assert
@@ -339,7 +354,7 @@ func TestSource_CDC_DeleteWithVersioning(t *testing.T) {
 	time.Sleep(time.Second)
 
 	testFileName := "file0001" // already exists in the bucket
-	expectedAction := "delete"
+	expectedOperation := sdk.OperationDelete
 	// Delete a file that exists in the bucket
 	_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(testBucket),
@@ -357,8 +372,8 @@ func TestSource_CDC_DeleteWithVersioning(t *testing.T) {
 	if strings.Compare(string(obj.Key.Bytes()), testFileName) != 0 {
 		t.Fatalf("expected key: %s, got: %s", testFileName, string(obj.Key.Bytes()))
 	}
-	if strings.Compare(obj.Metadata["action"], expectedAction) != 0 {
-		t.Fatalf("expected action: %s, got: %s", expectedAction, obj.Metadata["action"])
+	if obj.Operation != expectedOperation {
+		t.Fatalf("expected operation: %s, got: %s", expectedOperation, obj.Operation)
 	}
 
 	_ = source.Teardown(ctx)
@@ -446,7 +461,7 @@ func TestSource_CDCPosition(t *testing.T) {
 	}
 
 	testFileName := "file0001" // already exists in the bucket
-	expectedAction := "delete"
+	expectedOperation := sdk.OperationDelete
 	// Delete a file that exists in the bucket
 	_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(testBucket),
@@ -484,8 +499,8 @@ func TestSource_CDCPosition(t *testing.T) {
 	if strings.Compare(string(obj2.Key.Bytes()), testFileName) != 0 {
 		t.Fatalf("expected key: %s, got: %s", testFileName, string(obj2.Key.Bytes()))
 	}
-	if strings.Compare(obj2.Metadata["action"], expectedAction) != 0 {
-		t.Fatalf("expected action: %s, got: %s", expectedAction, obj2.Metadata["action"])
+	if obj2.Operation != expectedOperation {
+		t.Fatalf("expected operation: %s, got: %s", expectedOperation, obj2.Operation)
 	}
 	_ = source.Teardown(ctx)
 }
