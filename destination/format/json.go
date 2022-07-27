@@ -23,11 +23,11 @@ import (
 
 type jsonRecord struct {
 	// TODO save schema type
+	Operation string            `json:"Operation"`
 	Position  string            `json:"Position"`
 	Payload   string            `json:"Payload"`
 	Key       string            `json:"Key"`
 	Metadata  map[string]string `json:"Metadata"`
-	CreatedAt int64             `json:"CreatedAt"`
 }
 
 func makeJSONBytes(records []sdk.Record) ([]byte, error) {
@@ -35,11 +35,11 @@ func makeJSONBytes(records []sdk.Record) ([]byte, error) {
 
 	for _, r := range records {
 		r := jsonRecord{
+			Operation: r.Operation.String(),
 			Position:  string(r.Position),
-			Payload:   string(r.Payload.Bytes()),
+			Payload:   string(r.Payload.After.Bytes()),
 			Key:       string(r.Key.Bytes()),
 			Metadata:  r.Metadata,
-			CreatedAt: r.CreatedAt.UnixNano(),
 		}
 
 		bytes, err := json.Marshal(r)

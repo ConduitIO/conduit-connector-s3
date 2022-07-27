@@ -12,13 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package main
+package s3
 
 import (
-	s3 "github.com/conduitio/conduit-connector-s3"
+	"github.com/conduitio/conduit-connector-s3/destination"
+	"github.com/conduitio/conduit-connector-s3/source"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
-func main() {
-	sdk.Serve(s3.Connector)
+var Connector = sdk.Connector{
+	NewSpecification: Specification,
+	NewSource:        source.NewSource,
+	NewDestination:   destination.NewDestination,
 }

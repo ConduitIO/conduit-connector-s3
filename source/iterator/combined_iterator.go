@@ -25,6 +25,10 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
+const (
+	MetadataContentType = "s3.contentType"
+)
+
 type CombinedIterator struct {
 	snapshotIterator *SnapshotIterator
 	cdcIterator      *CDCIterator
