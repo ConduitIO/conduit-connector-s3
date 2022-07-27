@@ -31,8 +31,6 @@ import (
 
 // CDCIterator scans the bucket periodically and detects changes made to it.
 type CDCIterator struct {
-	sdk.SourceUtil
-
 	bucket       string
 	client       *s3.Client
 	buffer       chan sdk.Record
@@ -234,7 +232,7 @@ func (w *CDCIterator) buildRecord(entry CacheEntry) (sdk.Record, error) {
 
 	switch entry.operation {
 	case sdk.OperationCreate:
-		return w.NewRecordCreate(
+		return sdk.Util.Source.NewRecordCreate(
 			p.ToRecordPosition(),
 			map[string]string{
 				MetadataContentType: *object.ContentType,
@@ -243,7 +241,7 @@ func (w *CDCIterator) buildRecord(entry CacheEntry) (sdk.Record, error) {
 			sdk.RawData(payload),
 		), nil
 	case sdk.OperationUpdate:
-		return w.NewRecordUpdate(
+		return sdk.Util.Source.NewRecordUpdate(
 			p.ToRecordPosition(),
 			map[string]string{
 				MetadataContentType: *object.ContentType,
@@ -253,7 +251,7 @@ func (w *CDCIterator) buildRecord(entry CacheEntry) (sdk.Record, error) {
 			sdk.RawData(payload),
 		), nil
 	case sdk.OperationDelete:
-		return w.NewRecordDelete(
+		return sdk.Util.Source.NewRecordDelete(
 			p.ToRecordPosition(),
 			nil,
 			sdk.RawData(entry.key),
