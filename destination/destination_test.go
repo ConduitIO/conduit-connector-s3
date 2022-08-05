@@ -257,11 +257,15 @@ func generateRecords(count int) []sdk.Record {
 
 	for i := 0; i < count; i++ {
 		result = append(result, sdk.Record{
+			Operation: sdk.OperationCreate,
 			Position:  []byte(strconv.Itoa(i)),
-			Payload:   sdk.RawData(fmt.Sprintf("this is a message #%d", i+1)),
-			Key:       sdk.RawData(fmt.Sprintf("key-%d", i)),
-			Metadata:  map[string]string{"number": fmt.Sprint(i)},
-			CreatedAt: time.Date(2020, 1, 1, 1, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Second),
+			Payload: sdk.Change{
+				After: sdk.RawData(fmt.Sprintf("this is a message #%d", i+1)),
+			},
+			Key: sdk.RawData(fmt.Sprintf("key-%d", i)),
+			Metadata: map[string]string{
+				sdk.MetadataCreatedAt: strconv.FormatInt(time.Date(2020, 1, 1, 1, 0, 0, 0, time.UTC).Add(time.Duration(i)*time.Second).UnixNano(), 10),
+			},
 		})
 	}
 

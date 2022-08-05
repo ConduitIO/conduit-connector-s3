@@ -15,50 +15,26 @@
 package format
 
 import (
-	"io/ioutil"
-	"os"
+	"bytes"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
-	"github.com/xitongsys/parquet-go-source/local"
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"
 )
 
 type parquetRecord struct {
 	// TODO save schema type
+	Operation string            `parquet:"name=operation, type=BYTE_ARRAY"`
 	Position  string            `parquet:"name=position, type=BYTE_ARRAY"`
 	Payload   string            `parquet:"name=payload, type=BYTE_ARRAY"`
 	Key       string            `parquet:"name=key, type=BYTE_ARRAY"`
 	Metadata  map[string]string `parquet:"name=metadata, type=MAP, convertedtype=MAP, keytype=BYTE_ARRAY, keyconvertedtype=UTF8, valuetype=BYTE_ARRAY, valueconvertedtype=UTF8"`
-	Timestamp int64             `parquet:"name=timestamp, type=INT64, convertedtype=TIME_MICROS"`
 }
 
 func makeParquetBytes(records []sdk.Record) ([]byte, error) {
-	var err error
+	var buf bytes.Buffer
 
-	// TODO: make this less dumb
-
-	// Lol we literally open a tmpfile just for a name.
-	tmpFile, err := ioutil.TempFile(os.TempDir(), "s3destination-parquet-")
-
-	if err != nil {
-		return nil, err
-	}
-
-	err = tmpFile.Close()
-
-	if err != nil {
-		return nil, err
-	}
-
-	fw, err := local.NewLocalFileWriter(tmpFile.Name())
-
-	if err != nil {
-		return nil, err
-	}
-
-	pw, err := writer.NewParquetWriter(fw, new(parquetRecord), int64(len(records)))
-
+	pw, err := writer.NewParquetWriterFromWriter(&buf, new(parquetRecord), int64(len(records)))
 	if err != nil {
 		return nil, err
 	}
@@ -67,11 +43,11 @@ func makeParquetBytes(records []sdk.Record) ([]byte, error) {
 
 	for _, r := range records {
 		pr := &parquetRecord{
+			Operation: r.Operation.String(),
 			Position:  string(r.Position),
-			Payload:   string(r.Payload.Bytes()),
+			Payload:   string(r.Payload.After.Bytes()),
 			Key:       string(r.Key.Bytes()),
 			Metadata:  r.Metadata,
-			Timestamp: r.CreatedAt.UnixNano(),
 		}
 
 		if err = pw.Write(pr); err != nil {
@@ -83,23 +59,5 @@ func makeParquetBytes(records []sdk.Record) ([]byte, error) {
 		return nil, err
 	}
 
-	err = fw.Close()
-
-	if err != nil {
-		return nil, err
-	}
-
-	bytes, err := ioutil.ReadFile(tmpFile.Name())
-
-	if err != nil {
-		return nil, err
-	}
-
-	err = os.Remove(tmpFile.Name())
-
-	if err != nil {
-		return nil, err
-	}
-
-	return bytes, nil
+	return buf.Bytes(), nil
 }
