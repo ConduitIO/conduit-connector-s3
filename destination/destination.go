@@ -18,6 +18,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -37,7 +38,47 @@ type Destination struct {
 }
 
 func NewDestination() sdk.Destination {
-	return &Destination{}
+	return sdk.DestinationWithMiddleware(&Destination{}, sdk.DefaultDestinationMiddleware()...)
+}
+
+func (d *Destination) Parameters() map[string]sdk.Parameter {
+	return map[string]sdk.Parameter{
+		config.ConfigKeyAWSAccessKeyID: {
+			Default:     "",
+			Required:    true,
+			Description: "AWS access key id.",
+		},
+		config.ConfigKeyAWSSecretAccessKey: {
+			Default:     "",
+			Required:    true,
+			Description: "AWS secret access key.",
+		},
+		config.ConfigKeyAWSRegion: {
+			Default:     "",
+			Required:    true,
+			Description: "the AWS S3 bucket region.",
+		},
+		config.ConfigKeyAWSBucket: {
+			Default:     "",
+			Required:    true,
+			Description: "the AWS S3 bucket name.",
+		},
+		ConfigKeyBufferSize: {
+			Default:     "1000",
+			Required:    false,
+			Description: `the buffer size {when full, the files will be written to destination}, max is "100000".`,
+		},
+		ConfigKeyFormat: {
+			Default:     "",
+			Required:    false,
+			Description: `the destination format, either "json" or "parquet".`,
+		},
+		ConfigKeyPrefix: {
+			Default:     "",
+			Required:    false,
+			Description: "the key prefix for S3 destination.",
+		},
+	}
 }
 
 // Configure parses and initializes the config.

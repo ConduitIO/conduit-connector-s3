@@ -22,6 +22,7 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -42,7 +43,37 @@ type Iterator interface {
 }
 
 func NewSource() sdk.Source {
-	return &Source{}
+	return sdk.SourceWithMiddleware(&Source{}, sdk.DefaultSourceMiddleware()...)
+}
+
+func (s *Source) Parameters() map[string]sdk.Parameter {
+	return map[string]sdk.Parameter{
+		config.ConfigKeyAWSAccessKeyID: {
+			Default:     "",
+			Required:    true,
+			Description: "AWS access key id.",
+		},
+		config.ConfigKeyAWSSecretAccessKey: {
+			Default:     "",
+			Required:    true,
+			Description: "AWS secret access key.",
+		},
+		config.ConfigKeyAWSRegion: {
+			Default:     "",
+			Required:    true,
+			Description: "the AWS S3 bucket region.",
+		},
+		config.ConfigKeyAWSBucket: {
+			Default:     "",
+			Required:    true,
+			Description: "the AWS S3 bucket name.",
+		},
+		ConfigKeyPollingPeriod: {
+			Default:     DefaultPollingPeriod,
+			Required:    false,
+			Description: "polling period for the CDC mode, formatted as a time.Duration string.",
+		},
+	}
 }
 
 // Configure parses and stores the configurations
