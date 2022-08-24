@@ -17,7 +17,7 @@ package writer
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path"
 
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -49,7 +49,7 @@ func (w *Local) Write(ctx context.Context, batch *Batch) error {
 		return err
 	}
 
-	err = ioutil.WriteFile(path, bytes, 0600)
+	err = os.WriteFile(path, bytes, 0600)
 
 	if err != nil {
 		return err

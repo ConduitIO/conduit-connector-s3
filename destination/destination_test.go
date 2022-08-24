@@ -17,7 +17,6 @@ package destination
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"strconv"
@@ -228,7 +227,7 @@ func validateReferences(validator filevalidator.FileValidator, paths ...string) 
 	for i := 0; i < len(paths); i += 2 {
 		fileName := paths[i]
 		referencePath := paths[i+1]
-		reference, err := ioutil.ReadFile(path.Join("./fixtures", referencePath))
+		reference, err := os.ReadFile(path.Join("./fixtures", referencePath))
 
 		if err != nil {
 			return err

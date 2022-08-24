@@ -17,7 +17,7 @@ package iterator
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -116,7 +116,7 @@ func (w *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		w.maxLastModified = *object.LastModified
 	}
 
-	rawBody, err := ioutil.ReadAll(object.Body)
+	rawBody, err := io.ReadAll(object.Body)
 	if err != nil {
 		return sdk.Record{}, fmt.Errorf("could not read the object's body: %w", err)
 	}

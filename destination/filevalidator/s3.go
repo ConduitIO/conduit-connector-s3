@@ -17,7 +17,7 @@ package filevalidator
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -66,7 +66,7 @@ func (v *S3) Validate(name string, reference []byte) error {
 		return err
 	}
 
-	data, err := ioutil.ReadAll(object.Body)
+	data, err := io.ReadAll(object.Body)
 
 	if err != nil {
 		return err
