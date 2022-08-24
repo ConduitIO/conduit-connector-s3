@@ -16,7 +16,6 @@ package destination
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/conduitio/conduit-connector-s3/config"
@@ -24,30 +23,18 @@ import (
 )
 
 const (
-	// ConfigKeyBufferSize is the config name for buffer size.
-	ConfigKeyBufferSize = "bufferSize"
-
 	// ConfigKeyFormat is the config name for destination format.
 	ConfigKeyFormat = "format"
 
 	// ConfigKeyPrefix is the config name for S3 destination key prefix.
 	ConfigKeyPrefix = "prefix"
-
-	// MaxBufferSize determines maximum buffer size a config can accept.
-	// When config with bigger buffer size is parsed, an error is returned.
-	MaxBufferSize uint64 = 100000
-
-	// DefaultBufferSize is the value BufferSize assumes when the config omits
-	// the buffer size parameter
-	DefaultBufferSize uint64 = 1000
 )
 
 // Config represents S3 configuration with Destination specific configurations
 type Config struct {
 	config.Config
-	BufferSize uint64
-	Format     format.Format
-	Prefix     string
+	Format format.Format
+	Prefix string
 }
 
 // Parse attempts to parse plugins.Config into a Config struct that Destination could
@@ -57,29 +44,6 @@ func Parse(cfg map[string]string) (Config, error) {
 	common, err := config.Parse(cfg)
 	if err != nil {
 		return Config{}, err
-	}
-
-	bufferSizeString, exists := cfg[ConfigKeyBufferSize]
-	if !exists || bufferSizeString == "" {
-		bufferSizeString = fmt.Sprintf("%d", DefaultBufferSize)
-	}
-
-	bufferSize, err := strconv.ParseUint(bufferSizeString, 10, 32)
-
-	if err != nil {
-		return Config{}, fmt.Errorf(
-			"%q config value should be a positive integer",
-			ConfigKeyBufferSize,
-		)
-	}
-
-	if bufferSize > MaxBufferSize {
-		return Config{}, fmt.Errorf(
-			"%q config value should not be bigger than %d, got %d",
-			ConfigKeyBufferSize,
-			MaxBufferSize,
-			bufferSize,
-		)
 	}
 
 	formatString, ok := cfg[ConfigKeyFormat]
@@ -107,10 +71,9 @@ func Parse(cfg map[string]string) (Config, error) {
 	prefix := cfg[ConfigKeyPrefix]
 
 	destinationConfig := Config{
-		Config:     common,
-		BufferSize: bufferSize,
-		Prefix:     prefix,
-		Format:     formatValue,
+		Config: common,
+		Prefix: prefix,
+		Format: formatValue,
 	}
 
 	return destinationConfig, nil

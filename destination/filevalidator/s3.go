@@ -29,7 +29,6 @@ import (
 type S3 struct {
 	AccessKeyID     string
 	SecretAccessKey string
-	SessionToken    string
 	Region          string
 	Bucket          string
 }
@@ -40,7 +39,7 @@ func (v *S3) Validate(name string, reference []byte) error {
 	awsCredsProvider := credentials.NewStaticCredentialsProvider(
 		v.AccessKeyID,
 		v.SecretAccessKey,
-		v.SessionToken,
+		"",
 	)
 
 	awsConfig, err := config.LoadDefaultConfig(

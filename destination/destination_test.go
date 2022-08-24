@@ -24,53 +24,53 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/filevalidator"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/matryer/is"
+)
+
+const (
+	EnvAWSAccessKeyID     = "AWS_ACCESS_KEY_ID"
+	EnvAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
+	EnvAWSS3Bucket        = "AWS_S3_BUCKET"
+	EnvAWSRegion          = "AWS_REGION"
 )
 
 func TestLocalParquet(t *testing.T) {
+	is := is.New(t)
 	ctx := context.Background()
 	destination := &Destination{}
 
 	err := destination.Configure(ctx, map[string]string{
-		"aws.accessKeyId":     "123",
-		"aws.secretAccessKey": "secret",
-		"aws.region":          "us-west-2",
-		"aws.bucket":          "foobucket",
-		"bufferSize":          "25",
-		"format":              "parquet",
+		config.ConfigKeyAWSAccessKeyID:     "123",
+		config.ConfigKeyAWSSecretAccessKey: "secret",
+		config.ConfigKeyAWSRegion:          "us-west-2",
+		config.ConfigKeyAWSBucket:          "foobucket",
+		ConfigKeyFormat:                    "parquet",
 	})
-	if err != nil {
-		t.Fatalf("failed to parse the Configuration: %v", err)
-	}
+	is.NoErr(err)
 
 	err = destination.Open(context.Background())
-	if err != nil {
-		t.Fatalf("failed to initialize destination: %v", err)
-	}
+	is.NoErr(err)
 
 	destination.Writer = &writer.Local{
 		Path: "./fixtures",
 	}
 
-	for _, record := range generateRecords(50) {
-		err = destination.WriteAsync(ctx, record, getAckFunc())
+	// generate 50 records and write them in 2 batches
+	records := generateRecords(50)
+	count, err := destination.Write(ctx, records[:25])
+	is.NoErr(err)
+	is.Equal(count, 25)
 
-		if err != nil {
-			t.Fatalf("Write returned an error: %v", err)
-		}
-	}
-
-	err = destination.Flush(ctx)
-	if err != nil {
-		t.Fatalf("failed to Flush: %v", err)
-	}
+	count, err = destination.Write(ctx, records[25:])
+	is.NoErr(err)
+	is.Equal(count, 25)
 
 	err = destination.Teardown(ctx)
-	if err != nil {
-		t.Fatalf("failed to Teardown: %v", err)
-	}
+	is.NoErr(err)
 
 	// The code above should produce two files in the fixtures directory:
 	// - local-0001.parquet
@@ -86,54 +86,42 @@ func TestLocalParquet(t *testing.T) {
 		"local-0001.parquet", "reference-1.parquet",
 		"local-0002.parquet", "reference-2.parquet",
 	)
-
-	if err != nil {
-		t.Fatalf("comparing references error: %v", err)
-	}
+	is.NoErr(err)
 }
 
 func TestLocalJSON(t *testing.T) {
+	is := is.New(t)
 	ctx := context.Background()
 	destination := &Destination{}
 
 	err := destination.Configure(ctx, map[string]string{
-		"aws.accessKeyId":     "123",
-		"aws.secretAccessKey": "secret",
-		"aws.region":          "us-west-2",
-		"aws.bucket":          "foobucket",
-		"bufferSize":          "25",
-		"format":              "json",
+		config.ConfigKeyAWSAccessKeyID:     "123",
+		config.ConfigKeyAWSSecretAccessKey: "secret",
+		config.ConfigKeyAWSRegion:          "us-west-2",
+		config.ConfigKeyAWSBucket:          "foobucket",
+		ConfigKeyFormat:                    "json",
 	})
-	if err != nil {
-		t.Fatalf("failed to parse the Configuration: %v", err)
-	}
+	is.NoErr(err)
 
 	err = destination.Open(context.Background())
-	if err != nil {
-		t.Fatalf("failed to initialize destination: %v", err)
-	}
+	is.NoErr(err)
 
 	destination.Writer = &writer.Local{
 		Path: "./fixtures",
 	}
 
-	for _, record := range generateRecords(50) {
-		err = destination.WriteAsync(ctx, record, getAckFunc())
+	// generate 50 records and write them in 2 batches
+	records := generateRecords(50)
+	count, err := destination.Write(ctx, records[:25])
+	is.NoErr(err)
+	is.Equal(count, 25)
 
-		if err != nil {
-			t.Fatalf("Write returned an error: %v", err)
-		}
-	}
-
-	err = destination.Flush(ctx)
-	if err != nil {
-		t.Fatalf("failed to Flush: %v", err)
-	}
+	count, err = destination.Write(ctx, records[25:])
+	is.NoErr(err)
+	is.Equal(count, 25)
 
 	err = destination.Teardown(ctx)
-	if err != nil {
-		t.Fatalf("failed to Teardown: %v", err)
-	}
+	is.NoErr(err)
 
 	// The code above should produce two files in the fixtures directory:
 	// - local-0001.json
@@ -149,51 +137,29 @@ func TestLocalJSON(t *testing.T) {
 		"local-0001.json", "reference-1.json",
 		"local-0002.json", "reference-2.json",
 	)
-
-	if err != nil {
-		t.Fatalf("comparing references error: %v", err)
-	}
+	is.NoErr(err)
 }
 
 func TestS3Parquet(t *testing.T) {
+	is := is.New(t)
 	ctx := context.Background()
-	awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
-
-	if awsAccessKeyID == "" {
-		t.Skip("AWS_ACCESS_KEY_ID env var must be set")
-	}
-
-	awsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
-
-	if awsSecretAccessKey == "" {
-		t.Skip("AWS_SECRET_ACCESS_KEY env var must be set")
-	}
-
-	awsBucketName := os.Getenv("AWS_S3_BUCKET")
-
-	if awsBucketName == "" {
-		t.Skip("AWS_S3_BUCKET env var must be set")
-	}
-
-	awsRegion := os.Getenv("AWS_REGION")
-
-	if awsRegion == "" {
-		t.Skip("AWS_REGION env var must be set")
-	}
-
-	awsSessionToken := os.Getenv("AWS_SESSION_TOKEN")
+	env := getEnv(
+		EnvAWSAccessKeyID,
+		EnvAWSSecretAccessKey,
+		EnvAWSS3Bucket,
+		EnvAWSRegion,
+	)
+	skipOnEmptyEnv(t, env)
 
 	destination := &Destination{}
 
 	err := destination.Configure(ctx, map[string]string{
-		"aws.accessKeyId":     awsAccessKeyID,
-		"aws.secretAccessKey": awsSecretAccessKey,
-		"aws.session-token":   awsSessionToken,
-		"aws.region":          awsRegion,
-		"aws.bucket":          awsBucketName,
-		"bufferSize":          "25",
-		"format":              "parquet",
-		"prefix":              "test",
+		config.ConfigKeyAWSAccessKeyID:     env[EnvAWSAccessKeyID],
+		config.ConfigKeyAWSSecretAccessKey: env[EnvAWSSecretAccessKey],
+		config.ConfigKeyAWSRegion:          env[EnvAWSRegion],
+		config.ConfigKeyAWSBucket:          env[EnvAWSS3Bucket],
+		ConfigKeyFormat:                    "parquet",
+		ConfigKeyPrefix:                    "test",
 	})
 	if err != nil {
 		t.Fatalf("failed to parse the Configuration: %v", err)
@@ -204,41 +170,30 @@ func TestS3Parquet(t *testing.T) {
 		t.Fatalf("failed to initialize destination: %v", err)
 	}
 
-	for _, record := range generateRecords(50) {
-		err = destination.WriteAsync(ctx, record, getAckFunc())
+	// generate 50 records and write them in 2 batches
+	records := generateRecords(50)
+	count, err := destination.Write(ctx, records[:25])
+	is.NoErr(err)
+	is.Equal(count, 25)
 
-		if err != nil {
-			t.Fatalf("Write returned an error: %v", err)
-		}
-	}
+	count, err = destination.Write(ctx, records[25:])
+	is.NoErr(err)
+	is.Equal(count, 25)
 
 	writer, ok := destination.Writer.(*writer.S3)
-
-	if !ok {
-		t.Fatalf("Destination writer expected to be writer.S3, but is actually %+v", writer)
-	}
-
-	err = destination.Flush(ctx)
-	if err != nil {
-		t.Fatalf("failed to Flush: %v", err)
-	}
+	is.True(ok) // Destination writer expected to be writer.S3
 
 	err = destination.Teardown(ctx)
-	if err != nil {
-		t.Fatalf("failed to Teardown: %v", err)
-	}
+	is.NoErr(err)
 
 	// check if only two files are written
-	if len(writer.FilesWritten) != 2 {
-		t.Fatalf("Expected writer to have written 2 files, got %d", len(writer.FilesWritten))
-	}
+	is.Equal(len(writer.FilesWritten), 2) // Expected writer to have written 2 files
 
 	validator := &filevalidator.S3{
-		AccessKeyID:     awsAccessKeyID,
-		SecretAccessKey: awsSecretAccessKey,
-		SessionToken:    awsSessionToken,
-		Bucket:          awsBucketName,
-		Region:          awsRegion,
+		AccessKeyID:     env[EnvAWSAccessKeyID],
+		SecretAccessKey: env[EnvAWSSecretAccessKey],
+		Bucket:          env[EnvAWSS3Bucket],
+		Region:          env[EnvAWSRegion],
 	}
 
 	err = validateReferences(
@@ -246,10 +201,7 @@ func TestS3Parquet(t *testing.T) {
 		writer.FilesWritten[0], "reference-1.parquet",
 		writer.FilesWritten[1], "reference-2.parquet",
 	)
-
-	if err != nil {
-		t.Fatalf("comparing references error: %v", err)
-	}
+	is.NoErr(err)
 }
 
 func generateRecords(count int) []sdk.Record {
@@ -292,6 +244,18 @@ func validateReferences(validator filevalidator.FileValidator, paths ...string) 
 	return nil
 }
 
-func getAckFunc() sdk.AckFunc {
-	return func(ackErr error) error { return nil }
+func getEnv(keys ...string) map[string]string {
+	envVars := make(map[string]string, len(keys))
+	for _, k := range keys {
+		envVars[k] = os.Getenv(k)
+	}
+	return envVars
+}
+
+func skipOnEmptyEnv(t *testing.T, vars map[string]string) {
+	for k, v := range vars {
+		if v == "" {
+			t.Skipf("%v env var must be set", k)
+		}
+	}
 }
