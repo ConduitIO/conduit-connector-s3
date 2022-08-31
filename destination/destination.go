@@ -16,8 +16,8 @@ package destination
 
 import (
 	"context"
-	"sync"
 
+	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -28,16 +28,47 @@ import (
 type Destination struct {
 	sdk.UnimplementedDestination
 
-	Buffer       []sdk.Record
-	AckFuncCache []sdk.AckFunc
-	Config       Config
-	Error        error
-	Writer       writer.Writer
-	Mutex        *sync.Mutex
+	Config Config
+	Writer writer.Writer
 }
 
 func NewDestination() sdk.Destination {
-	return &Destination{}
+	return sdk.DestinationWithMiddleware(&Destination{}, sdk.DefaultDestinationMiddleware()...)
+}
+
+func (d *Destination) Parameters() map[string]sdk.Parameter {
+	return map[string]sdk.Parameter{
+		config.ConfigKeyAWSAccessKeyID: {
+			Default:     "",
+			Required:    true,
+			Description: "AWS access key id.",
+		},
+		config.ConfigKeyAWSSecretAccessKey: {
+			Default:     "",
+			Required:    true,
+			Description: "AWS secret access key.",
+		},
+		config.ConfigKeyAWSRegion: {
+			Default:     "",
+			Required:    true,
+			Description: "the AWS S3 bucket region.",
+		},
+		config.ConfigKeyAWSBucket: {
+			Default:     "",
+			Required:    true,
+			Description: "the AWS S3 bucket name.",
+		},
+		ConfigKeyFormat: {
+			Default:     "",
+			Required:    false,
+			Description: `the destination format, either "json" or "parquet".`,
+		},
+		ConfigKeyPrefix: {
+			Default:     "",
+			Required:    false,
+			Description: "the key prefix for S3 destination.",
+		},
+	}
 }
 
 // Configure parses and initializes the config.
@@ -55,84 +86,35 @@ func (d *Destination) Configure(ctx context.Context, cfg map[string]string) erro
 
 // Open makes sure everything is prepared to receive records.
 func (d *Destination) Open(ctx context.Context) error {
-	d.Mutex = &sync.Mutex{}
-
-	// initializing the buffer
-	d.Buffer = make([]sdk.Record, 0, d.Config.BufferSize)
-	d.AckFuncCache = make([]sdk.AckFunc, 0, d.Config.BufferSize)
-
 	// initializing the writer
-	writer, err := writer.NewS3(ctx, &writer.S3Config{
+	w, err := writer.NewS3(ctx, &writer.S3Config{
 		AccessKeyID:     d.Config.AWSAccessKeyID,
 		SecretAccessKey: d.Config.AWSSecretAccessKey,
 		Region:          d.Config.AWSRegion,
 		Bucket:          d.Config.AWSBucket,
 		KeyPrefix:       d.Config.Prefix,
 	})
-
 	if err != nil {
 		return err
 	}
 
-	d.Writer = writer
+	d.Writer = w
 	return nil
 }
 
-// WriteAsync writes a record into a Destination. Typically Destination maintains an in-memory
-// buffer and doesn't actually perform a write until the buffer has enough
-// records in it. This is done for performance reasons.
-func (d *Destination) WriteAsync(ctx context.Context, r sdk.Record, ackFunc sdk.AckFunc) error {
-	// If either Destination or Writer have encountered an error, there's no point in
-	// accepting more records. We better signal the error up the stack and force
-	// the server to maybe re-instantiate plugin or do something else about it.
-	if d.Error != nil {
-		return d.Error
+// Write writes a slice of records into a Destination.
+func (d *Destination) Write(ctx context.Context, records []sdk.Record) (int, error) {
+	err := d.Writer.Write(ctx, &writer.Batch{
+		Records: records,
+		Format:  d.Config.Format,
+	})
+	if err != nil {
+		return 0, err
 	}
-
-	d.Mutex.Lock()
-	defer d.Mutex.Unlock()
-
-	d.Buffer = append(d.Buffer, r)
-	d.AckFuncCache = append(d.AckFuncCache, ackFunc)
-
-	if len(d.Buffer) >= int(d.Config.BufferSize) {
-		err := d.Flush(ctx)
-		if err != nil {
-			return err
-		}
-	}
-	return d.Error
+	return len(records), nil
 }
 
 // Teardown gracefully disconnects the client
 func (d *Destination) Teardown(ctx context.Context) error {
-	return nil // TODO
-}
-
-func (d *Destination) Flush(ctx context.Context) error {
-	if len(d.Buffer) == 0 {
-		return nil
-	}
-
-	bufferedRecords := d.Buffer
-	d.Buffer = d.Buffer[:0]
-
-	// write batch into S3
-	err := d.Writer.Write(ctx, &writer.Batch{
-		Records: bufferedRecords,
-		Format:  d.Config.Format,
-	})
-	if err != nil {
-		d.Error = err
-	}
-
-	// call all the written records' ackFunctions
-	for _, ack := range d.AckFuncCache {
-		err := ack(d.Error)
-		if err != nil {
-			return err
-		}
-	}
-	d.AckFuncCache = d.AckFuncCache[:0]
-	return nil
+	return nil // nothing to do
 }

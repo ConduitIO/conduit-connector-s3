@@ -15,9 +15,6 @@
 package s3
 
 import (
-	"github.com/conduitio/conduit-connector-s3/config"
-	"github.com/conduitio/conduit-connector-s3/destination"
-	"github.com/conduitio/conduit-connector-s3/source"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
@@ -30,69 +27,5 @@ func Specification() sdk.Specification {
 		Summary: "An S3 source and destination plugin for Conduit, written in Go.",
 		Version: "v0.1.0",
 		Author:  "Meroxa, Inc.",
-		DestinationParams: map[string]sdk.Parameter{
-			config.ConfigKeyAWSAccessKeyID: {
-				Default:     "",
-				Required:    true,
-				Description: "AWS access key id.",
-			},
-			config.ConfigKeyAWSSecretAccessKey: {
-				Default:     "",
-				Required:    true,
-				Description: "AWS secret access key.",
-			},
-			config.ConfigKeyAWSRegion: {
-				Default:     "",
-				Required:    true,
-				Description: "the AWS S3 bucket region.",
-			},
-			config.ConfigKeyAWSBucket: {
-				Default:     "",
-				Required:    true,
-				Description: "the AWS S3 bucket name.",
-			},
-			destination.ConfigKeyBufferSize: {
-				Default:     "1000",
-				Required:    false,
-				Description: `the buffer size {when full, the files will be written to destination}, max is "100000".`,
-			},
-			destination.ConfigKeyFormat: {
-				Default:     "",
-				Required:    false,
-				Description: `the destination format, either "json" or "parquet".`,
-			},
-			destination.ConfigKeyPrefix: {
-				Default:     "",
-				Required:    false,
-				Description: "the key prefix for S3 destination.",
-			},
-		},
-		SourceParams: map[string]sdk.Parameter{
-			config.ConfigKeyAWSAccessKeyID: {
-				Default:     "",
-				Required:    true,
-				Description: "AWS access key id.",
-			},
-			config.ConfigKeyAWSSecretAccessKey: {
-				Default:     "",
-				Required:    true,
-				Description: "AWS secret access key.",
-			},
-			config.ConfigKeyAWSRegion: {
-				Default:     "",
-				Required:    true,
-				Description: "the AWS S3 bucket region.",
-			},
-			config.ConfigKeyAWSBucket: {
-				Default:     "",
-				Required:    true,
-				Description: "the AWS S3 bucket name.",
-			},
-			source.ConfigKeyPollingPeriod: {
-				Default:     source.DefaultPollingPeriod,
-				Required:    false,
-				Description: "polling period for the CDC mode, formatted as a time.Duration string.",
-			},
-		},
 	}
 }

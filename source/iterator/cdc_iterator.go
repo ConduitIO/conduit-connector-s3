@@ -18,7 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"sort"
 	"time"
 
@@ -193,7 +193,7 @@ func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, ke
 }
 
 func (w *CDCIterator) fetchS3Object(entry CacheEntry) (*s3.GetObjectOutput, []byte, error) {
-	object, err := w.client.GetObject(w.tomb.Context(nil), // nolint:staticcheck // SA1012 tomb expects nil
+	object, err := w.client.GetObject(w.tomb.Context(nil), //nolint:staticcheck // SA1012 tomb expects nil
 		&s3.GetObjectInput{
 			Bucket: aws.String(w.bucket),
 			Key:    aws.String(entry.key),
@@ -202,7 +202,7 @@ func (w *CDCIterator) fetchS3Object(entry CacheEntry) (*s3.GetObjectOutput, []by
 		return nil, nil, fmt.Errorf("could not get S3 object: %w", err)
 	}
 
-	rawBody, err := ioutil.ReadAll(object.Body)
+	rawBody, err := io.ReadAll(object.Body)
 	if err != nil {
 		return nil, nil, fmt.Errorf("could not read S3 object body: %w", err)
 	}

@@ -17,7 +17,7 @@ package filevalidator
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -29,7 +29,6 @@ import (
 type S3 struct {
 	AccessKeyID     string
 	SecretAccessKey string
-	SessionToken    string
 	Region          string
 	Bucket          string
 }
@@ -40,7 +39,7 @@ func (v *S3) Validate(name string, reference []byte) error {
 	awsCredsProvider := credentials.NewStaticCredentialsProvider(
 		v.AccessKeyID,
 		v.SecretAccessKey,
-		v.SessionToken,
+		"",
 	)
 
 	awsConfig, err := config.LoadDefaultConfig(
@@ -67,7 +66,7 @@ func (v *S3) Validate(name string, reference []byte) error {
 		return err
 	}
 
-	data, err := ioutil.ReadAll(object.Body)
+	data, err := io.ReadAll(object.Body)
 
 	if err != nil {
 		return err

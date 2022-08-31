@@ -16,7 +16,6 @@ package filevalidator
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 )
@@ -33,7 +32,7 @@ func (lfv *Local) Validate(name string, reference []byte) error {
 
 	filePath := path.Join(lfv.Path, name)
 
-	fileBytes, err := ioutil.ReadFile(filePath)
+	fileBytes, err := os.ReadFile(filePath)
 
 	if err != nil {
 		return err
