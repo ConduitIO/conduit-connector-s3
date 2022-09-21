@@ -18,14 +18,17 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
-type Spec struct{}
+// version is set during the build process (i.e. the Makefile).
+// It follows Go's convention for module version, where the version
+// starts with the letter v, followed by a semantic version.
+var version = "v0.0.0-dev"
 
 // Specification returns the Plugin's Specification.
 func Specification() sdk.Specification {
 	return sdk.Specification{
 		Name:    "s3",
 		Summary: "An S3 source and destination plugin for Conduit, written in Go.",
-		Version: "v0.1.0",
+		Version: version,
 		Author:  "Meroxa, Inc.",
 	}
 }
