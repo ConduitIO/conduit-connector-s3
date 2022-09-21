@@ -4,7 +4,7 @@ go 1.18
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.16.16
-	github.com/aws/aws-sdk-go-v2/config v1.17.6
+	github.com/aws/aws-sdk-go-v2/config v1.17.7
 	github.com/aws/aws-sdk-go-v2/credentials v1.12.20
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.27.11
 	github.com/conduitio/conduit-connector-sdk v0.2.1-0.20220823112121-47067cda967a
@@ -21,7 +21,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.12.17 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.1.23 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.4.17 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/ini v1.3.23 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/ini v1.3.24 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.0.14 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.9.9 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.1.18 // indirect
