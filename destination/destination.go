@@ -58,15 +58,15 @@ func (d *Destination) Parameters() map[string]sdk.Parameter {
 			Required:    true,
 			Description: "the AWS S3 bucket name.",
 		},
+		config.ConfigKeyPrefix: {
+			Default:     "",
+			Required:    false,
+			Description: "the key prefix for S3 destination.",
+		},
 		ConfigKeyFormat: {
 			Default:     "",
 			Required:    false,
 			Description: `the destination format, either "json" or "parquet".`,
-		},
-		ConfigKeyPrefix: {
-			Default:     "",
-			Required:    false,
-			Description: "the key prefix for S3 destination.",
 		},
 	}
 }

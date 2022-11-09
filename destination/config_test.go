@@ -83,15 +83,3 @@ func TestFormat(t *testing.T) {
 		}
 	})
 }
-
-func TestPrefix(t *testing.T) {
-	c, err := Parse(configWith("prefix", "some/value"))
-
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	if c.Prefix != "some/value" {
-		t.Fatalf("expected Prefix to be %q, got %q", "some/value", c.Prefix)
-	}
-}

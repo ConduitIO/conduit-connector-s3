@@ -25,16 +25,12 @@ import (
 const (
 	// ConfigKeyFormat is the config name for destination format.
 	ConfigKeyFormat = "format"
-
-	// ConfigKeyPrefix is the config name for S3 destination key prefix.
-	ConfigKeyPrefix = "prefix"
 )
 
 // Config represents S3 configuration with Destination specific configurations
 type Config struct {
 	config.Config
 	Format format.Format
-	Prefix string
 }
 
 // Parse attempts to parse plugins.Config into a Config struct that Destination could
@@ -68,11 +64,8 @@ func Parse(cfg map[string]string) (Config, error) {
 		)
 	}
 
-	prefix := cfg[ConfigKeyPrefix]
-
 	destinationConfig := Config{
 		Config: common,
-		Prefix: prefix,
 		Format: formatValue,
 	}
 

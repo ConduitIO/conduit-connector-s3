@@ -57,13 +57,14 @@ the S3 bucket.
 
 The config passed to `Configure` can contain the following fields.
 
-| name                  | description                                                                            | required  | example             |
-|-----------------------|----------------------------------------------------------------------------------------|-----------|---------------------|
-| `aws.accessKeyId`     | AWS access key id                                                                      | yes       | "THE_ACCESS_KEY_ID" |
-| `aws.secretAccessKey` | AWS secret access key                                                                  | yes       | "SECRET_ACCESS_KEY" |
-| `aws.region`          | the AWS S3 bucket region                                                               | yes       | "us-east-1"         |
-| `aws.bucket`          | the AWS S3 bucket name                                                                 | yes       | "bucket_name"       |
-| `pollingPeriod`       | polling period for the CDC mode, formatted as a time.Duration string. default is "1s"  | no        | "2s", "500ms"       |
+| name                  | description                                                                           | required | example             |
+| --------------------- | ------------------------------------------------------------------------------------- | -------- | ------------------- |
+| `aws.accessKeyId`     | AWS access key id                                                                     | yes      | "THE_ACCESS_KEY_ID" |
+| `aws.secretAccessKey` | AWS secret access key                                                                 | yes      | "SECRET_ACCESS_KEY" |
+| `aws.region`          | the AWS S3 bucket region                                                              | yes      | "us-east-1"         |
+| `aws.bucket`          | the AWS S3 bucket name                                                                | yes      | "bucket_name"       |
+| `pollingPeriod`       | polling period for the CDC mode, formatted as a time.Duration string. default is "1s" | no       | "2s", "500ms"       |
+| `prefix`              | the key prefix for S3 source                                                          | no       | "conduit-"          |
 
 ### Known Limitations
 

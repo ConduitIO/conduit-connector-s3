@@ -54,7 +54,7 @@ func TestSource_SuccessfulSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testFiles := addObjectsToBucket(ctx, t, testBucket, client, 5)
+	testFiles := addObjectsToBucket(ctx, t, testBucket, "", client, 5)
 
 	// read and assert
 	var lastPosition sdk.Position
@@ -96,7 +96,7 @@ func TestSource_SnapshotRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testFiles := addObjectsToBucket(ctx, t, testBucket, client, 10)
+	testFiles := addObjectsToBucket(ctx, t, testBucket, "", client, 10)
 
 	// read and assert
 	for _, file := range testFiles {
@@ -154,7 +154,7 @@ func TestSource_StartCDCAfterEmptyBucket(t *testing.T) {
 	}
 
 	// write files to bucket
-	addObjectsToBucket(ctx, t, testBucket, client, 3)
+	addObjectsToBucket(ctx, t, testBucket, "", client, 3)
 
 	// read one record and assert position type is CDC
 	obj, err := readWithTimeout(ctx, source, time.Second*10)
@@ -203,7 +203,7 @@ func TestSource_CDC_ReadRecordsInsert(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testFiles := addObjectsToBucket(ctx, t, testBucket, client, 3)
+	testFiles := addObjectsToBucket(ctx, t, testBucket, "", client, 3)
 
 	// read and assert
 	for _, file := range testFiles {
@@ -269,7 +269,7 @@ func TestSource_CDC_UpdateWithVersioning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testFiles := addObjectsToBucket(ctx, t, testBucket, client, 1)
+	testFiles := addObjectsToBucket(ctx, t, testBucket, "", client, 1)
 
 	// read and assert
 	_, err = readAndAssert(ctx, t, source, testFiles[0])
@@ -330,7 +330,7 @@ func TestSource_CDC_DeleteWithVersioning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	testFiles := addObjectsToBucket(ctx, t, testBucket, client, 5)
+	testFiles := addObjectsToBucket(ctx, t, testBucket, "", client, 5)
 
 	// make the bucket versioned
 	_, err = client.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{
@@ -404,7 +404,7 @@ func TestSource_CDC_EmptyBucketWithDeletedObjects(t *testing.T) {
 	}
 
 	// add one file
-	testFiles := addObjectsToBucket(ctx, t, testBucket, client, 1)
+	testFiles := addObjectsToBucket(ctx, t, testBucket, "", client, 1)
 
 	// delete the added file
 	testFileName := "file0000"
@@ -449,7 +449,7 @@ func TestSource_CDCPosition(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	addObjectsToBucket(ctx, t, testBucket, client, 2)
+	addObjectsToBucket(ctx, t, testBucket, "", client, 2)
 
 	// make the bucket versioned
 	_, err = client.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{
@@ -502,6 +502,95 @@ func TestSource_CDCPosition(t *testing.T) {
 	if obj2.Operation != expectedOperation {
 		t.Fatalf("expected operation: %s, got: %s", expectedOperation, obj2.Operation)
 	}
+	_ = source.Teardown(ctx)
+}
+
+func TestSource_SnapshotWithPrefix(t *testing.T) {
+	client, cfg := prepareIntegrationTest(t)
+
+	ctx := context.Background()
+	testBucket := cfg[config.ConfigKeyAWSBucket]
+	testPrefix := "conduit-test-snapshot-prefix-"
+	cfg[config.ConfigKeyPrefix] = testPrefix
+	source := &Source{}
+	err := source.Configure(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = source.Open(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// put two items without prefix
+	_ = addObjectsToBucket(ctx, t, testBucket, "", client, 2)
+	// put two items with prefix
+	testFiles := addObjectsToBucket(ctx, t, testBucket, testPrefix, client, 2)
+
+	// read and assert
+	for _, file := range testFiles {
+		_, err := readAndAssert(ctx, t, source, file)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	// should return ErrBackoffRetry and not read items without the specified prefix
+	_, err = source.Read(ctx)
+	if !errors.Is(err, sdk.ErrBackoffRetry) {
+		t.Fatalf("expected a BackoffRetry error, got: %v", err)
+	}
+
+	_ = source.Teardown(ctx)
+}
+
+func TestSource_CDCWithPrefix(t *testing.T) {
+	client, cfg := prepareIntegrationTest(t)
+
+	ctx := context.Background()
+	testBucket := cfg[config.ConfigKeyAWSBucket]
+	testPrefix := "conduit-test-cdc-prefix-"
+	cfg[config.ConfigKeyPrefix] = testPrefix
+	source := &Source{}
+	err := source.Configure(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = source.Open(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// should return ErrBackoffRetry, switch to CDC
+	_, err = source.Read(ctx)
+	if !errors.Is(err, sdk.ErrBackoffRetry) {
+		t.Fatalf("expected a BackoffRetry error, got: %v", err)
+	}
+
+	// put more items for CDC iterator
+	_ = addObjectsToBucket(ctx, t, testBucket, "", client, 2)
+	testFiles := addObjectsToBucket(ctx, t, testBucket, testPrefix, client, 1)
+
+	// read one record
+	obj, err := readWithTimeout(ctx, source, time.Second*10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// compare the keys
+	gotKey := string(obj.Key.Bytes())
+	if gotKey != testFiles[0].key {
+		t.Fatalf("expected key: %s\n got: %s", testFiles[0].key, gotKey)
+	}
+
+	// should return ErrBackoffRetry and not read items without the specified prefix
+	_, err = source.Read(ctx)
+	if !errors.Is(err, sdk.ErrBackoffRetry) {
+		t.Fatalf("expected a BackoffRetry error, got: %v", err)
+	}
+
 	_ = source.Teardown(ctx)
 }
 
@@ -654,10 +743,10 @@ func parseIntegrationConfig() (map[string]string, error) {
 	}, nil
 }
 
-func addObjectsToBucket(ctx context.Context, t *testing.T, testBucket string, client *s3.Client, num int) []Object {
+func addObjectsToBucket(ctx context.Context, t *testing.T, testBucket, prefix string, client *s3.Client, num int) []Object {
 	testFiles := make([]Object, num)
 	for i := 0; i < num; i++ {
-		key := fmt.Sprintf("file%04d", i)
+		key := fmt.Sprintf("%sfile%04d", prefix, i)
 		content := uuid.NewString()
 		buf := strings.NewReader(content)
 		testFiles[i] = Object{

@@ -68,6 +68,11 @@ func (s *Source) Parameters() map[string]sdk.Parameter {
 			Required:    true,
 			Description: "the AWS S3 bucket name.",
 		},
+		config.ConfigKeyPrefix: {
+			Default:     "",
+			Required:    false,
+			Description: "the key prefix for S3 source.",
+		},
 		ConfigKeyPollingPeriod: {
 			Default:     DefaultPollingPeriod,
 			Required:    false,
@@ -120,7 +125,9 @@ func (s *Source) Open(ctx context.Context, rp sdk.Position) error {
 		return err
 	}
 
-	s.iterator, err = iterator.NewCombinedIterator(s.config.AWSBucket, s.config.PollingPeriod, s.client, p)
+	s.iterator, err = iterator.NewCombinedIterator(
+		s.config.AWSBucket, s.config.Prefix, s.config.PollingPeriod, s.client, p,
+	)
 	if err != nil {
 		return fmt.Errorf("couldn't create a combined iterator: %w", err)
 	}
