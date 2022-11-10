@@ -28,6 +28,9 @@ const (
 
 	// ConfigKeyAWSBucket is the config name for AWS S3 bucket
 	ConfigKeyAWSBucket = "aws.bucket"
+
+	// ConfigKeyPrefix is the config name for S3 key prefix.
+	ConfigKeyPrefix = "prefix"
 )
 
 // Config represents configuration needed for S3
@@ -36,6 +39,7 @@ type Config struct {
 	AWSSecretAccessKey string
 	AWSRegion          string
 	AWSBucket          string
+	Prefix             string
 }
 
 // Parse attempts to parse plugins.Config into a Config struct
@@ -64,11 +68,14 @@ func Parse(cfg map[string]string) (Config, error) {
 		return Config{}, requiredConfigErr(ConfigKeyAWSBucket)
 	}
 
+	prefix := cfg[ConfigKeyPrefix]
+
 	config := Config{
 		AWSAccessKeyID:     accessKeyID,
 		AWSSecretAccessKey: secretAccessKey,
 		AWSRegion:          region,
 		AWSBucket:          bucket,
+		Prefix:             prefix,
 	}
 
 	return config, nil

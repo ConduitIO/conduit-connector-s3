@@ -157,8 +157,8 @@ func TestS3Parquet(t *testing.T) {
 		config.ConfigKeyAWSSecretAccessKey: env[EnvAWSSecretAccessKey],
 		config.ConfigKeyAWSRegion:          env[EnvAWSRegion],
 		config.ConfigKeyAWSBucket:          env[EnvAWSS3Bucket],
+		config.ConfigKeyPrefix:             "test",
 		ConfigKeyFormat:                    "parquet",
-		ConfigKeyPrefix:                    "test",
 	})
 	if err != nil {
 		t.Fatalf("failed to parse the Configuration: %v", err)

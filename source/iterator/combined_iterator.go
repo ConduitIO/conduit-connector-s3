@@ -34,12 +34,13 @@ type CombinedIterator struct {
 	cdcIterator      *CDCIterator
 
 	bucket        string
+	prefix        string
 	pollingPeriod time.Duration
 	client        *s3.Client
 }
 
 func NewCombinedIterator(
-	bucket string,
+	bucket, prefix string,
 	pollingPeriod time.Duration,
 	client *s3.Client,
 	p position.Position,
@@ -47,6 +48,7 @@ func NewCombinedIterator(
 	var err error
 	c := &CombinedIterator{
 		bucket:        bucket,
+		prefix:        prefix,
 		pollingPeriod: pollingPeriod,
 		client:        client,
 	}
@@ -57,12 +59,12 @@ func NewCombinedIterator(
 			fmt.Printf("Warning: got position: %s, snapshot will be restarted from the beginning of the bucket\n", p.ToRecordPosition())
 		}
 		p = position.Position{} // always start snapshot from the beginning, so position is nil
-		c.snapshotIterator, err = NewSnapshotIterator(bucket, client, p)
+		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, client, p)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the snapshot iterator: %w", err)
 		}
 	case position.TypeCDC:
-		c.cdcIterator, err = NewCDCIterator(bucket, pollingPeriod, client, p.Timestamp)
+		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, client, p.Timestamp)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the CDC iterator: %w", err)
 		}
@@ -132,7 +134,7 @@ func (c *CombinedIterator) switchToCDCIterator() error {
 	if timestamp.IsZero() {
 		timestamp = time.Now()
 	}
-	c.cdcIterator, err = NewCDCIterator(c.bucket, c.pollingPeriod, c.client, timestamp)
+	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.client, timestamp)
 	if err != nil {
 		return fmt.Errorf("could not create cdc iterator: %w", err)
 	}
