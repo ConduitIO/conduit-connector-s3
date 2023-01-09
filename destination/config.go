@@ -15,9 +15,6 @@
 package destination
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/format"
 )
@@ -25,9 +22,6 @@ import (
 const (
 	// ConfigKeyFormat is the config name for destination format.
 	ConfigKeyFormat = "format"
-
-	//// ConfigKeyPrefix is the config name for S3 destination key prefix.
-	//ConfigKeyPrefix = "prefix"
 )
 
 // Config represents S3 configuration with Destination specific configurations
@@ -35,6 +29,4 @@ type Config struct {
 	config.Config
 	// the destination format, either "json" or "parquet".
 	Format format.Format `validate:"required,inclusion=parquet|json"`
-	//// the key prefix for S3 destination.
-	//Prefix string
 }

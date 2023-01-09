@@ -52,7 +52,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 		},
 		"prefix": {
 			Default:     "",
-			Description: "the key prefix for S3 destination.",
+			Description: "the S3 key prefix.",
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{},
 		},

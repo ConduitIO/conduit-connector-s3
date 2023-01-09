@@ -47,5 +47,11 @@ func (Config) Parameters() map[string]sdk.Parameter {
 			Type:        sdk.ParameterTypeDuration,
 			Validations: []sdk.Validation{},
 		},
+		"prefix": {
+			Default:     "",
+			Description: "the S3 key prefix.",
+			Type:        sdk.ParameterTypeString,
+			Validations: []sdk.Validation{},
+		},
 	}
 }

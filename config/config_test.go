@@ -38,19 +38,8 @@ func TestParseConfig(t *testing.T) {
 		AWSSecretAccessKey: "secret-key-321",
 		AWSRegion:          "us-west-2",
 		AWSBucket:          "foobucket",
+		Prefix:             "conduit-",
 	}
 	is.NoErr(err)
 	is.Equal(want, got)
-}
-
-func TestPrefix(t *testing.T) {
-	c, err := Parse(configWith("prefix", "some/value"))
-
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	if c.Prefix != "some/value" {
-		t.Fatalf("expected Prefix to be %q, got %q", "some/value", c.Prefix)
-	}
 }

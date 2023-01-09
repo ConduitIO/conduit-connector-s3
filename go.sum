@@ -92,10 +92,10 @@ github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1/go.mod h1:Q3SI9o4m/ZMn
 github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
 github.com/cncf/udpa/go v0.0.0-20191209042840-269d4d468f6f/go.mod h1:M8M6+tZqaGXZJjfX53e64911xZQV5JYwmTeXPW+k8Sc=
 github.com/colinmarc/hdfs/v2 v2.1.1/go.mod h1:M3x+k8UKKmxtFu++uAZ0OtDU8jR3jnaZIAc6yK4Ue0c=
-github.com/conduitio/conduit-connector-protocol v0.3.0 h1:Ix0C1jMQ23diRzfSfxWG9RJDHVc7Vu0yCVjKa25Y0SU=
-github.com/conduitio/conduit-connector-protocol v0.3.0/go.mod h1:jynMd6Kuc7xUABrvYTUrOBuTYAtoQsZ7T6tAB9xAWOo=
-github.com/conduitio/conduit-connector-sdk v0.3.0 h1:EC0iXfC9+CHG5jVuks8ilQ5k2uL6awYJ6szJ3pRah80=
-github.com/conduitio/conduit-connector-sdk v0.3.0/go.mod h1:M8UWBoTPBoTY7SDu6ku95TGAipu3mJ43LlYgfM/ciwg=
+github.com/conduitio/conduit-connector-protocol v0.4.0 h1:hO6mB4Ft34+PbF1G2pDGHzZmCA/y5jj5wsIrluw4qFY=
+github.com/conduitio/conduit-connector-protocol v0.4.0/go.mod h1:xU4dsoPPCiW+1rJFwxkMUjhYs+HMte+XB/aFL6x94iM=
+github.com/conduitio/conduit-connector-sdk v0.4.3-0.20230109132730-979b839a4d0a h1:8udGY0uw8m0Sg0oAQghcQpHvKocv8ZsefiDAxRnv2XI=
+github.com/conduitio/conduit-connector-sdk v0.4.3-0.20230109132730-979b839a4d0a/go.mod h1:SNz/Sn4zNuJNMELlr+HVe8Br8SpDea0EB4Gmh+Ha0+k=
 github.com/coreos/go-systemd/v22 v22.3.3-0.20220203105225-a9a7ef127534/go.mod h1:Y58oyj3AT4RCenI/lSvhwexgC+NSVTIJ3seZv2GcEnc=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
