@@ -14,6 +14,8 @@
 
 package config
 
+import "fmt"
+
 const (
 	// ConfigKeyAWSAccessKeyID is the config name for AWS access secret key
 	ConfigKeyAWSAccessKeyID = "aws.accessKeyId"
@@ -26,16 +28,55 @@ const (
 
 	// ConfigKeyAWSBucket is the config name for AWS S3 bucket
 	ConfigKeyAWSBucket = "aws.bucket"
+
+	// ConfigKeyPrefix is the config name for S3 key prefix.
+	ConfigKeyPrefix = "prefix"
 )
 
 // Config represents configuration needed for S3
 type Config struct {
-	// AWS access key id.
-	AWSAccessKeyID string `json:"aws.accessKeyId" validate:"required"`
-	// AWS secret access key.
-	AWSSecretAccessKey string `json:"aws.secretAccessKey" validate:"required"`
-	// the AWS S3 bucket region
-	AWSRegion string `json:"aws.region" validate:"required"`
-	// the AWS S3 bucket name.
-	AWSBucket string `json:"aws.bucket" validate:"required"`
+	AWSAccessKeyID     string
+	AWSSecretAccessKey string
+	AWSRegion          string
+	AWSBucket          string
+}
+
+// Parse attempts to parse plugins.Config into a Config struct
+func Parse(cfg map[string]string) (Config, error) {
+	accessKeyID, ok := cfg[ConfigKeyAWSAccessKeyID]
+
+	if !ok {
+		return Config{}, requiredConfigErr(ConfigKeyAWSAccessKeyID)
+	}
+
+	secretAccessKey, ok := cfg[ConfigKeyAWSSecretAccessKey]
+
+	if !ok {
+		return Config{}, requiredConfigErr(ConfigKeyAWSSecretAccessKey)
+	}
+
+	region, ok := cfg[ConfigKeyAWSRegion]
+
+	if !ok {
+		return Config{}, requiredConfigErr(ConfigKeyAWSRegion)
+	}
+
+	bucket, ok := cfg[ConfigKeyAWSBucket]
+
+	if !ok {
+		return Config{}, requiredConfigErr(ConfigKeyAWSBucket)
+	}
+
+	config := Config{
+		AWSAccessKeyID:     accessKeyID,
+		AWSSecretAccessKey: secretAccessKey,
+		AWSRegion:          region,
+		AWSBucket:          bucket,
+	}
+
+	return config, nil
+}
+
+func requiredConfigErr(name string) error {
+	return fmt.Errorf("%q config value must be set", name)
 }

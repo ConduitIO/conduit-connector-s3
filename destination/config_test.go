@@ -42,7 +42,6 @@ func TestParseConfig(t *testing.T) {
 			AWSBucket:          "foobucket",
 		},
 		Format: "json",
-		Prefix: "",
 	}
 
 	is.NoErr(err)

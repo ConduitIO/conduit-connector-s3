@@ -26,6 +26,7 @@ var exampleConfig = map[string]string{
 	"aws.secretAccessKey": "secret-key-321",
 	"aws.region":          "us-west-2",
 	"aws.bucket":          "foobucket",
+	"prefix":              "conduit-",
 }
 
 func TestParseConfig(t *testing.T) {
@@ -40,4 +41,16 @@ func TestParseConfig(t *testing.T) {
 	}
 	is.NoErr(err)
 	is.Equal(want, got)
+}
+
+func TestPrefix(t *testing.T) {
+	c, err := Parse(configWith("prefix", "some/value"))
+
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if c.Prefix != "some/value" {
+		t.Fatalf("expected Prefix to be %q, got %q", "some/value", c.Prefix)
+	}
 }

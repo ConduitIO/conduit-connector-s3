@@ -32,6 +32,7 @@ import (
 // CDCIterator scans the bucket periodically and detects changes made to it.
 type CDCIterator struct {
 	bucket       string
+	prefix       string
 	client       *s3.Client
 	buffer       chan sdk.Record
 	ticker       *time.Ticker
@@ -47,9 +48,15 @@ type CacheEntry struct {
 }
 
 // NewCDCIterator returns a CDCIterator and starts the process of listening to changes every pollingPeriod.
-func NewCDCIterator(bucket string, pollingPeriod time.Duration, client *s3.Client, from time.Time) (*CDCIterator, error) {
+func NewCDCIterator(
+	bucket, prefix string,
+	pollingPeriod time.Duration,
+	client *s3.Client,
+	from time.Time,
+) (*CDCIterator, error) {
 	cdc := CDCIterator{
 		bucket:       bucket,
+		prefix:       prefix,
 		client:       client,
 		buffer:       make(chan sdk.Record, 1),
 		caches:       make(chan []CacheEntry),
@@ -155,6 +162,7 @@ func (w *CDCIterator) flush() error {
 func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, keyMarker *string) error {
 	listObjectInput := &s3.ListObjectVersionsInput{ // default is 1000 keys max
 		Bucket:    aws.String(w.bucket),
+		Prefix:    aws.String(w.prefix),
 		KeyMarker: keyMarker,
 	}
 	objects, err := w.client.ListObjectVersions(ctx, listObjectInput)

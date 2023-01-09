@@ -24,6 +24,7 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -97,7 +98,9 @@ func (s *Source) Open(ctx context.Context, rp sdk.Position) error {
 		return err
 	}
 
-	s.iterator, err = iterator.NewCombinedIterator(s.config.AWSBucket, s.config.PollingPeriod, s.client, p)
+	s.iterator, err = iterator.NewCombinedIterator(
+		s.config.AWSBucket, s.config.Prefix, s.config.PollingPeriod, s.client, p,
+	)
 	if err != nil {
 		return fmt.Errorf("couldn't create a combined iterator: %w", err)
 	}
