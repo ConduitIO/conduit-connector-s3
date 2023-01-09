@@ -15,9 +15,6 @@
 package destination
 
 import (
-	"fmt"
-	"strings"
-
 	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/format"
 )
@@ -33,52 +30,8 @@ const (
 // Config represents S3 configuration with Destination specific configurations
 type Config struct {
 	config.Config
-	Format format.Format
+	// the destination format, either "json" or "parquet".
+	Format format.Format `validate:"required,inclusion=parquet|json"`
+	// the key prefix for S3 destination.
 	Prefix string
-}
-
-// Parse attempts to parse plugins.Config into a Config struct that Destination could
-// utilize
-func Parse(cfg map[string]string) (Config, error) {
-	// first parse common fields
-	common, err := config.Parse(cfg)
-	if err != nil {
-		return Config{}, err
-	}
-
-	formatString, ok := cfg[ConfigKeyFormat]
-
-	if !ok {
-		return Config{}, requiredConfigErr(ConfigKeyFormat)
-	}
-
-	formatValue, err := format.Parse(formatString)
-
-	if err != nil {
-		var allFormats []string
-
-		for _, f := range format.All {
-			allFormats = append(allFormats, string(f))
-		}
-
-		return Config{}, fmt.Errorf(
-			"%q config value should be one of (%s)",
-			ConfigKeyFormat,
-			strings.Join(allFormats, ", "),
-		)
-	}
-
-	prefix := cfg[ConfigKeyPrefix]
-
-	destinationConfig := Config{
-		Config: common,
-		Prefix: prefix,
-		Format: formatValue,
-	}
-
-	return destinationConfig, nil
-}
-
-func requiredConfigErr(name string) error {
-	return fmt.Errorf("%q config value must be set", name)
 }

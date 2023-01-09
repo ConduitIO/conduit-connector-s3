@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:generate paramgen -output=paramgen_dest.go Config
+
 package destination
 
 import (
 	"context"
 
-	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -37,49 +38,18 @@ func NewDestination() sdk.Destination {
 }
 
 func (d *Destination) Parameters() map[string]sdk.Parameter {
-	return map[string]sdk.Parameter{
-		config.ConfigKeyAWSAccessKeyID: {
-			Default:     "",
-			Required:    true,
-			Description: "AWS access key id.",
-		},
-		config.ConfigKeyAWSSecretAccessKey: {
-			Default:     "",
-			Required:    true,
-			Description: "AWS secret access key.",
-		},
-		config.ConfigKeyAWSRegion: {
-			Default:     "",
-			Required:    true,
-			Description: "the AWS S3 bucket region.",
-		},
-		config.ConfigKeyAWSBucket: {
-			Default:     "",
-			Required:    true,
-			Description: "the AWS S3 bucket name.",
-		},
-		ConfigKeyFormat: {
-			Default:     "",
-			Required:    false,
-			Description: `the destination format, either "json" or "parquet".`,
-		},
-		ConfigKeyPrefix: {
-			Default:     "",
-			Required:    false,
-			Description: "the key prefix for S3 destination.",
-		},
-	}
+	return d.Config.Parameters()
 }
 
 // Configure parses and initializes the config.
 func (d *Destination) Configure(ctx context.Context, cfg map[string]string) error {
-	configuration, err := Parse(cfg)
-
+	var destConfig Config
+	err := sdk.Util.ParseConfig(cfg, &destConfig)
 	if err != nil {
 		return err
 	}
 
-	d.Config = configuration
+	d.Config = destConfig
 
 	return nil
 }
