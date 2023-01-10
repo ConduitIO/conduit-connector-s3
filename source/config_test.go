@@ -17,6 +17,10 @@ package source
 import (
 	"testing"
 	"time"
+
+	"github.com/conduitio/conduit-connector-s3/config"
+	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/matryer/is"
 )
 
 var exampleConfig = map[string]string{
@@ -24,32 +28,23 @@ var exampleConfig = map[string]string{
 	"aws.secretAccessKey": "secret-key-321",
 	"aws.region":          "us-west-2",
 	"aws.bucket":          "foobucket",
+	"pollingPeriod":       "2s",
 }
 
-func configWith(pairs ...string) map[string]string {
-	cfg := make(map[string]string)
-
-	for key, value := range exampleConfig {
-		cfg[key] = value
+func TestParseConfig(t *testing.T) {
+	is := is.New(t)
+	var got Config
+	err := sdk.Util.ParseConfig(exampleConfig, &got)
+	want := Config{
+		Config: config.Config{
+			AWSAccessKeyID:     "access-key-123",
+			AWSSecretAccessKey: "secret-key-321",
+			AWSRegion:          "us-west-2",
+			AWSBucket:          "foobucket",
+		},
+		PollingPeriod: 2 * time.Second,
 	}
 
-	for i := 0; i < len(pairs); i += 2 {
-		key := pairs[i]
-		value := pairs[i+1]
-		cfg[key] = value
-	}
-
-	return cfg
-}
-
-func TestPollingPeriod(t *testing.T) {
-	c, err := Parse(configWith("pollingPeriod", "5s"))
-
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	if c.PollingPeriod != 5*time.Second {
-		t.Fatalf("expected Polling Period to be %q, got %q", "5s", c.PollingPeriod)
-	}
+	is.NoErr(err)
+	is.Equal(want, got)
 }

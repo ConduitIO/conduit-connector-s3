@@ -22,7 +22,6 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -31,6 +30,7 @@ import (
 // Source connector
 type Source struct {
 	sdk.UnimplementedSource
+
 	config   Config
 	iterator Iterator
 	client   *s3.Client
@@ -47,49 +47,19 @@ func NewSource() sdk.Source {
 }
 
 func (s *Source) Parameters() map[string]sdk.Parameter {
-	return map[string]sdk.Parameter{
-		config.ConfigKeyAWSAccessKeyID: {
-			Default:     "",
-			Required:    true,
-			Description: "AWS access key id.",
-		},
-		config.ConfigKeyAWSSecretAccessKey: {
-			Default:     "",
-			Required:    true,
-			Description: "AWS secret access key.",
-		},
-		config.ConfigKeyAWSRegion: {
-			Default:     "",
-			Required:    true,
-			Description: "the AWS S3 bucket region.",
-		},
-		config.ConfigKeyAWSBucket: {
-			Default:     "",
-			Required:    true,
-			Description: "the AWS S3 bucket name.",
-		},
-		config.ConfigKeyPrefix: {
-			Default:     "",
-			Required:    false,
-			Description: "the key prefix for S3 source.",
-		},
-		ConfigKeyPollingPeriod: {
-			Default:     DefaultPollingPeriod,
-			Required:    false,
-			Description: "polling period for the CDC mode, formatted as a time.Duration string.",
-		},
-	}
+	return s.config.Parameters()
 }
 
 // Configure parses and stores the configurations
 // returns an error in case of invalid config
 func (s *Source) Configure(ctx context.Context, cfg map[string]string) error {
-	config, err := Parse(cfg)
+	var sourceConfig Config
+	err := sdk.Util.ParseConfig(cfg, &sourceConfig)
 	if err != nil {
 		return err
 	}
 
-	s.config = config
+	s.config = sourceConfig
 
 	return nil
 }

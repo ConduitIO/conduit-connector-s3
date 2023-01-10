@@ -16,6 +16,9 @@ package config
 
 import (
 	"testing"
+
+	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/matryer/is"
 )
 
 var exampleConfig = map[string]string{
@@ -26,156 +29,17 @@ var exampleConfig = map[string]string{
 	"prefix":              "conduit-",
 }
 
-func configWith(pairs ...string) map[string]string {
-	cfg := make(map[string]string)
-
-	for key, value := range exampleConfig {
-		cfg[key] = value
+func TestParseConfig(t *testing.T) {
+	is := is.New(t)
+	var got Config
+	err := sdk.Util.ParseConfig(exampleConfig, &got)
+	want := Config{
+		AWSAccessKeyID:     "access-key-123",
+		AWSSecretAccessKey: "secret-key-321",
+		AWSRegion:          "us-west-2",
+		AWSBucket:          "foobucket",
+		Prefix:             "conduit-",
 	}
-
-	for i := 0; i < len(pairs); i += 2 {
-		key := pairs[i]
-		value := pairs[i+1]
-		cfg[key] = value
-	}
-
-	return cfg
-}
-
-func configWithout(keys ...string) map[string]string {
-	cfg := make(map[string]string)
-
-	for key, value := range exampleConfig {
-		cfg[key] = value
-	}
-
-	for _, key := range keys {
-		delete(cfg, key)
-	}
-
-	return cfg
-}
-
-func TestAWSAccessKeyID(t *testing.T) {
-	t.Run("Successful", func(t *testing.T) {
-		c, err := Parse(configWith("aws.accessKeyId", "some-value"))
-
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-
-		if c.AWSAccessKeyID != "some-value" {
-			t.Fatalf("expected AWSAccessKeyID to be %q, got %q", "some-value", c.AWSAccessKeyID)
-		}
-	})
-
-	t.Run("Missing", func(t *testing.T) {
-		_, err := Parse(configWithout("aws.accessKeyId"))
-
-		if err == nil {
-			t.Fatal("expected error, got nothing")
-		}
-
-		expectedErrMsg := `"aws.accessKeyId" config value must be set`
-
-		if err.Error() != expectedErrMsg {
-			t.Fatalf("expected error msg to be %q, got %q", expectedErrMsg, err.Error())
-		}
-	})
-}
-
-func TestAWSSecretAccessKey(t *testing.T) {
-	t.Run("Successful", func(t *testing.T) {
-		c, err := Parse(configWith("aws.secretAccessKey", "some-value"))
-
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-
-		if c.AWSSecretAccessKey != "some-value" {
-			t.Fatalf("expected AWSSecretAccessKey to be %q, got %q", "some-value", c.AWSSecretAccessKey)
-		}
-	})
-
-	t.Run("Missing", func(t *testing.T) {
-		_, err := Parse(configWithout("aws.secretAccessKey"))
-
-		if err == nil {
-			t.Fatal("expected error, got nothing")
-		}
-
-		expectedErrMsg := `"aws.secretAccessKey" config value must be set`
-
-		if err.Error() != expectedErrMsg {
-			t.Fatalf("expected error msg to be %q, got %q", expectedErrMsg, err.Error())
-		}
-	})
-}
-
-func TestAWSRegion(t *testing.T) {
-	t.Run("Successful", func(t *testing.T) {
-		c, err := Parse(configWith("aws.region", "us-west-2"))
-
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-
-		if c.AWSRegion != "us-west-2" {
-			t.Fatalf("expected AWSRegion to be %q, got %q", "us-west-2", c.AWSRegion)
-		}
-	})
-
-	t.Run("Missing", func(t *testing.T) {
-		_, err := Parse(configWithout("aws.region"))
-
-		if err == nil {
-			t.Fatal("expected error, got nothing")
-		}
-
-		expectedErrMsg := `"aws.region" config value must be set`
-
-		if err.Error() != expectedErrMsg {
-			t.Fatalf("expected error msg to be %q, got %q", expectedErrMsg, err.Error())
-		}
-	})
-}
-
-func TestAWSBucket(t *testing.T) {
-	t.Run("Successful", func(t *testing.T) {
-		c, err := Parse(configWith("aws.bucket", "foobar"))
-
-		if err != nil {
-			t.Fatalf("expected no error, got %v", err)
-		}
-
-		if c.AWSBucket != "foobar" {
-			t.Fatalf("expected AWSBucket to be %q, got %q", "foobar", c.AWSBucket)
-		}
-	})
-
-	t.Run("Missing", func(t *testing.T) {
-		_, err := Parse(configWithout("aws.bucket"))
-
-		if err == nil {
-			t.Fatal("expected error, got nothing")
-		}
-
-		expectedErrMsg := `"aws.bucket" config value must be set`
-
-		if err.Error() != expectedErrMsg {
-			t.Fatalf("expected error msg to be %q, got %q", expectedErrMsg, err.Error())
-		}
-	})
-}
-
-func TestPrefix(t *testing.T) {
-	c, err := Parse(configWith("prefix", "some/value"))
-
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
-
-	if c.Prefix != "some/value" {
-		t.Fatalf("expected Prefix to be %q, got %q", "some/value", c.Prefix)
-	}
+	is.NoErr(err)
+	is.Equal(want, got)
 }
