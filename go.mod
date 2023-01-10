@@ -4,9 +4,9 @@ go 1.18
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.17.3
-	github.com/aws/aws-sdk-go-v2/config v1.17.10
-	github.com/aws/aws-sdk-go-v2/credentials v1.12.23
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.29.1
+	github.com/aws/aws-sdk-go-v2/config v1.18.8
+	github.com/aws/aws-sdk-go-v2/credentials v1.13.8
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.30.0
 	github.com/conduitio/conduit-connector-sdk v0.4.3-0.20230109132730-979b839a4d0a
 	github.com/google/uuid v1.3.0
 	github.com/matryer/is v1.4.0
