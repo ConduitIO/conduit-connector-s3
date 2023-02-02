@@ -3,3 +3,6 @@
 
 # Binary built with `make build`
 /conduit-connector-s3
+
+# GoReleaser output
+dist/
