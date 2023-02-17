@@ -40,6 +40,7 @@ type CombinedIterator struct {
 }
 
 func NewCombinedIterator(
+	ctx context.Context,
 	bucket, prefix string,
 	pollingPeriod time.Duration,
 	client *s3.Client,
@@ -56,7 +57,10 @@ func NewCombinedIterator(
 	switch p.Type {
 	case position.TypeSnapshot:
 		if len(p.Key) != 0 {
-			fmt.Printf("Warning: got position: %s, snapshot will be restarted from the beginning of the bucket\n", p.ToRecordPosition())
+			sdk.Logger(ctx).
+				Warn().
+				Str("position", string(p.ToRecordPosition())).
+				Msg("previous snapshot did not complete successfully. snapshot will be restarted for consistency.")
 		}
 		p = position.Position{} // always start snapshot from the beginning, so position is nil
 		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, client, p)

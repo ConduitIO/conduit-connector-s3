@@ -96,7 +96,7 @@ func (s *Source) Open(ctx context.Context, rp sdk.Position) error {
 	}
 
 	s.iterator, err = iterator.NewCombinedIterator(
-		s.config.AWSBucket, s.config.Prefix, s.config.PollingPeriod, s.client, p,
+		ctx, s.config.AWSBucket, s.config.Prefix, s.config.PollingPeriod, s.client, p,
 	)
 	if err != nil {
 		return fmt.Errorf("couldn't create a combined iterator: %w", err)
