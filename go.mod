@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.30.5
 	github.com/conduitio/conduit-connector-sdk v0.5.1
 	github.com/google/uuid v1.3.0
-	github.com/matryer/is v1.4.0
+	github.com/matryer/is v1.4.1
 	github.com/xitongsys/parquet-go v1.6.2
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 )
