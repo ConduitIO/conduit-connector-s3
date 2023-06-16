@@ -40,7 +40,7 @@ func (d *Destination) Parameters() map[string]sdk.Parameter {
 }
 
 // Configure parses and initializes the config.
-func (d *Destination) Configure(ctx context.Context, cfg map[string]string) error {
+func (d *Destination) Configure(_ context.Context, cfg map[string]string) error {
 	var destConfig Config
 	err := sdk.Util.ParseConfig(cfg, &destConfig)
 	if err != nil {
@@ -83,6 +83,6 @@ func (d *Destination) Write(ctx context.Context, records []sdk.Record) (int, err
 }
 
 // Teardown gracefully disconnects the client
-func (d *Destination) Teardown(ctx context.Context) error {
+func (d *Destination) Teardown(_ context.Context) error {
 	return nil // nothing to do
 }

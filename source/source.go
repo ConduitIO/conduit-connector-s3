@@ -52,7 +52,7 @@ func (s *Source) Parameters() map[string]sdk.Parameter {
 
 // Configure parses and stores the configurations
 // returns an error in case of invalid config
-func (s *Source) Configure(ctx context.Context, cfg map[string]string) error {
+func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 	var sourceConfig Config
 	err := sdk.Util.ParseConfig(cfg, &sourceConfig)
 	if err != nil {
@@ -116,7 +116,7 @@ func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
 	return r, nil
 }
 
-func (s *Source) Teardown(ctx context.Context) error {
+func (s *Source) Teardown(_ context.Context) error {
 	if s.iterator != nil {
 		s.iterator.Stop()
 		s.iterator = nil

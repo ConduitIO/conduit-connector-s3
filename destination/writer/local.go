@@ -35,7 +35,7 @@ var _ Writer = (*Local)(nil)
 
 // Write writes a batch into a file on a local file system so it could later be
 // compared to a reference file.
-func (w *Local) Write(ctx context.Context, batch *Batch) error {
+func (w *Local) Write(_ context.Context, batch *Batch) error {
 	w.Count++
 
 	path := path.Join(

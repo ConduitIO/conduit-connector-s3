@@ -73,7 +73,7 @@ func NewCDCIterator(
 }
 
 // HasNext returns a boolean that indicates whether the iterator has any objects in the buffer or not.
-func (w *CDCIterator) HasNext(ctx context.Context) bool {
+func (w *CDCIterator) HasNext(_ context.Context) bool {
 	return len(w.buffer) > 0 || !w.tomb.Alive() // if tomb is dead we return true so caller will fetch error with Next
 }
 
