@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"path/filepath"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -26,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/conduitio/conduit-connector-s3/destination/format"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
@@ -89,11 +91,21 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 		return err
 	}
 
-	key := fmt.Sprintf(
-		"%d.%s",
-		time.Now().UnixNano(),
-		batch.Format.Ext(),
-	)
+	// if format is original, we want the file name to match the value in the key
+	var key, contentType string
+	if batch.Format == format.Original {
+		first := batch.Records[0]
+		key = string(first.Key.Bytes()) // this will be the file name, including all of the prefix paths.
+		key = filepath.Base(key)
+		contentType = first.Metadata["s3.contentType"]
+	} else {
+		key = fmt.Sprintf(
+			"%d.%s",
+			time.Now().UnixNano(),
+			batch.Format.Ext(),
+		)
+		contentType = batch.Format.MimeType()
+	}
 
 	if w.KeyPrefix != "" {
 		key = path.Join(w.KeyPrefix, key)
@@ -105,7 +117,7 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 		ACL:                  types.ObjectCannedACLPrivate, // TODO: config?
 		Body:                 bytes.NewReader(batchBytes),
 		ContentLength:        int64(len(batchBytes)),
-		ContentType:          aws.String(batch.Format.MimeType()),
+		ContentType:          aws.String(contentType),
 		ContentDisposition:   aws.String("attachment"),
 		ServerSideEncryption: types.ServerSideEncryptionAes256, // TODO: config?
 	})

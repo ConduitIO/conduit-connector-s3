@@ -29,12 +29,16 @@ const (
 
 	// JSON format
 	JSON Format = "json"
+
+	// Original format
+	Original Format = "original"
 )
 
 // All is a variable containing all supported format for enumeration
 var All = []Format{
 	Parquet,
 	JSON,
+	Original,
 }
 
 // Parse takes a string and returns a corresponding format or an error
@@ -44,6 +48,8 @@ func Parse(name string) (Format, error) {
 		return Parquet, nil
 	case "json":
 		return JSON, nil
+	case "original":
+		return Original, nil
 	default:
 		return "", fmt.Errorf("unsupported format: %q", name)
 	}
@@ -78,6 +84,8 @@ func (f Format) MakeBytes(records []sdk.Record) ([]byte, error) {
 		return makeParquetBytes(records)
 	case JSON:
 		return makeJSONBytes(records)
+	case Original:
+		return makeOriginalBytes(records)
 	default:
 		return nil, fmt.Errorf("unsupported format: %s", f)
 	}

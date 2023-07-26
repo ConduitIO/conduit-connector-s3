@@ -47,7 +47,7 @@ func (Config) Parameters() map[string]sdk.Parameter {
 			Type:        sdk.ParameterTypeString,
 			Validations: []sdk.Validation{
 				sdk.ValidationRequired{},
-				sdk.ValidationInclusion{List: []string{"parquet", "json"}},
+				sdk.ValidationInclusion{List: []string{"parquet", "json", "original"}},
 			},
 		},
 		"prefix": {

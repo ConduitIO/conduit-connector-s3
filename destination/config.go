@@ -30,5 +30,5 @@ const (
 type Config struct {
 	config.Config
 	// the destination format, either "json" or "parquet".
-	Format format.Format `validate:"required,inclusion=parquet|json"`
+	Format format.Format `validate:"required,inclusion=parquet|json|original"`
 }
