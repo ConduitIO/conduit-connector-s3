@@ -4,7 +4,7 @@ go 1.20
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.19.0
-	github.com/aws/aws-sdk-go-v2/config v1.18.28
+	github.com/aws/aws-sdk-go-v2/config v1.18.29
 	github.com/aws/aws-sdk-go-v2/credentials v1.13.28
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.37.0
 	github.com/conduitio/conduit-connector-sdk v0.7.1
