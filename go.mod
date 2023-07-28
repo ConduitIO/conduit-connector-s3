@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.18.29
 	github.com/aws/aws-sdk-go-v2/credentials v1.13.28
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.37.0
-	github.com/conduitio/conduit-connector-sdk v0.7.1
+	github.com/conduitio/conduit-connector-sdk v0.7.2
 	github.com/google/uuid v1.3.0
 	github.com/matryer/is v1.4.1
 	github.com/xitongsys/parquet-go v1.6.2
