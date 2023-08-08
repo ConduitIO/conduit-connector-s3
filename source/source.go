@@ -119,7 +119,6 @@ func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
 func (s *Source) Teardown(_ context.Context) error {
 	if s.iterator != nil {
 		s.iterator.Stop()
-		s.iterator = nil
 	}
 	return nil
 }
