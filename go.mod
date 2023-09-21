@@ -5,7 +5,7 @@ go 1.20
 require (
 	github.com/aws/aws-sdk-go-v2 v1.21.0
 	github.com/aws/aws-sdk-go-v2/config v1.18.40
-	github.com/aws/aws-sdk-go-v2/credentials v1.13.38
+	github.com/aws/aws-sdk-go-v2/credentials v1.13.39
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.39.0
 	github.com/conduitio/conduit-connector-sdk v0.7.2
 	github.com/google/uuid v1.3.1
@@ -31,7 +31,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.9.35 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.15.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.14.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.16.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.17.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.22.0 // indirect
 	github.com/aws/smithy-go v1.14.2 // indirect
 	github.com/conduitio/conduit-connector-protocol v0.5.0 // indirect
