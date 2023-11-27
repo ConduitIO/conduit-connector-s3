@@ -173,7 +173,7 @@ func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, ke
 	updatedObjects := make(map[string]bool)
 
 	for _, v := range objects.Versions {
-		if v.IsLatest && v.LastModified.After(w.lastModified) {
+		if *v.IsLatest && v.LastModified.After(w.lastModified) {
 			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationCreate})
 		} else {
 			// this is a version that is not the latest, this means this object
@@ -189,12 +189,12 @@ func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, ke
 	}
 
 	for _, v := range objects.DeleteMarkers {
-		if v.IsLatest && v.LastModified.After(w.lastModified) {
+		if *v.IsLatest && v.LastModified.After(w.lastModified) {
 			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationDelete})
 		}
 	}
 
-	if objects.IsTruncated {
+	if *objects.IsTruncated {
 		return w.populateCache(ctx, cache, objects.NextKeyMarker)
 	}
 	return nil

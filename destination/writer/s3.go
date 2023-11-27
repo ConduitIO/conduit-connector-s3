@@ -104,7 +104,7 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 		Key:                  aws.String(key),
 		ACL:                  types.ObjectCannedACLPrivate, // TODO: config?
 		Body:                 bytes.NewReader(batchBytes),
-		ContentLength:        int64(len(batchBytes)),
+		ContentLength:        aws.Int64(int64(len(batchBytes))),
 		ContentType:          aws.String(batch.Format.MimeType()),
 		ContentDisposition:   aws.String("attachment"),
 		ServerSideEncryption: types.ServerSideEncryptionAes256, // TODO: config?

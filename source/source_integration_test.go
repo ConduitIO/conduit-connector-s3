@@ -225,7 +225,7 @@ func TestSource_CDC_ReadRecordsInsert(t *testing.T) {
 		Bucket:        aws.String(testBucket),
 		Key:           aws.String(testFileName),
 		Body:          buf,
-		ContentLength: int64(buf.Len()),
+		ContentLength: aws.Int64(int64(buf.Len())),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +290,7 @@ func TestSource_CDC_UpdateWithVersioning(t *testing.T) {
 		Bucket:        aws.String(testBucket),
 		Key:           aws.String(testFileName),
 		Body:          buf,
-		ContentLength: int64(buf.Len()),
+		ContentLength: aws.Int64(int64(buf.Len())),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -699,7 +699,7 @@ func clearTestBucket(t *testing.T, client *s3.Client, bucket string) {
 			})
 		}
 
-		if !list.IsTruncated {
+		if !*list.IsTruncated {
 			break
 		}
 		nextKey = list.NextKeyMarker
@@ -757,7 +757,7 @@ func addObjectsToBucket(ctx context.Context, t *testing.T, testBucket, prefix st
 			Bucket:        aws.String(testBucket),
 			Key:           aws.String(key),
 			Body:          buf,
-			ContentLength: int64(buf.Len()),
+			ContentLength: aws.Int64(int64(buf.Len())),
 		})
 		if err != nil {
 			t.Fatal(err)
