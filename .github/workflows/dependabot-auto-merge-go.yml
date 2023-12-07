@@ -4,8 +4,6 @@
 name: Dependabot auto-merge
 on:
   pull_request:
-    # Run this action when dependabot labels the PR, we care about the 'go' label.
-    types: [labeled]
 
 permissions:
   pull-requests: write
