@@ -1,9 +1,9 @@
 # Conduit Connector S3
 
 ### General
-
+![scarf pixel](https://static.scarf.sh/a.png?x-pxid=191ed0af-67f7-4462-9fc0-13d1cb8e463c)
 The S3 connector is one of [Conduit](https://github.com/ConduitIO/conduit) builtin plugins. It provides both, a source
-and a destination S3 connectors. <img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=191ed0af-67f7-4462-9fc0-13d1cb8e463c" />
+and a destination S3 connectors.
 
 ### How to build it
 
