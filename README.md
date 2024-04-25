@@ -1,7 +1,7 @@
 # Conduit Connector S3
 
 ### General
-
+![scarf pixel](https://static.scarf.sh/a.png?x-pxid=191ed0af-67f7-4462-9fc0-13d1cb8e463c)
 The S3 connector is one of [Conduit](https://github.com/ConduitIO/conduit) builtin plugins. It provides both, a source
 and a destination S3 connectors.
 
@@ -58,7 +58,7 @@ the S3 bucket.
 The config passed to `Configure` can contain the following fields.
 
 | name                  | description                                                                           | required | example             |
-| --------------------- | ------------------------------------------------------------------------------------- | -------- | ------------------- |
+|-----------------------|---------------------------------------------------------------------------------------|----------|---------------------|
 | `aws.accessKeyId`     | AWS access key id                                                                     | yes      | "THE_ACCESS_KEY_ID" |
 | `aws.secretAccessKey` | AWS secret access key                                                                 | yes      | "SECRET_ACCESS_KEY" |
 | `aws.region`          | the AWS S3 bucket region                                                              | yes      | "us-east-1"         |
