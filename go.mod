@@ -3,7 +3,7 @@ module github.com/conduitio/conduit-connector-s3
 go 1.22.2
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.26.2
+	github.com/aws/aws-sdk-go-v2 v1.27.0
 	github.com/aws/aws-sdk-go-v2/config v1.27.14
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.14
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.54.1
