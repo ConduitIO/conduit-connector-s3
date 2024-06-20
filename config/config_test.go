@@ -17,11 +17,12 @@ package config
 import (
 	"testing"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/config"
+
 	"github.com/matryer/is"
 )
 
-var exampleConfig = map[string]string{
+var exampleConfig = config.Config{
 	"aws.accessKeyId":     "access-key-123",
 	"aws.secretAccessKey": "secret-key-321",
 	"aws.region":          "us-west-2",
@@ -32,7 +33,7 @@ var exampleConfig = map[string]string{
 func TestParseConfig(t *testing.T) {
 	is := is.New(t)
 	var got Config
-	err := sdk.Util.ParseConfig(ctx, exampleConfig, &got)
+	err := exampleConfig.DecodeInto(&got)
 	want := Config{
 		AWSAccessKeyID:     "access-key-123",
 		AWSSecretAccessKey: "secret-key-321",

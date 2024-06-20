@@ -42,9 +42,9 @@ func (d *Destination) Parameters() config.Parameters {
 }
 
 // Configure parses and initializes the config.
-func (d *Destination) Configure(_ context.Context, cfg config.Config) error {
+func (d *Destination) Configure(ctx context.Context, cfg config.Config) error {
 	var destConfig Config
-	err := sdk.Util.ParseConfig(ctx, cfg, &destConfig)
+	err := sdk.Util.ParseConfig(ctx, cfg, &destConfig, NewDestination().Parameters())
 	if err != nil {
 		return err
 	}
