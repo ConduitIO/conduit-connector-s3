@@ -17,6 +17,8 @@ package destination
 import (
 	"context"
 
+	"github.com/conduitio/conduit-commons/config"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -35,14 +37,14 @@ func NewDestination() sdk.Destination {
 	return sdk.DestinationWithMiddleware(&Destination{}, sdk.DefaultDestinationMiddleware()...)
 }
 
-func (d *Destination) Parameters() map[string]sdk.Parameter {
+func (d *Destination) Parameters() config.Parameters {
 	return d.Config.Parameters()
 }
 
 // Configure parses and initializes the config.
-func (d *Destination) Configure(_ context.Context, cfg map[string]string) error {
+func (d *Destination) Configure(_ context.Context, cfg config.Config) error {
 	var destConfig Config
-	err := sdk.Util.ParseConfig(cfg, &destConfig)
+	err := sdk.Util.ParseConfig(ctx, cfg, &destConfig)
 	if err != nil {
 		return err
 	}
@@ -71,7 +73,7 @@ func (d *Destination) Open(ctx context.Context) error {
 }
 
 // Write writes a slice of records into a Destination.
-func (d *Destination) Write(ctx context.Context, records []sdk.Record) (int, error) {
+func (d *Destination) Write(ctx context.Context, records []opencdc.Record) (int, error) {
 	err := d.Writer.Write(ctx, &writer.Batch{
 		Records: records,
 		Format:  d.Config.Format,

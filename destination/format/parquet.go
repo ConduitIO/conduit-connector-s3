@@ -17,7 +17,7 @@ package format
 import (
 	"bytes"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/xitongsys/parquet-go/parquet"
 	"github.com/xitongsys/parquet-go/writer"
 )
@@ -31,7 +31,7 @@ type parquetRecord struct {
 	Metadata  map[string]string `parquet:"name=metadata, type=MAP, convertedtype=MAP, keytype=BYTE_ARRAY, keyconvertedtype=UTF8, valuetype=BYTE_ARRAY, valueconvertedtype=UTF8"`
 }
 
-func makeParquetBytes(records []sdk.Record) ([]byte, error) {
+func makeParquetBytes(records []opencdc.Record) ([]byte, error) {
 	var buf bytes.Buffer
 
 	pw, err := writer.NewParquetWriterFromWriter(&buf, new(parquetRecord), int64(len(records)))

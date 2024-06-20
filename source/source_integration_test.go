@@ -28,6 +28,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -57,7 +58,7 @@ func TestSource_SuccessfulSnapshot(t *testing.T) {
 	testFiles := addObjectsToBucket(ctx, t, testBucket, "", client, 5)
 
 	// read and assert
-	var lastPosition sdk.Position
+	var lastPosition opencdc.Position
 	for _, file := range testFiles {
 		rec, err := readAndAssert(ctx, t, source, file)
 		if err != nil {
@@ -284,7 +285,7 @@ func TestSource_CDC_UpdateWithVersioning(t *testing.T) {
 	content := uuid.NewString()
 	buf := strings.NewReader(content)
 	testFileName := testFiles[0].key
-	expectedOperation := sdk.OperationUpdate
+	expectedOperation := opencdc.OperationUpdate
 	// PutObject here will update an already existing object, this would just change the lastModified date
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:        aws.String(testBucket),
@@ -354,7 +355,7 @@ func TestSource_CDC_DeleteWithVersioning(t *testing.T) {
 	time.Sleep(time.Second)
 
 	testFileName := "file0001" // already exists in the bucket
-	expectedOperation := sdk.OperationDelete
+	expectedOperation := opencdc.OperationDelete
 	// Delete a file that exists in the bucket
 	_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(testBucket),
@@ -461,7 +462,7 @@ func TestSource_CDCPosition(t *testing.T) {
 	}
 
 	testFileName := "file0001" // already exists in the bucket
-	expectedOperation := sdk.OperationDelete
+	expectedOperation := opencdc.OperationDelete
 	// Delete a file that exists in the bucket
 	_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(testBucket),
@@ -767,7 +768,7 @@ func addObjectsToBucket(ctx context.Context, t *testing.T, testBucket, prefix st
 }
 
 // readWithTimeout will try to read the next record until the timeout is reached.
-func readWithTimeout(ctx context.Context, source *Source, timeout time.Duration) (sdk.Record, error) {
+func readWithTimeout(ctx context.Context, source *Source, timeout time.Duration) (opencdc.Record, error) {
 	timeoutTimer := time.After(timeout)
 
 	for {
@@ -780,14 +781,14 @@ func readWithTimeout(ctx context.Context, source *Source, timeout time.Duration)
 		case <-time.After(time.Millisecond * 100):
 			// try again
 		case <-timeoutTimer:
-			return sdk.Record{}, context.DeadlineExceeded
+			return opencdc.Record{}, context.DeadlineExceeded
 		}
 	}
 }
 
 // readAndAssert will read the next record and assert that the returned record is
 // the same as the wanted object.
-func readAndAssert(ctx context.Context, t *testing.T, source *Source, want Object) (sdk.Record, error) {
+func readAndAssert(ctx context.Context, t *testing.T, source *Source, want Object) (opencdc.Record, error) {
 	got, err := source.Read(ctx)
 	if err != nil {
 		return got, err

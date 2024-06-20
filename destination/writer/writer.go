@@ -17,7 +17,7 @@ package writer
 import (
 	"context"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 )
 
 // Writer is an interface that is responsible for persisting record that Destination
@@ -25,5 +25,5 @@ import (
 // S3Writer, others exists to test local behavior.
 type Writer interface {
 	Write(context.Context, *Batch) error
-	LastPosition() sdk.Position
+	LastPosition() opencdc.Position
 }

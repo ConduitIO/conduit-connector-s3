@@ -19,14 +19,14 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 )
 
 func Test_ParseRecordPosition(t *testing.T) {
 	var positionTests = []struct {
 		name    string
 		wantErr bool
-		in      sdk.Position
+		in      opencdc.Position
 		out     Position
 	}{
 		{
@@ -86,7 +86,7 @@ func Test_ToRecordPosition(t *testing.T) {
 		name    string
 		wantErr bool
 		in      Position
-		out     sdk.Position
+		out     opencdc.Position
 	}{
 		{
 			name:    "zero position",
@@ -131,8 +131,8 @@ func Test_ConvertSnapshotPositionToCDC(t *testing.T) {
 	var positionTests = []struct {
 		name    string
 		wantErr bool
-		in      sdk.Position
-		out     sdk.Position
+		in      opencdc.Position
+		out     opencdc.Position
 	}{
 		{
 			name:    "convert snapshot position to cdc",

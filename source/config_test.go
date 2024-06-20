@@ -34,7 +34,7 @@ var exampleConfig = map[string]string{
 func TestParseConfig(t *testing.T) {
 	is := is.New(t)
 	var got Config
-	err := sdk.Util.ParseConfig(exampleConfig, &got)
+	err := sdk.Util.ParseConfig(ctx, exampleConfig, &got)
 	want := Config{
 		Config: config.Config{
 			AWSAccessKeyID:     "access-key-123",

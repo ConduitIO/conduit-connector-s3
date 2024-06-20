@@ -18,7 +18,7 @@ import (
 	"bytes"
 	"encoding/json"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 )
 
 type jsonRecord struct {
@@ -30,7 +30,7 @@ type jsonRecord struct {
 	Metadata  map[string]string `json:"Metadata"`
 }
 
-func makeJSONBytes(records []sdk.Record) ([]byte, error) {
+func makeJSONBytes(records []opencdc.Record) ([]byte, error) {
 	buf := bytes.NewBuffer([]byte{})
 
 	for _, r := range records {

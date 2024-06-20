@@ -22,6 +22,8 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/conduitio/conduit-commons/config"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -38,7 +40,7 @@ type Source struct {
 
 type Iterator interface {
 	HasNext(ctx context.Context) bool
-	Next(ctx context.Context) (sdk.Record, error)
+	Next(ctx context.Context) (opencdc.Record, error)
 	Stop()
 }
 
@@ -46,15 +48,15 @@ func NewSource() sdk.Source {
 	return sdk.SourceWithMiddleware(&Source{}, sdk.DefaultSourceMiddleware()...)
 }
 
-func (s *Source) Parameters() map[string]sdk.Parameter {
+func (s *Source) Parameters() config.Parameters {
 	return s.config.Parameters()
 }
 
 // Configure parses and stores the configurations
 // returns an error in case of invalid config
-func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
+func (s *Source) Configure(_ context.Context, cfg config.Config) error {
 	var sourceConfig Config
-	err := sdk.Util.ParseConfig(cfg, &sourceConfig)
+	err := sdk.Util.ParseConfig(ctx, cfg, &sourceConfig)
 	if err != nil {
 		return err
 	}
@@ -65,7 +67,7 @@ func (s *Source) Configure(_ context.Context, cfg map[string]string) error {
 }
 
 // Open prepare the plugin to start sending records from the given position
-func (s *Source) Open(ctx context.Context, rp sdk.Position) error {
+func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
 	awsCredsProvider := credentials.NewStaticCredentialsProvider(
 		s.config.AWSAccessKeyID,
 		s.config.AWSSecretAccessKey,
@@ -105,13 +107,13 @@ func (s *Source) Open(ctx context.Context, rp sdk.Position) error {
 }
 
 // Read gets the next object from the S3 bucket
-func (s *Source) Read(ctx context.Context) (sdk.Record, error) {
+func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
 	if !s.iterator.HasNext(ctx) {
-		return sdk.Record{}, sdk.ErrBackoffRetry
+		return opencdc.Record{}, sdk.ErrBackoffRetry
 	}
 	r, err := s.iterator.Next(ctx)
 	if err != nil {
-		return sdk.Record{}, err
+		return opencdc.Record{}, err
 	}
 	return r, nil
 }
@@ -131,7 +133,7 @@ func (s *Source) bucketExists(ctx context.Context, bucketName string) error {
 	return err
 }
 
-func (s *Source) Ack(ctx context.Context, position sdk.Position) error {
+func (s *Source) Ack(ctx context.Context, position opencdc.Position) error {
 	sdk.Logger(ctx).Debug().Str("position", string(position)).Msg("got ack")
 	return nil // no ack needed
 }
