@@ -18,7 +18,6 @@ import (
 	"testing"
 
 	"github.com/conduitio/conduit-commons/config"
-
 	"github.com/matryer/is"
 )
 
