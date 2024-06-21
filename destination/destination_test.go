@@ -23,10 +23,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/filevalidator"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/matryer/is"
 )
 
@@ -203,19 +203,19 @@ func TestS3Parquet(t *testing.T) {
 	is.NoErr(err)
 }
 
-func generateRecords(count int) []sdk.Record {
-	var result []sdk.Record
+func generateRecords(count int) []opencdc.Record {
+	var result []opencdc.Record
 
 	for i := 0; i < count; i++ {
-		result = append(result, sdk.Record{
-			Operation: sdk.OperationCreate,
+		result = append(result, opencdc.Record{
+			Operation: opencdc.OperationCreate,
 			Position:  []byte(strconv.Itoa(i)),
-			Payload: sdk.Change{
-				After: sdk.RawData(fmt.Sprintf("this is a message #%d", i+1)),
+			Payload: opencdc.Change{
+				After: opencdc.RawData(fmt.Sprintf("this is a message #%d", i+1)),
 			},
-			Key: sdk.RawData(fmt.Sprintf("key-%d", i)),
+			Key: opencdc.RawData(fmt.Sprintf("key-%d", i)),
 			Metadata: map[string]string{
-				sdk.MetadataCreatedAt: strconv.FormatInt(time.Date(2020, 1, 1, 1, 0, 0, 0, time.UTC).Add(time.Duration(i)*time.Second).UnixNano(), 10),
+				opencdc.MetadataCreatedAt: strconv.FormatInt(time.Date(2020, 1, 1, 1, 0, 0, 0, time.UTC).Add(time.Duration(i)*time.Second).UnixNano(), 10),
 			},
 		})
 	}

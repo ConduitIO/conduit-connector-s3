@@ -15,14 +15,14 @@
 package writer
 
 import (
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/destination/format"
-	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 // Batch describes the data that needs to be saved by the Writer
 type Batch struct {
 	Format  format.Format
-	Records []sdk.Record
+	Records []opencdc.Record
 }
 
 // Bytes returns a byte representation for the Writer to write into a file.
@@ -31,7 +31,7 @@ func (b *Batch) Bytes() ([]byte, error) {
 }
 
 // LastPosition returns the position of the last record in the batch.
-func (b *Batch) LastPosition() sdk.Position {
+func (b *Batch) LastPosition() opencdc.Position {
 	if len(b.Records) == 0 {
 		return nil
 	}

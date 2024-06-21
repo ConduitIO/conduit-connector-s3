@@ -24,6 +24,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"gopkg.in/tomb.v2"
@@ -34,7 +35,7 @@ type CDCIterator struct {
 	bucket       string
 	prefix       string
 	client       *s3.Client
-	buffer       chan sdk.Record
+	buffer       chan opencdc.Record
 	ticker       *time.Ticker
 	lastModified time.Time
 	caches       chan []CacheEntry
@@ -43,7 +44,7 @@ type CDCIterator struct {
 
 type CacheEntry struct {
 	key          string
-	operation    sdk.Operation
+	operation    opencdc.Operation
 	lastModified time.Time
 }
 
@@ -58,7 +59,7 @@ func NewCDCIterator(
 		bucket:       bucket,
 		prefix:       prefix,
 		client:       client,
-		buffer:       make(chan sdk.Record, 1),
+		buffer:       make(chan opencdc.Record, 1),
 		caches:       make(chan []CacheEntry),
 		ticker:       time.NewTicker(pollingPeriod),
 		tomb:         &tomb.Tomb{},
@@ -78,14 +79,14 @@ func (w *CDCIterator) HasNext(_ context.Context) bool {
 }
 
 // Next returns the next record from the buffer.
-func (w *CDCIterator) Next(ctx context.Context) (sdk.Record, error) {
+func (w *CDCIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	select {
 	case r := <-w.buffer:
 		return r, nil
 	case <-w.tomb.Dead():
-		return sdk.Record{}, w.tomb.Err()
+		return opencdc.Record{}, w.tomb.Err()
 	case <-ctx.Done():
-		return sdk.Record{}, ctx.Err()
+		return opencdc.Record{}, ctx.Err()
 	}
 }
 
@@ -174,7 +175,7 @@ func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, ke
 
 	for _, v := range objects.Versions {
 		if *v.IsLatest && v.LastModified.After(w.lastModified) {
-			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationCreate})
+			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: opencdc.OperationCreate})
 		} else {
 			// this is a version that is not the latest, this means this object
 			// was updated
@@ -183,14 +184,14 @@ func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, ke
 	}
 	for i, entry := range *cache {
 		if updatedObjects[entry.key] {
-			entry.operation = sdk.OperationUpdate
+			entry.operation = opencdc.OperationUpdate
 			(*cache)[i] = entry
 		}
 	}
 
 	for _, v := range objects.DeleteMarkers {
 		if *v.IsLatest && v.LastModified.After(w.lastModified) {
-			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: sdk.OperationDelete})
+			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: opencdc.OperationDelete})
 		}
 	}
 
@@ -219,16 +220,16 @@ func (w *CDCIterator) fetchS3Object(entry CacheEntry) (*s3.GetObjectOutput, []by
 }
 
 // createRecord creates the record for the object fetched from S3 (for updates and inserts)
-func (w *CDCIterator) buildRecord(entry CacheEntry) (sdk.Record, error) {
+func (w *CDCIterator) buildRecord(entry CacheEntry) (opencdc.Record, error) {
 	var object *s3.GetObjectOutput
 	var payload []byte
 
 	switch entry.operation {
-	case sdk.OperationCreate, sdk.OperationUpdate:
+	case opencdc.OperationCreate, opencdc.OperationUpdate:
 		var err error
 		object, payload, err = w.fetchS3Object(entry)
 		if err != nil {
-			return sdk.Record{}, fmt.Errorf("could not fetch S3 object for %v: %w", entry.key, err)
+			return opencdc.Record{}, fmt.Errorf("could not fetch S3 object for %v: %w", entry.key, err)
 		}
 	}
 
@@ -239,32 +240,32 @@ func (w *CDCIterator) buildRecord(entry CacheEntry) (sdk.Record, error) {
 	}
 
 	switch entry.operation {
-	case sdk.OperationCreate:
+	case opencdc.OperationCreate:
 		return sdk.Util.Source.NewRecordCreate(
 			p.ToRecordPosition(),
 			map[string]string{
 				MetadataContentType: *object.ContentType,
 			},
-			sdk.RawData(entry.key),
-			sdk.RawData(payload),
+			opencdc.RawData(entry.key),
+			opencdc.RawData(payload),
 		), nil
-	case sdk.OperationUpdate:
+	case opencdc.OperationUpdate:
 		return sdk.Util.Source.NewRecordUpdate(
 			p.ToRecordPosition(),
 			map[string]string{
 				MetadataContentType: *object.ContentType,
 			},
-			sdk.RawData(entry.key),
+			opencdc.RawData(entry.key),
 			nil, // TODO we could actually attach last version
-			sdk.RawData(payload),
+			opencdc.RawData(payload),
 		), nil
-	case sdk.OperationDelete:
+	case opencdc.OperationDelete:
 		return sdk.Util.Source.NewRecordDelete(
 			p.ToRecordPosition(),
 			nil,
-			sdk.RawData(entry.key),
+			opencdc.RawData(entry.key),
 		), nil
 	}
 
-	return sdk.Record{}, fmt.Errorf("invalid operation %v", entry.operation)
+	return opencdc.Record{}, fmt.Errorf("invalid operation %v", entry.operation)
 }

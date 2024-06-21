@@ -22,6 +22,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -91,11 +92,11 @@ func (w *SnapshotIterator) HasNext(ctx context.Context) bool {
 
 // Next returns the next record in the iterator.
 // returns an empty record and an error if anything wrong happened.
-func (w *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
+func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	if w.shouldRefreshPage() {
 		err := w.refreshPage(ctx)
 		if err != nil {
-			return sdk.Record{}, err
+			return opencdc.Record{}, err
 		}
 	}
 
@@ -109,7 +110,7 @@ func (w *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		Key:    key,
 	})
 	if err != nil {
-		return sdk.Record{}, fmt.Errorf("could not fetch the next object: %w", err)
+		return opencdc.Record{}, fmt.Errorf("could not fetch the next object: %w", err)
 	}
 
 	// check if maxLastModified should be updated
@@ -119,7 +120,7 @@ func (w *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 
 	rawBody, err := io.ReadAll(object.Body)
 	if err != nil {
-		return sdk.Record{}, fmt.Errorf("could not read the object's body: %w", err)
+		return opencdc.Record{}, fmt.Errorf("could not read the object's body: %w", err)
 	}
 
 	p := position.Position{
@@ -134,8 +135,8 @@ func (w *SnapshotIterator) Next(ctx context.Context) (sdk.Record, error) {
 		map[string]string{
 			MetadataContentType: *object.ContentType,
 		},
-		sdk.RawData(*key),
-		sdk.RawData(rawBody),
+		opencdc.RawData(*key),
+		opencdc.RawData(rawBody),
 	), nil
 }
 func (w *SnapshotIterator) Stop() {

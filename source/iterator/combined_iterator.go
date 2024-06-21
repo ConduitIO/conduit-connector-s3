@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -97,23 +98,23 @@ func (c *CombinedIterator) HasNext(ctx context.Context) bool {
 	}
 }
 
-func (c *CombinedIterator) Next(ctx context.Context) (sdk.Record, error) {
+func (c *CombinedIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	switch {
 	case c.snapshotIterator != nil:
 		r, err := c.snapshotIterator.Next(ctx)
 		if err != nil {
-			return sdk.Record{}, err
+			return opencdc.Record{}, err
 		}
 		if !c.snapshotIterator.HasNext(ctx) {
 			// switch to cdc iterator
 			err := c.switchToCDCIterator()
 			if err != nil {
-				return sdk.Record{}, err
+				return opencdc.Record{}, err
 			}
 			// change the last record's position to CDC
 			r.Position, err = position.ConvertToCDCPosition(r.Position)
 			if err != nil {
-				return sdk.Record{}, err
+				return opencdc.Record{}, err
 			}
 		}
 		return r, nil
@@ -121,7 +122,7 @@ func (c *CombinedIterator) Next(ctx context.Context) (sdk.Record, error) {
 	case c.cdcIterator != nil:
 		return c.cdcIterator.Next(ctx)
 	default:
-		return sdk.Record{}, errors.New("no initialized iterator")
+		return opencdc.Record{}, errors.New("no initialized iterator")
 	}
 }
 

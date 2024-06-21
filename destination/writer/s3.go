@@ -26,7 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 )
 
 // S3FilesWrittenLength defines the number of last filenames an S3 Writer keep
@@ -37,7 +37,7 @@ const S3FilesWrittenLength = 100
 type S3 struct {
 	KeyPrefix    string
 	Bucket       string
-	Position     sdk.Position
+	Position     opencdc.Position
 	Error        error
 	FilesWritten []string
 	Client       *s3.Client
@@ -128,6 +128,6 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 }
 
 // LastPosition returns the last persisted position
-func (w *S3) LastPosition() sdk.Position {
+func (w *S3) LastPosition() opencdc.Position {
 	return w.Position
 }

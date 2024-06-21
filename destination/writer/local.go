@@ -20,14 +20,14 @@ import (
 	"os"
 	"path"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 )
 
 // Local writer dumps bytes into a local file. The file will be placed in a
 // directory defined by path property.
 type Local struct {
 	Path     string
-	Position sdk.Position
+	Position opencdc.Position
 	Count    uint
 }
 
@@ -61,6 +61,6 @@ func (w *Local) Write(_ context.Context, batch *Batch) error {
 }
 
 // LastPosition returns the last persisted position
-func (w *Local) LastPosition() sdk.Position {
+func (w *Local) LastPosition() opencdc.Position {
 	return w.Position
 }

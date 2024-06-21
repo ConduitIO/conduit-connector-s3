@@ -17,7 +17,7 @@ package format
 import (
 	"fmt"
 
-	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/conduitio/conduit-commons/opencdc"
 )
 
 // Format defines the format the data will be persisted in by Destination
@@ -72,7 +72,7 @@ func (f Format) MimeType() string {
 }
 
 // MakeBytes returns a slice of bytes representing records in a given format
-func (f Format) MakeBytes(records []sdk.Record) ([]byte, error) {
+func (f Format) MakeBytes(records []opencdc.Record) ([]byte, error) {
 	switch f {
 	case Parquet:
 		return makeParquetBytes(records)
