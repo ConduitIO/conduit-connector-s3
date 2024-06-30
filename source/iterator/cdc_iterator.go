@@ -264,6 +264,7 @@ func (w *CDCIterator) buildRecord(entry CacheEntry) (opencdc.Record, error) {
 			p.ToRecordPosition(),
 			nil,
 			opencdc.RawData(entry.key),
+			nil,
 		), nil
 	}
 
