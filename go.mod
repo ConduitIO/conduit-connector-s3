@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.23
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.57.1
 	github.com/conduitio/conduit-commons v0.2.0
-	github.com/conduitio/conduit-connector-sdk v0.9.2-0.20240619124114-6a89e0d7add8
+	github.com/conduitio/conduit-connector-sdk v0.9.2-0.20240628152134-4cafa91a4ded
 	github.com/golangci/golangci-lint v1.59.1
 	github.com/google/uuid v1.6.0
 	github.com/matryer/is v1.4.1
