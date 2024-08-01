@@ -23,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/conduitio/conduit-commons/config"
+	"github.com/conduitio/conduit-commons/lang"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
 	"github.com/conduitio/conduit-connector-s3/source/position"
@@ -45,7 +46,16 @@ type Iterator interface {
 }
 
 func NewSource() sdk.Source {
-	return sdk.SourceWithMiddleware(&Source{}, sdk.DefaultSourceMiddleware()...)
+	return sdk.SourceWithMiddleware(
+		&Source{},
+		sdk.DefaultSourceMiddleware(
+			// disable schema extraction by default, because the source produces raw data
+			sdk.SourceWithSchemaExtractionConfig{
+				PayloadEnabled: lang.Ptr(false),
+				KeyEnabled:     lang.Ptr(false),
+			}.Apply,
+		)...,
+	)
 }
 
 func (s *Source) Parameters() config.Parameters {
