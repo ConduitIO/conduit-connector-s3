@@ -7,9 +7,18 @@ import (
 	"github.com/conduitio/conduit-commons/config"
 )
 
+const (
+	ConfigAwsAccessKeyId     = "aws.accessKeyId"
+	ConfigAwsBucket          = "aws.bucket"
+	ConfigAwsRegion          = "aws.region"
+	ConfigAwsSecretAccessKey = "aws.secretAccessKey"
+	ConfigFormat             = "format"
+	ConfigPrefix             = "prefix"
+)
+
 func (Config) Parameters() map[string]config.Parameter {
 	return map[string]config.Parameter{
-		"aws.accessKeyId": {
+		ConfigAwsAccessKeyId: {
 			Default:     "",
 			Description: "AWS access key id.",
 			Type:        config.ParameterTypeString,
@@ -17,7 +26,7 @@ func (Config) Parameters() map[string]config.Parameter {
 				config.ValidationRequired{},
 			},
 		},
-		"aws.bucket": {
+		ConfigAwsBucket: {
 			Default:     "",
 			Description: "the AWS S3 bucket name.",
 			Type:        config.ParameterTypeString,
@@ -25,7 +34,7 @@ func (Config) Parameters() map[string]config.Parameter {
 				config.ValidationRequired{},
 			},
 		},
-		"aws.region": {
+		ConfigAwsRegion: {
 			Default:     "",
 			Description: "the AWS S3 bucket region",
 			Type:        config.ParameterTypeString,
@@ -33,7 +42,7 @@ func (Config) Parameters() map[string]config.Parameter {
 				config.ValidationRequired{},
 			},
 		},
-		"aws.secretAccessKey": {
+		ConfigAwsSecretAccessKey: {
 			Default:     "",
 			Description: "AWS secret access key.",
 			Type:        config.ParameterTypeString,
@@ -41,7 +50,7 @@ func (Config) Parameters() map[string]config.Parameter {
 				config.ValidationRequired{},
 			},
 		},
-		"format": {
+		ConfigFormat: {
 			Default:     "",
 			Description: "the destination format, either \"json\" or \"parquet\".",
 			Type:        config.ParameterTypeString,
@@ -50,7 +59,7 @@ func (Config) Parameters() map[string]config.Parameter {
 				config.ValidationInclusion{List: []string{"parquet", "json"}},
 			},
 		},
-		"prefix": {
+		ConfigPrefix: {
 			Default:     "",
 			Description: "the S3 key prefix.",
 			Type:        config.ParameterTypeString,
