@@ -95,5 +95,4 @@ The config passed to `Configure` can contain the following fields.
 | `aws.region`          | the AWS S3 bucket region                                                                                        | yes      | "us-east-1"         |
 | `aws.bucket`          | the AWS S3 bucket name                                                                                          | yes      | "bucket_name"       |
 | `format`              | the destination format, either "json" or "parquet"                                                              | yes      | "json"              |
-| `bufferSize`          | the buffer size {when full, the files will be written to destination}, default is "1000", max is "100000"       | no       | "100"               |
 | `prefix`              | the key prefix for S3 destination                                                                               | no       | "conduit-"          |
