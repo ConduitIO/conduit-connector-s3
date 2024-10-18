@@ -13,7 +13,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/matryer/is v1.4.1
 	github.com/xitongsys/parquet-go v1.6.2
-	go.uber.org/mock v0.4.0
+	go.uber.org/mock v0.5.0
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 )
 
