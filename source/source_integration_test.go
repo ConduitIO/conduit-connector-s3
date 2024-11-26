@@ -36,8 +36,9 @@ import (
 )
 
 type Object struct {
-	key     string
-	content string
+	key      string
+	content  string
+	metadata map[string]string
 }
 
 func TestSource_SuccessfulSnapshot(t *testing.T) {
@@ -646,6 +647,9 @@ func createTestBucket(t *testing.T, client *s3.Client, bucket string) {
 
 	_, err := client.CreateBucket(context.Background(), &s3.CreateBucketInput{
 		Bucket: &bucket,
+		CreateBucketConfiguration: &types.CreateBucketConfiguration{
+			LocationConstraint: types.BucketLocationConstraint(os.Getenv("AWS_REGION")),
+		},
 	})
 	if err != nil {
 		t.Fatalf("could not create bucket: %v", err)
@@ -744,6 +748,11 @@ func parseIntegrationConfig() (map[string]string, error) {
 	}, nil
 }
 
+var testMetadata = map[string]string{
+	"key1": "value1",
+	"key2": "value2",
+}
+
 func addObjectsToBucket(ctx context.Context, t *testing.T, testBucket, prefix string, client *s3.Client, num int) []Object {
 	testFiles := make([]Object, num)
 	for i := 0; i < num; i++ {
@@ -751,14 +760,16 @@ func addObjectsToBucket(ctx context.Context, t *testing.T, testBucket, prefix st
 		content := uuid.NewString()
 		buf := strings.NewReader(content)
 		testFiles[i] = Object{
-			key:     key,
-			content: content,
+			key:      key,
+			content:  content,
+			metadata: testMetadata,
 		}
 		_, err := client.PutObject(ctx, &s3.PutObjectInput{
 			Bucket:        aws.String(testBucket),
 			Key:           aws.String(key),
 			Body:          buf,
 			ContentLength: aws.Int64(int64(buf.Len())),
+			Metadata:      testMetadata,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -801,6 +812,11 @@ func readAndAssert(ctx context.Context, t *testing.T, source *Source, want Objec
 	}
 	if gotPayload != want.content {
 		t.Fatalf("expected content: %s\n got: %s", want.content, gotPayload)
+	}
+	for key, val := range want.metadata {
+		if got.Metadata[key] != val {
+			t.Fatalf("expected metadata key %q to be %q, got %q", key, val, got.Metadata[key])
+		}
 	}
 
 	return got, err

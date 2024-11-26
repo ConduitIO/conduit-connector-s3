@@ -239,30 +239,32 @@ func (w *CDCIterator) buildRecord(entry CacheEntry) (opencdc.Record, error) {
 		Type:      position.TypeCDC,
 	}
 
+	m := opencdc.Metadata{}
+	if object != nil {
+		m[MetadataContentType] = *object.ContentType
+		for key, val := range object.Metadata {
+			m[key] = val
+		}
+	}
+
 	switch entry.operation {
 	case opencdc.OperationCreate:
 		return sdk.Util.Source.NewRecordCreate(
-			p.ToRecordPosition(),
-			map[string]string{
-				MetadataContentType: *object.ContentType,
-			},
+			p.ToRecordPosition(), m,
 			opencdc.RawData(entry.key),
 			opencdc.RawData(payload),
 		), nil
 	case opencdc.OperationUpdate:
+
 		return sdk.Util.Source.NewRecordUpdate(
-			p.ToRecordPosition(),
-			map[string]string{
-				MetadataContentType: *object.ContentType,
-			},
+			p.ToRecordPosition(), m,
 			opencdc.RawData(entry.key),
 			nil, // TODO we could actually attach last version
 			opencdc.RawData(payload),
 		), nil
 	case opencdc.OperationDelete:
 		return sdk.Util.Source.NewRecordDelete(
-			p.ToRecordPosition(),
-			nil,
+			p.ToRecordPosition(), m,
 			opencdc.RawData(entry.key),
 			nil,
 		), nil
