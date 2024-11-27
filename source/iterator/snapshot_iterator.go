@@ -130,7 +130,7 @@ func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	}
 
 	m := opencdc.Metadata{
-		MetadataContentType: *object.ContentType,
+		MetadataS3HeaderPrefix + MetadataContentType: *object.ContentType,
 	}
 	for key, val := range object.Metadata {
 		m[key] = val

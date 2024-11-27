@@ -241,7 +241,7 @@ func (w *CDCIterator) buildRecord(entry CacheEntry) (opencdc.Record, error) {
 
 	m := opencdc.Metadata{}
 	if object != nil {
-		m[MetadataContentType] = *object.ContentType
+		m[MetadataS3HeaderPrefix+MetadataContentType] = *object.ContentType
 		for key, val := range object.Metadata {
 			m[key] = val
 		}
