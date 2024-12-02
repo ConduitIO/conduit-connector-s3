@@ -645,21 +645,24 @@ func createTestBucket(t *testing.T, client *s3.Client, bucket string) {
 		t.Logf("created test bucket %q in %v", bucket, time.Since(start))
 	}()
 
-	// this allows the integration tests to run in buckets that are not in us-east-1
+	// By default, s3 buckets are created in us-east-1 if no LocationConstraint
+	// is specified. As our test client is configured to use the region coming from
+	// AWS_REGION env var, it might differ from the default one, so here we force
+	// the bucket creation to use the same region.
+	// More info at https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingBucket.html#bucket-config-options-intro
+
 	region := os.Getenv("AWS_REGION")
-	var createConfig *types.CreateBucketConfiguration
+	var createConfig types.CreateBucketConfiguration
 	for _, value := range types.BucketLocationConstraint.Values("") {
 		if region == string(value) {
-			createConfig = &types.CreateBucketConfiguration{
-				LocationConstraint: value,
-			}
+			createConfig.LocationConstraint = value
 			break
 		}
 	}
 
 	_, err := client.CreateBucket(context.Background(), &s3.CreateBucketInput{
 		Bucket:                    &bucket,
-		CreateBucketConfiguration: createConfig,
+		CreateBucketConfiguration: &createConfig,
 	})
 	if err != nil {
 		t.Fatalf("could not create bucket: %v", err)
