@@ -129,12 +129,16 @@ func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 		Timestamp: w.maxLastModified,
 	}
 
+	m := opencdc.Metadata{
+		MetadataS3HeaderPrefix + MetadataContentType: *object.ContentType,
+	}
+	for key, val := range object.Metadata {
+		m[key] = val
+	}
+
 	// create the record
 	return sdk.Util.Source.NewRecordSnapshot(
-		p.ToRecordPosition(),
-		map[string]string{
-			MetadataContentType: *object.ContentType,
-		},
+		p.ToRecordPosition(), m,
 		opencdc.RawData(*key),
 		opencdc.RawData(rawBody),
 	), nil

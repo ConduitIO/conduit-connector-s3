@@ -27,7 +27,8 @@ import (
 )
 
 const (
-	MetadataContentType = "s3.contentType"
+	MetadataS3HeaderPrefix = "s3.header."
+	MetadataContentType    = "contentType"
 )
 
 type CombinedIterator struct {

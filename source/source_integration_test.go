@@ -36,8 +36,9 @@ import (
 )
 
 type Object struct {
-	key     string
-	content string
+	key      string
+	content  string
+	metadata map[string]string
 }
 
 func TestSource_SuccessfulSnapshot(t *testing.T) {
@@ -644,8 +645,30 @@ func createTestBucket(t *testing.T, client *s3.Client, bucket string) {
 		t.Logf("created test bucket %q in %v", bucket, time.Since(start))
 	}()
 
+	// By default, s3 buckets are created in us-east-1 if no LocationConstraint
+	// is specified. As our test client is configured to use the region coming from
+	// AWS_REGION env var, it might differ from the default one, so here we force
+	// the bucket creation to use the same region.
+	// More info at https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingBucket.html#bucket-config-options-intro
+
+	region := os.Getenv("AWS_REGION")
+
+	// createConfig must be a pointer so that we only set it to nonnil when
+	// region is a valid location constraint. Otherwise this might fail in ci
+	// with a MalformedXML error.
+	var createConfig *types.CreateBucketConfiguration
+	for _, value := range types.BucketLocationConstraint.Values("") {
+		if region == string(value) {
+			createConfig = &types.CreateBucketConfiguration{
+				LocationConstraint: value,
+			}
+			break
+		}
+	}
+
 	_, err := client.CreateBucket(context.Background(), &s3.CreateBucketInput{
-		Bucket: &bucket,
+		Bucket:                    &bucket,
+		CreateBucketConfiguration: createConfig,
 	})
 	if err != nil {
 		t.Fatalf("could not create bucket: %v", err)
@@ -744,6 +767,11 @@ func parseIntegrationConfig() (map[string]string, error) {
 	}, nil
 }
 
+var testMetadata = map[string]string{
+	"key1": "value1",
+	"key2": "value2",
+}
+
 func addObjectsToBucket(ctx context.Context, t *testing.T, testBucket, prefix string, client *s3.Client, num int) []Object {
 	testFiles := make([]Object, num)
 	for i := 0; i < num; i++ {
@@ -751,14 +779,16 @@ func addObjectsToBucket(ctx context.Context, t *testing.T, testBucket, prefix st
 		content := uuid.NewString()
 		buf := strings.NewReader(content)
 		testFiles[i] = Object{
-			key:     key,
-			content: content,
+			key:      key,
+			content:  content,
+			metadata: testMetadata,
 		}
 		_, err := client.PutObject(ctx, &s3.PutObjectInput{
 			Bucket:        aws.String(testBucket),
 			Key:           aws.String(key),
 			Body:          buf,
 			ContentLength: aws.Int64(int64(buf.Len())),
+			Metadata:      testMetadata,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -801,6 +831,11 @@ func readAndAssert(ctx context.Context, t *testing.T, source *Source, want Objec
 	}
 	if gotPayload != want.content {
 		t.Fatalf("expected content: %s\n got: %s", want.content, gotPayload)
+	}
+	for key, val := range want.metadata {
+		if got.Metadata[key] != val {
+			t.Fatalf("expected metadata key %q to be %q, got %q", key, val, got.Metadata[key])
+		}
 	}
 
 	return got, err
