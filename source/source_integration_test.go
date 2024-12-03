@@ -652,17 +652,23 @@ func createTestBucket(t *testing.T, client *s3.Client, bucket string) {
 	// More info at https://docs.aws.amazon.com/AmazonS3/latest/userguide/UsingBucket.html#bucket-config-options-intro
 
 	region := os.Getenv("AWS_REGION")
-	var createConfig types.CreateBucketConfiguration
+
+	// createConfig must be a pointer so that we only set it to nonnil when
+	// region is a valid location constraint. Otherwise this might fail in ci
+	// with a MalformedXML error.
+	var createConfig *types.CreateBucketConfiguration
 	for _, value := range types.BucketLocationConstraint.Values("") {
 		if region == string(value) {
-			createConfig.LocationConstraint = value
+			createConfig = &types.CreateBucketConfiguration{
+				LocationConstraint: value,
+			}
 			break
 		}
 	}
 
 	_, err := client.CreateBucket(context.Background(), &s3.CreateBucketInput{
 		Bucket:                    &bucket,
-		CreateBucketConfiguration: &createConfig,
+		CreateBucketConfiguration: createConfig,
 	})
 	if err != nil {
 		t.Fatalf("could not create bucket: %v", err)
