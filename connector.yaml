@@ -2,7 +2,66 @@ version: "1.0"
 specification:
   name: s3
   summary: An S3 source and destination plugin for Conduit, written in Go.
-  description: ""
+  description: |-
+    The S3 connector is one of [Conduit](https://github.com/ConduitIO/conduit)
+    builtin plugins. It provides both, a source and a destination S3 connectors.
+
+    ## S3 Source
+
+    The S3 Source Connector connects to a S3 bucket with the provided
+    configurations, using `aws.bucket`, `aws.accessKeyId`,`aws.secretAccessKey` and
+    `aws.region`. If the bucket doesn't exist, or the permissions fail, then an
+    error will occur. After that, the `Open` method is called to start the
+    connection from the provided position.
+
+    ### Change Data Capture (CDC)
+
+    This connector implements CDC features for S3 by scanning the bucket for changes
+    every `pollingPeriod` and detecting any change that happened after a certain
+    timestamp. These changes (update, delete, create) are then inserted into a
+    buffer that is checked on each Read request.
+
+    * To capture "delete" and "update", the S3 bucket versioning must be enabled.
+    * To capture "create" actions, the bucket versioning doesn't matter.
+
+    #### Position Handling
+
+    The connector goes through two modes.
+
+    * Snapshot mode: which loops through the S3 bucket and returns the objects that
+      are already in there. The _Position_ during this mode is the object key
+      attached to an underscore, an "s" for snapshot, and the _maxLastModifiedDate_
+      found so far. As an example: "thisIsAKey_s12345", which makes the connector
+      know at what mode it is and what object it last read. The
+      _maxLastModifiedDate_ will be used when changing to CDC mode, the iterator
+      will capture changes that happened after that.
+
+    * CDC mode: this mode iterates through the S3 bucket every `pollingPeriod` and
+      captures new actions made on the bucket. the _Position_ during this mode is
+      the object key attached to an underscore, a "c" for CDC, and the object's
+      _lastModifiedDate_ in seconds. As an example: "thisIsAKey_c1634049397". This
+      position is used to return only the actions with a _lastModifiedDate_ higher
+      than the last record returned, which will ensure that no duplications are in
+      place.
+
+    ### Record Keys
+
+    The S3 object key uniquely identifies the objects in an Amazon S3 bucket, which
+    is why a record key is the key read from the S3 bucket.
+
+    ## Destination
+
+    The S3 Destination Connector connects to an S3 bucket with the provided
+    configurations, using `aws.bucket`, `aws.accessKeyId`,`aws.secretAccessKey` and
+    `aws.region`. If the permissions fail, the connector will not be ready for
+    writing to S3.
+
+    ### Writer
+
+    The S3 destination writer has a buffer with the size of `bufferSize`, for each
+    time `Write` is called, a new record is added to the buffer. When the buffer is
+    full, all the records from it will be written to the S3 bucket, and an ack
+    function will be called for each record after being written.
   version: (devel)
   author: Meroxa, Inc.
   source:
