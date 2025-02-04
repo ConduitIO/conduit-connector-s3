@@ -12,16 +12,24 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:generate conn-sdk-cli specgen
+
 package s3
 
 import (
+	_ "embed"
 	"github.com/conduitio/conduit-connector-s3/destination"
 	"github.com/conduitio/conduit-connector-s3/source"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
+//go:embed connector.yaml
+var specs string
+
+var version = "(devel)"
+
 var Connector = sdk.Connector{
-	NewSpecification: Specification,
+	NewSpecification: sdk.YAMLSpecification(specs, version),
 	NewSource:        source.NewSource,
 	NewDestination:   destination.NewDestination,
 }

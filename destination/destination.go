@@ -17,7 +17,6 @@ package destination
 import (
 	"context"
 
-	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -29,40 +28,27 @@ import (
 type Destination struct {
 	sdk.UnimplementedDestination
 
-	Config Config
+	config Config
 	Writer writer.Writer
 }
 
 func NewDestination() sdk.Destination {
-	return sdk.DestinationWithMiddleware(&Destination{}, sdk.DefaultDestinationMiddleware()...)
+	return sdk.DestinationWithMiddleware(&Destination{})
 }
 
-func (d *Destination) Parameters() config.Parameters {
-	return d.Config.Parameters()
-}
-
-// Configure parses and initializes the config.
-func (d *Destination) Configure(ctx context.Context, cfg config.Config) error {
-	var destConfig Config
-	err := sdk.Util.ParseConfig(ctx, cfg, &destConfig, NewDestination().Parameters())
-	if err != nil {
-		return err
-	}
-
-	d.Config = destConfig
-
-	return nil
+func (d *Destination) Config() sdk.DestinationConfig {
+	return &d.config
 }
 
 // Open makes sure everything is prepared to receive records.
 func (d *Destination) Open(ctx context.Context) error {
 	// initializing the writer
 	w, err := writer.NewS3(ctx, &writer.S3Config{
-		AccessKeyID:     d.Config.AWSAccessKeyID,
-		SecretAccessKey: d.Config.AWSSecretAccessKey,
-		Region:          d.Config.AWSRegion,
-		Bucket:          d.Config.AWSBucket,
-		KeyPrefix:       d.Config.Prefix,
+		AccessKeyID:     d.config.AWSAccessKeyID,
+		SecretAccessKey: d.config.AWSSecretAccessKey,
+		Region:          d.config.AWSRegion,
+		Bucket:          d.config.AWSBucket,
+		KeyPrefix:       d.config.Prefix,
 	})
 	if err != nil {
 		return err
@@ -76,7 +62,7 @@ func (d *Destination) Open(ctx context.Context) error {
 func (d *Destination) Write(ctx context.Context, records []opencdc.Record) (int, error) {
 	err := d.Writer.Write(ctx, &writer.Batch{
 		Records: records,
-		Format:  d.Config.Format,
+		Format:  d.config.Format,
 	})
 	if err != nil {
 		return 0, err
