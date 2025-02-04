@@ -43,7 +43,6 @@ func makeJSONBytes(records []opencdc.Record) ([]byte, error) {
 		}
 
 		bytes, err := json.Marshal(r)
-
 		if err != nil {
 			return nil, err
 		}

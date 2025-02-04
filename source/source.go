@@ -22,13 +22,18 @@ import (
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/conduitio/conduit-commons/config"
 	"github.com/conduitio/conduit-commons/lang"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
+
+type Iterator interface {
+	HasNext(ctx context.Context) bool
+	Next(ctx context.Context) (opencdc.Record, error)
+	Stop()
+}
 
 // Source connector
 type Source struct {
@@ -39,41 +44,23 @@ type Source struct {
 	client   *s3.Client
 }
 
-type Iterator interface {
-	HasNext(ctx context.Context) bool
-	Next(ctx context.Context) (opencdc.Record, error)
-	Stop()
-}
-
 func NewSource() sdk.Source {
 	return sdk.SourceWithMiddleware(
-		&Source{},
-		sdk.DefaultSourceMiddleware(
-			// disable schema extraction by default, because the source produces raw data
-			sdk.SourceWithSchemaExtractionConfig{
-				PayloadEnabled: lang.Ptr(false),
-				KeyEnabled:     lang.Ptr(false),
+		&Source{
+			config: Config{
+				DefaultSourceMiddleware: sdk.DefaultSourceMiddleware{
+					SourceWithSchemaExtraction: sdk.SourceWithSchemaExtraction{
+						PayloadEnabled: lang.Ptr(false),
+						KeyEnabled:     lang.Ptr(false),
+					},
+				},
 			},
-		)...,
+		},
 	)
 }
 
-func (s *Source) Parameters() config.Parameters {
-	return s.config.Parameters()
-}
-
-// Configure parses and stores the configurations
-// returns an error in case of invalid config
-func (s *Source) Configure(ctx context.Context, cfg config.Config) error {
-	var sourceConfig Config
-	err := sdk.Util.ParseConfig(ctx, cfg, &sourceConfig, NewSource().Parameters())
-	if err != nil {
-		return err
-	}
-
-	s.config = sourceConfig
-
-	return nil
+func (s *Source) Config() sdk.SourceConfig {
+	return &s.config
 }
 
 // Open prepare the plugin to start sending records from the given position

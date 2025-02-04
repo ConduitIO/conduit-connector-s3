@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package destination
+package destination_test
 
 import (
 	"context"
@@ -24,9 +24,12 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	s3Conn "github.com/conduitio/conduit-connector-s3"
 	"github.com/conduitio/conduit-connector-s3/config"
+	"github.com/conduitio/conduit-connector-s3/destination"
 	"github.com/conduitio/conduit-connector-s3/destination/filevalidator"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/matryer/is"
 )
 
@@ -40,35 +43,36 @@ const (
 func TestLocalParquet(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
-	destination := &Destination{}
+	underTest := &destination.Destination{}
 
-	err := destination.Configure(ctx, map[string]string{
+	cfg := map[string]string{
 		config.ConfigKeyAWSAccessKeyID:     "123",
 		config.ConfigKeyAWSSecretAccessKey: "secret",
 		config.ConfigKeyAWSRegion:          "us-west-2",
 		config.ConfigKeyAWSBucket:          "foobucket",
-		ConfigKeyFormat:                    "parquet",
-	})
-	is.NoErr(err)
+		destination.ConfigKeyFormat:        "parquet",
+	}
+	err := sdk.Util.ParseConfig(ctx, cfg, underTest.Config(), s3Conn.Connector.NewSpecification().DestinationParams)
+	is.NoErr(err) // failed to parse the configuration
 
-	err = destination.Open(context.Background())
-	is.NoErr(err)
+	err = underTest.Open(ctx)
+	is.NoErr(err) // failed to open the destination
 
-	destination.Writer = &writer.Local{
+	underTest.Writer = &writer.Local{
 		Path: "./fixtures",
 	}
 
 	// generate 50 records and write them in 2 batches
 	records := generateRecords(50)
-	count, err := destination.Write(ctx, records[:25])
+	count, err := underTest.Write(ctx, records[:25])
 	is.NoErr(err)
 	is.Equal(count, 25)
 
-	count, err = destination.Write(ctx, records[25:])
+	count, err = underTest.Write(ctx, records[25:])
 	is.NoErr(err)
 	is.Equal(count, 25)
 
-	err = destination.Teardown(ctx)
+	err = underTest.Teardown(ctx)
 	is.NoErr(err)
 
 	// The code above should produce two files in the fixtures directory:
@@ -91,35 +95,36 @@ func TestLocalParquet(t *testing.T) {
 func TestLocalJSON(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
-	destination := &Destination{}
+	underTest := &destination.Destination{}
 
-	err := destination.Configure(ctx, map[string]string{
+	cfg := map[string]string{
 		config.ConfigKeyAWSAccessKeyID:     "123",
 		config.ConfigKeyAWSSecretAccessKey: "secret",
 		config.ConfigKeyAWSRegion:          "us-west-2",
 		config.ConfigKeyAWSBucket:          "foobucket",
-		ConfigKeyFormat:                    "json",
-	})
-	is.NoErr(err)
+		destination.ConfigKeyFormat:        "json",
+	}
+	err := sdk.Util.ParseConfig(ctx, cfg, underTest.Config(), s3Conn.Connector.NewSpecification().DestinationParams)
+	is.NoErr(err) // failed to parse the configuration
 
-	err = destination.Open(context.Background())
-	is.NoErr(err)
+	err = underTest.Open(context.Background())
+	is.NoErr(err) // failed to open the destination
 
-	destination.Writer = &writer.Local{
+	underTest.Writer = &writer.Local{
 		Path: "./fixtures",
 	}
 
 	// generate 50 records and write them in 2 batches
 	records := generateRecords(50)
-	count, err := destination.Write(ctx, records[:25])
+	count, err := underTest.Write(ctx, records[:25])
 	is.NoErr(err)
 	is.Equal(count, 25)
 
-	count, err = destination.Write(ctx, records[25:])
+	count, err = underTest.Write(ctx, records[25:])
 	is.NoErr(err)
 	is.Equal(count, 25)
 
-	err = destination.Teardown(ctx)
+	err = underTest.Teardown(ctx)
 	is.NoErr(err)
 
 	// The code above should produce two files in the fixtures directory:
@@ -150,39 +155,37 @@ func TestS3Parquet(t *testing.T) {
 	)
 	skipOnEmptyEnv(t, env)
 
-	destination := &Destination{}
+	underTest := &destination.Destination{}
 
-	err := destination.Configure(ctx, map[string]string{
+	cfg := map[string]string{
 		config.ConfigKeyAWSAccessKeyID:     env[EnvAWSAccessKeyID],
 		config.ConfigKeyAWSSecretAccessKey: env[EnvAWSSecretAccessKey],
 		config.ConfigKeyAWSRegion:          env[EnvAWSRegion],
 		config.ConfigKeyAWSBucket:          env[EnvAWSS3Bucket],
 		config.ConfigKeyPrefix:             "test",
-		ConfigKeyFormat:                    "parquet",
-	})
-	if err != nil {
-		t.Fatalf("failed to parse the Configuration: %v", err)
+		destination.ConfigKeyFormat:        "parquet",
 	}
 
-	err = destination.Open(context.Background())
-	if err != nil {
-		t.Fatalf("failed to initialize destination: %v", err)
-	}
+	err := sdk.Util.ParseConfig(ctx, cfg, underTest.Config(), s3Conn.Connector.NewSpecification().DestinationParams)
+	is.NoErr(err) // failed to parse the configuration
+
+	err = underTest.Open(ctx)
+	is.NoErr(err) // failed to initialize destination
 
 	// generate 50 records and write them in 2 batches
 	records := generateRecords(50)
-	count, err := destination.Write(ctx, records[:25])
+	count, err := underTest.Write(ctx, records[:25])
 	is.NoErr(err)
 	is.Equal(count, 25)
 
-	count, err = destination.Write(ctx, records[25:])
+	count, err = underTest.Write(ctx, records[25:])
 	is.NoErr(err)
 	is.Equal(count, 25)
 
-	writer, ok := destination.Writer.(*writer.S3)
+	writer, ok := underTest.Writer.(*writer.S3)
 	is.True(ok) // Destination writer expected to be writer.S3
 
-	err = destination.Teardown(ctx)
+	err = underTest.Teardown(ctx)
 	is.NoErr(err)
 
 	// check if only two files are written
@@ -228,13 +231,11 @@ func validateReferences(validator filevalidator.FileValidator, paths ...string) 
 		fileName := paths[i]
 		referencePath := paths[i+1]
 		reference, err := os.ReadFile(path.Join("./fixtures", referencePath))
-
 		if err != nil {
 			return err
 		}
 
 		err = validator.Validate(fileName, reference)
-
 		if err != nil {
 			return err
 		}

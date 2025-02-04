@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate paramgen -output=paramgen_dest.go Config
-
 package destination
 
 import (
 	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/format"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 const (
@@ -28,7 +27,9 @@ const (
 
 // Config represents S3 configuration with Destination specific configurations
 type Config struct {
+	sdk.DefaultDestinationMiddleware
 	config.Config
+
 	// the destination format, either "json" or "parquet".
 	Format format.Format `validate:"required,inclusion=parquet|json"`
 }

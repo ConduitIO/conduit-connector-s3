@@ -68,7 +68,6 @@ func NewS3(ctx context.Context, cfg *S3Config) (*S3, error) {
 		config.WithRegion(cfg.Region),
 		config.WithCredentialsProvider(awsCredsProvider),
 	)
-
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +83,6 @@ func NewS3(ctx context.Context, cfg *S3Config) (*S3, error) {
 // Write stores the batch on AWS S3 as a file
 func (w *S3) Write(ctx context.Context, batch *Batch) error {
 	batchBytes, err := batch.Bytes()
-
 	if err != nil {
 		return err
 	}
@@ -109,7 +107,6 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 		ContentDisposition:   aws.String("attachment"),
 		ServerSideEncryption: types.ServerSideEncryptionAes256, // TODO: config?
 	})
-
 	if err != nil {
 		return err
 	}

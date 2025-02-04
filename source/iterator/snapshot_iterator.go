@@ -143,6 +143,7 @@ func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 		opencdc.RawData(rawBody),
 	), nil
 }
+
 func (w *SnapshotIterator) Stop() {
 	// nothing to stop
 }

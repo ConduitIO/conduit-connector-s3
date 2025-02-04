@@ -12,14 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//go:generate paramgen -output=paramgen_src.go Config
-
 package source
 
 import (
 	"time"
 
 	"github.com/conduitio/conduit-connector-s3/config"
+	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
 const (
@@ -29,7 +28,9 @@ const (
 
 // Config represents source configuration with S3 configurations
 type Config struct {
+	sdk.DefaultSourceMiddleware
 	config.Config
+
 	// polling period for the CDC mode, formatted as a time.Duration string.
 	PollingPeriod time.Duration `json:"pollingPeriod" default:"1s"`
 }
