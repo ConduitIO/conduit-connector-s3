@@ -4,7 +4,7 @@
 The S3 connector is one of [Conduit](https://github.com/ConduitIO/conduit)
 builtin plugins. It provides both, a source and a destination S3 connectors.
 
-## S3 Source
+## Source
 
 The S3 Source Connector connects to a S3 bucket with the provided
 configurations, using `aws.bucket`, `aws.accessKeyId`,`aws.secretAccessKey` and
