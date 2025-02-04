@@ -324,6 +324,7 @@ func TestSource_CDC_DeleteWithVersioning(t *testing.T) {
 	err = underTest.Teardown(ctx)
 	is.NoErr(err)
 }
+
 func TestSource_CDC_EmptyBucketWithDeletedObjects(t *testing.T) {
 	is := is.New(t)
 	client, cfg := prepareIntegrationTest(t)

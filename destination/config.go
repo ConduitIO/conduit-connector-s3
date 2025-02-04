@@ -29,7 +29,7 @@ const (
 type Config struct {
 	sdk.DefaultDestinationMiddleware
 	config.Config
-	
+
 	// the destination format, either "json" or "parquet".
 	Format format.Format `validate:"required,inclusion=parquet|json"`
 }

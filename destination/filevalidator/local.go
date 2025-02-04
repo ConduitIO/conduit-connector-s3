@@ -33,13 +33,11 @@ func (lfv *Local) Validate(name string, reference []byte) error {
 	filePath := path.Join(lfv.Path, name)
 
 	fileBytes, err := os.ReadFile(filePath)
-
 	if err != nil {
 		return err
 	}
 
 	err = compareBytes(fileBytes, reference)
-
 	if err != nil {
 		return fmt.Errorf(
 			"%s (%dB) and its reference (%dB) have different bytes: %w",
@@ -51,7 +49,6 @@ func (lfv *Local) Validate(name string, reference []byte) error {
 	}
 
 	err = os.Remove(filePath)
-
 	if err != nil {
 		return fmt.Errorf("could not remove %s: %w", filePath, err)
 	}

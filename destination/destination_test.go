@@ -231,13 +231,11 @@ func validateReferences(validator filevalidator.FileValidator, paths ...string) 
 		fileName := paths[i]
 		referencePath := paths[i+1]
 		reference, err := os.ReadFile(path.Join("./fixtures", referencePath))
-
 		if err != nil {
 			return err
 		}
 
 		err = validator.Validate(fileName, reference)
-
 		if err != nil {
 			return err
 		}

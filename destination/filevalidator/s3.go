@@ -47,7 +47,6 @@ func (v *S3) Validate(name string, reference []byte) error {
 		config.WithRegion(v.Region),
 		config.WithCredentialsProvider(awsCredsProvider),
 	)
-
 	if err != nil {
 		return err
 	}
@@ -61,19 +60,16 @@ func (v *S3) Validate(name string, reference []byte) error {
 			Key:    aws.String(name),
 		},
 	)
-
 	if err != nil {
 		return err
 	}
 
 	data, err := io.ReadAll(object.Body)
-
 	if err != nil {
 		return err
 	}
 
 	err = compareBytes(data, reference)
-
 	if err != nil {
 		return fmt.Errorf(
 			"%s (%dB) and its reference (%dB) have different bytes: %w",
@@ -91,7 +87,6 @@ func (v *S3) Validate(name string, reference []byte) error {
 			Key:    aws.String(name),
 		},
 	)
-
 	if err != nil {
 		return err
 	}

@@ -18,6 +18,7 @@ package s3
 
 import (
 	_ "embed"
+
 	"github.com/conduitio/conduit-connector-s3/destination"
 	"github.com/conduitio/conduit-connector-s3/source"
 	sdk "github.com/conduitio/conduit-connector-sdk"

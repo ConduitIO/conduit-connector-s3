@@ -44,13 +44,11 @@ func (w *Local) Write(_ context.Context, batch *Batch) error {
 	)
 
 	bytes, err := batch.Bytes()
-
 	if err != nil {
 		return err
 	}
 
-	err = os.WriteFile(path, bytes, 0600)
-
+	err = os.WriteFile(path, bytes, 0o600)
 	if err != nil {
 		return err
 	}

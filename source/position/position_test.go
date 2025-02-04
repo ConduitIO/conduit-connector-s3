@@ -23,7 +23,7 @@ import (
 )
 
 func Test_ParseRecordPosition(t *testing.T) {
-	var positionTests = []struct {
+	positionTests := []struct {
 		name    string
 		wantErr bool
 		in      opencdc.Position
@@ -82,7 +82,7 @@ func Test_ParseRecordPosition(t *testing.T) {
 }
 
 func Test_ToRecordPosition(t *testing.T) {
-	var positionTests = []struct {
+	positionTests := []struct {
 		name    string
 		wantErr bool
 		in      Position
@@ -128,7 +128,7 @@ func Test_ToRecordPosition(t *testing.T) {
 }
 
 func Test_ConvertSnapshotPositionToCDC(t *testing.T) {
-	var positionTests = []struct {
+	positionTests := []struct {
 		name    string
 		wantErr bool
 		in      opencdc.Position

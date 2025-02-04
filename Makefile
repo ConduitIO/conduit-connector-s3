@@ -12,6 +12,10 @@ test:
 lint:
 	golangci-lint run
 
+.PHONY: fmt
+fmt:
+	gofumpt -l -w .
+
 .PHONY: generate
 generate:
 	go generate ./...
