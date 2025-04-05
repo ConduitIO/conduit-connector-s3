@@ -82,16 +82,22 @@ func NewS3(ctx context.Context, cfg *S3Config) (*S3, error) {
 
 // Write stores the batch on AWS S3 as a file
 func (w *S3) Write(ctx context.Context, batch *Batch) error {
+
 	batchBytes, err := batch.Bytes()
 	if err != nil {
 		return err
 	}
 
-	key := fmt.Sprintf(
-		"%d.%s",
-		time.Now().UnixNano(),
-		batch.Format.Ext(),
-	)
+	// Get the ID from the first record's key
+	var key string
+	if len(batch.Records) > 0 {
+		// Convert the key bytes to string
+		keyBytes := batch.Records[0].Key.Bytes()
+		key = fmt.Sprintf("%s.%s", string(keyBytes), batch.Format.Ext())
+	} else {
+		// Fallback to timestamp if no records
+		key = fmt.Sprintf("%d.%s", time.Now().UnixNano(), batch.Format.Ext())
+	}
 
 	if w.KeyPrefix != "" {
 		key = path.Join(w.KeyPrefix, key)
