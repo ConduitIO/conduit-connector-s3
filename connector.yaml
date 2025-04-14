@@ -62,7 +62,7 @@ specification:
     time `Write` is called, a new record is added to the buffer. When the buffer is
     full, all the records from it will be written to the S3 bucket, and an ack
     function will be called for each record after being written.
-  version: v0.9.1
+  version: v0.9.2
   author: Meroxa, Inc.
   source:
     parameters:
