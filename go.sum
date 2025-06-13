@@ -171,8 +171,8 @@ github.com/ckaznocha/intrange v0.3.0 h1:VqnxtK32pxgkhJgYQEeOArVidIPg+ahLP7WBOXZd
 github.com/ckaznocha/intrange v0.3.0/go.mod h1:+I/o2d2A1FBHgGELbGxzIcyd3/9l9DuwjM8FsbSS3Lo=
 github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
 github.com/colinmarc/hdfs/v2 v2.1.1/go.mod h1:M3x+k8UKKmxtFu++uAZ0OtDU8jR3jnaZIAc6yK4Ue0c=
-github.com/conduitio/conduit-commons v0.5.4 h1:O1j08gsC7Bf3Y0CbfIcpWz0719Ehx3GoHqVLItsOQbU=
-github.com/conduitio/conduit-commons v0.5.4/go.mod h1:GtxenYQA3eWPeH+rCdycHVO/zE9rngAmwRAlqvshL+8=
+github.com/conduitio/conduit-commons v0.6.0 h1:UgKXYAMEO3w759R5EmAP0Ax5yFWPGqvPMr/neltfsAI=
+github.com/conduitio/conduit-commons v0.6.0/go.mod h1:n+zdde8QZ+gX4m4tjv7qT1xomZSGZg/dpoTx/JR/fh4=
 github.com/conduitio/conduit-connector-protocol v0.9.4-0.20250522154900-3708d4f3a481 h1:kP/uM0ZdDeC8pdBp3q8y2tJD/h+EDbwyuHPU/+rwSeo=
 github.com/conduitio/conduit-connector-protocol v0.9.4-0.20250522154900-3708d4f3a481/go.mod h1:vssplKMGbYx7JvRcRpqiRzQIysn7GCj1J5kW/g/1GfE=
 github.com/conduitio/conduit-connector-sdk v0.14.0 h1:Icj/DDEvo3u83A7Q8vaJHlr0L7/C7ChrZWLr8bcy6XE=
