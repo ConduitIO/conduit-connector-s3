@@ -89,6 +89,22 @@ pipelines:
           # Type: string
           # Required: yes
           aws.secretAccessKey: ""
+          # The endpoint to connect to. Set this when using an S3-compatible
+          # object store such as MinIO (for example http://localhost:9000).
+          # Leave empty to use the default AWS endpoints. The AWS_ENDPOINT_URL
+          # environment variable is also honored when this is empty.
+          # Type: string
+          # Required: no
+          aws.endpoint: ""
+          # Use path-style addressing (http://endpoint/bucket/key) instead of
+          # virtual-hosted addressing (http://bucket.endpoint/key). Set this to
+          # true when using an S3-compatible store that does not support
+          # virtual-hosted addressing: the default MinIO setup misparses
+          # virtual-hosted requests and answers with a 400 MalformedXML. Leave
+          # false for AWS S3.
+          # Type: bool
+          # Required: no
+          aws.pathStyle: "false"
           # polling period for the CDC mode, formatted as a time.Duration
           # string.
           # Type: duration
@@ -177,6 +193,22 @@ pipelines:
           # Type: string
           # Required: yes
           format: ""
+          # The endpoint to connect to. Set this when using an S3-compatible
+          # object store such as MinIO (for example http://localhost:9000).
+          # Leave empty to use the default AWS endpoints. The AWS_ENDPOINT_URL
+          # environment variable is also honored when this is empty.
+          # Type: string
+          # Required: no
+          aws.endpoint: ""
+          # Use path-style addressing (http://endpoint/bucket/key) instead of
+          # virtual-hosted addressing (http://bucket.endpoint/key). Set this to
+          # true when using an S3-compatible store that does not support
+          # virtual-hosted addressing: the default MinIO setup misparses
+          # virtual-hosted requests and answers with a 400 MalformedXML. Leave
+          # false for AWS S3.
+          # Type: bool
+          # Required: no
+          aws.pathStyle: "false"
           # the S3 key prefix.
           # Type: string
           # Required: no

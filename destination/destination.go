@@ -49,6 +49,8 @@ func (d *Destination) Open(ctx context.Context) error {
 		Region:          d.config.AWSRegion,
 		Bucket:          d.config.AWSBucket,
 		KeyPrefix:       d.config.Prefix,
+		Endpoint:        d.config.AWSEndpoint,
+		PathStyle:       d.config.AWSPathStyle,
 	})
 	if err != nil {
 		return err
