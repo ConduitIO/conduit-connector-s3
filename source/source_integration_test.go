@@ -541,7 +541,8 @@ func TestSource_MinIO(t *testing.T) {
 	}
 
 	client := newEndpointS3Client(t, cfg)
-	bucket := "conduit-s3-minio-source-test-" + uuid.NewString()
+	// prefix + uuid must stay within the 63-character S3 bucket-name limit
+	bucket := "conduit-s3-minio-src-" + uuid.NewString()
 	createTestBucket(t, client, bucket)
 	t.Cleanup(func() {
 		clearTestBucket(t, client, bucket)
