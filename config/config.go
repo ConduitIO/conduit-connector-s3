@@ -14,6 +14,13 @@
 
 package config
 
+import (
+	"fmt"
+	"net/url"
+
+	cconfig "github.com/conduitio/conduit-commons/config"
+)
+
 const (
 	// ConfigKeyAWSAccessKeyID is the config name for AWS access secret key
 	ConfigKeyAWSAccessKeyID = "aws.accessKeyId"
@@ -60,4 +67,27 @@ type Config struct {
 	AWSPathStyle bool `json:"aws.pathStyle" default:"false"`
 	// the S3 key prefix.
 	Prefix string
+}
+
+// ValidateEndpoint validates the aws.endpoint configuration: it must be a URL
+// with an http or https scheme and a host. An empty endpoint is valid (the
+// default AWS endpoints are used). It is called from the Validate methods of
+// the destination and source configs, which the SDK invokes after
+// configuration parsing, so a bad endpoint fails at parse time instead of at
+// the first request with an opaque SDK error.
+func ValidateEndpoint(endpoint string) error {
+	if endpoint == "" {
+		return nil
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%s: invalid endpoint URL %q: %w", ConfigKeyAWSEndpoint, endpoint, cconfig.ErrInvalidParameterValue)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s: invalid endpoint URL %q, scheme must be http or https: %w", ConfigKeyAWSEndpoint, endpoint, cconfig.ErrInvalidParameterValue)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s: invalid endpoint URL %q, host is missing: %w", ConfigKeyAWSEndpoint, endpoint, cconfig.ErrInvalidParameterValue)
+	}
+	return nil
 }

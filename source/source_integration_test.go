@@ -18,6 +18,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -499,6 +501,76 @@ func TestSource_CDCWithPrefix(t *testing.T) {
 	is.NoErr(err)
 }
 
+// TestSource_MinIO exercises the source read path against a MinIO
+// S3-compatible store (test/docker-compose.yml, `make test-integration-s3`).
+// It is the source-side counterpart of TestS3MinIO in the destination package:
+// with aws.endpoint and aws.pathStyle configured, the source must list and
+// read objects back from MinIO, which rejects virtual-hosted addressing with
+// a 400 MalformedXML (ConduitIO/conduit-connector-s3#963).
+//
+// It requires the following environment variables (set by `make
+// test-integration-s3`) and is skipped otherwise: AWS_ENDPOINT_URL,
+// AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION.
+func TestSource_MinIO(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
+	awsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	awsRegion := os.Getenv("AWS_REGION")
+	endpoint := os.Getenv("AWS_ENDPOINT_URL")
+	if awsAccessKeyID == "" || awsSecretAccessKey == "" || awsRegion == "" {
+		t.Skip("AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION must be set for the MinIO integration test")
+	}
+	if endpoint == "" {
+		t.Skip("AWS_ENDPOINT_URL not set, skipping MinIO integration test")
+	}
+	// The env vars may be set while no MinIO is running (e.g. a local shell
+	// with leftovers): probe the endpoint and skip instead of hard-failing.
+	if !endpointReachable(endpoint) {
+		t.Skipf("endpoint %q not reachable, skipping MinIO integration test", endpoint)
+	}
+
+	cfg := map[string]string{
+		config.ConfigKeyAWSAccessKeyID:     awsAccessKeyID,
+		config.ConfigKeyAWSSecretAccessKey: awsSecretAccessKey,
+		config.ConfigKeyAWSRegion:          awsRegion,
+		config.ConfigKeyAWSEndpoint:        endpoint,
+		config.ConfigKeyAWSPathStyle:       "true",
+		source.ConfigKeyPollingPeriod:      "100ms",
+	}
+
+	client := newEndpointS3Client(t, cfg)
+	bucket := "conduit-s3-minio-source-test-" + uuid.NewString()
+	createTestBucket(t, client, bucket)
+	t.Cleanup(func() {
+		clearTestBucket(t, client, bucket)
+		deleteTestBucket(t, client, bucket)
+	})
+	cfg[config.ConfigKeyAWSBucket] = bucket
+
+	underTest := &source.Source{}
+	err := sdk.Util.ParseConfig(ctx, cfg, underTest.Config(), s3Conn.Connector.NewSpecification().SourceParams)
+	is.NoErr(err) // failed to configure the source
+
+	err = underTest.Open(ctx, nil)
+	is.NoErr(err) // failed to open the source
+
+	testFiles := addObjectsToBucket(ctx, t, bucket, "", client, 3)
+
+	// read and assert the objects are read back from MinIO
+	for _, file := range testFiles {
+		_, err := readAndAssert(ctx, t, underTest, file)
+		is.NoErr(err) // unexpected error
+	}
+
+	_, err = underTest.Read(ctx)
+	is.True(errors.Is(err, sdk.ErrBackoffRetry))
+
+	err = underTest.Teardown(ctx)
+	is.NoErr(err)
+}
+
 func prepareIntegrationTest(t *testing.T) (*s3.Client, map[string]string) {
 	cfg, err := parseIntegrationConfig()
 	if err != nil {
@@ -520,6 +592,47 @@ func prepareIntegrationTest(t *testing.T) (*s3.Client, map[string]string) {
 	cfg[config.ConfigKeyAWSBucket] = bucket
 
 	return client, cfg
+}
+
+// endpointReachable reports whether the endpoint's host:port accepts TCP
+// connections. Used to skip the MinIO integration tests when the environment
+// variables are set but no MinIO is running.
+func endpointReachable(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", u.Host, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// newEndpointS3Client returns an S3 client pointed at a custom endpoint using
+// path-style addressing, used by the MinIO integration test.
+func newEndpointS3Client(t *testing.T, cfg map[string]string) *s3.Client {
+	t.Helper()
+	awsCredsProvider := credentials.NewStaticCredentialsProvider(
+		cfg[config.ConfigKeyAWSAccessKeyID],
+		cfg[config.ConfigKeyAWSSecretAccessKey],
+		"",
+	)
+
+	awsConfig, err := awsconfig.LoadDefaultConfig(
+		context.Background(),
+		awsconfig.WithRegion(cfg[config.ConfigKeyAWSRegion]),
+		awsconfig.WithCredentialsProvider(awsCredsProvider),
+	)
+	if err != nil {
+		t.Fatalf("could not create AWS config: %v", err)
+	}
+
+	return s3.NewFromConfig(awsConfig, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(cfg[config.ConfigKeyAWSEndpoint])
+		o.UsePathStyle = true
+	})
 }
 
 func newS3Client(cfg map[string]string) (*s3.Client, error) {

@@ -19,7 +19,9 @@
 # standard MinIO dev configuration for SSE-S3.
 services:
   minio:
-    image: minio/minio:latest
+    # Pinned to the release the regression tests were verified against;
+    # bump deliberately when a newer release needs testing.
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     ports:
       - "9000:9000"
     environment:

@@ -15,6 +15,8 @@
 package destination
 
 import (
+	"context"
+
 	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/format"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -32,4 +34,14 @@ type Config struct {
 
 	// the destination format, either "json" or "parquet".
 	Format format.Format `validate:"required,inclusion=parquet|json"`
+}
+
+// Validate implements sdk.Validatable: the SDK calls it automatically after
+// configuration parsing. It runs the middleware validations and the ones the
+// parameter specifications cannot express, such as the aws.endpoint URL shape.
+func (c *Config) Validate(ctx context.Context) error {
+	if err := c.DefaultDestinationMiddleware.Validate(ctx); err != nil {
+		return err
+	}
+	return config.ValidateEndpoint(c.AWSEndpoint)
 }

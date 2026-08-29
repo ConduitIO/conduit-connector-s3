@@ -9,8 +9,8 @@ test:
 	go test $(GOTEST_FLAGS) -race ./...
 
 # test-integration-s3 starts the MinIO container (test/docker-compose.yml),
-# runs the S3-compatible-store integration test (TestS3MinIO) against it and
-# stops the container again.
+# runs the S3-compatible-store integration tests (TestS3MinIO in destination,
+# TestSource_MinIO in source) against it and stops the container again.
 .PHONY: test-integration-s3
 test-integration-s3:
 	docker compose -f test/docker-compose.yml up -d --wait
@@ -20,7 +20,8 @@ test-integration-s3:
 		AWS_S3_BUCKET=conduit-s3-minio-test \
 		AWS_REGION=us-east-1 \
 		AWS_ENDPOINT_URL=http://localhost:9000 \
-		go test -race -count=1 -run TestS3MinIO ./destination
+		go test -race -count=1 -run '^TestS3MinIO$$' ./destination && \
+		go test -race -count=1 -run '^TestSource_MinIO$$' ./source
 
 .PHONY: lint
 lint:

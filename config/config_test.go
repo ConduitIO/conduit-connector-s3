@@ -15,6 +15,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/conduitio/conduit-commons/config"
@@ -46,4 +47,34 @@ func TestParseConfig(t *testing.T) {
 	}
 	is.NoErr(err)
 	is.Equal(want, got)
+}
+
+func TestValidateAWSEndpoint(t *testing.T) {
+	is := is.New(t)
+
+	testCases := []struct {
+		name     string
+		endpoint string
+		wantErr  bool
+	}{
+		{name: "empty", endpoint: "", wantErr: false},
+		{name: "http", endpoint: "http://localhost:9000", wantErr: false},
+		{name: "https", endpoint: "https://s3.example.com", wantErr: false},
+		{name: "scheme missing", endpoint: "localhost:9000", wantErr: true},
+		{name: "unsupported scheme", endpoint: "ftp://s3.example.com", wantErr: true},
+		{name: "not a URL", endpoint: "not a url", wantErr: true},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			err := ValidateEndpoint(tc.endpoint)
+			if tc.wantErr {
+				is.True(err != nil)
+				// the error must name the failing config parameter
+				is.True(strings.Contains(err.Error(), ConfigKeyAWSEndpoint))
+			} else {
+				is.NoErr(err)
+			}
+		})
+	}
 }

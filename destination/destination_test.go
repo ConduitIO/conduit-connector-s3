@@ -18,6 +18,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -241,6 +243,12 @@ func TestS3MinIO(t *testing.T) {
 	)
 	skipOnEmptyEnv(t, env)
 
+	// The env vars may be set while no MinIO is running (e.g. a local shell
+	// with leftovers): probe the endpoint and skip instead of hard-failing.
+	if !endpointReachable(env[EnvAWSEndpoint]) {
+		t.Skipf("endpoint %q not reachable, skipping MinIO integration test", env[EnvAWSEndpoint])
+	}
+
 	// Create the bucket with a path-style client. The connector's own client
 	// is configured with the same addressing style below.
 	bucket := env[EnvAWSS3Bucket]
@@ -291,6 +299,22 @@ func TestS3MinIO(t *testing.T) {
 	body, err := io.ReadAll(obj.Body)
 	is.NoErr(err)
 	is.True(strings.Contains(string(body), `"this is a message #1"`))
+}
+
+// endpointReachable reports whether the endpoint's host:port accepts TCP
+// connections. Used to skip the MinIO integration tests when the environment
+// variables are set but no MinIO is running.
+func endpointReachable(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", u.Host, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // newPathStyleS3Client returns an S3 client using path-style addressing, used
