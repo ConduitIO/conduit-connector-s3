@@ -27,6 +27,12 @@ const (
 	// ConfigKeyAWSBucket is the config name for AWS S3 bucket
 	ConfigKeyAWSBucket = "aws.bucket"
 
+	// ConfigKeyAWSEndpoint is the config name for a custom S3-compatible endpoint.
+	ConfigKeyAWSEndpoint = "aws.endpoint"
+
+	// ConfigKeyAWSPathStyle is the config name for path-style addressing.
+	ConfigKeyAWSPathStyle = "aws.pathStyle"
+
 	// ConfigKeyPrefix is the config name for S3 key prefix.
 	ConfigKeyPrefix = "prefix"
 )
@@ -41,6 +47,17 @@ type Config struct {
 	AWSRegion string `json:"aws.region" validate:"required"`
 	// the AWS S3 bucket name.
 	AWSBucket string `json:"aws.bucket" validate:"required"`
+	// The endpoint to connect to. Set this when using an S3-compatible object
+	// store such as MinIO (for example http://localhost:9000). Leave empty to
+	// use the default AWS endpoints. The AWS_ENDPOINT_URL environment variable
+	// is also honored when this is empty.
+	AWSEndpoint string `json:"aws.endpoint"`
+	// Use path-style addressing (http://endpoint/bucket/key) instead of
+	// virtual-hosted addressing (http://bucket.endpoint/key). Set this to true
+	// when using an S3-compatible store that does not support virtual-hosted
+	// addressing: the default MinIO setup misparses virtual-hosted requests
+	// and answers with a 400 MalformedXML. Leave false for AWS S3.
+	AWSPathStyle bool `json:"aws.pathStyle" default:"false"`
 	// the S3 key prefix.
 	Prefix string
 }

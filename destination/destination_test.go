@@ -17,12 +17,18 @@ package destination_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsConfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/conduitio/conduit-commons/opencdc"
 	s3Conn "github.com/conduitio/conduit-connector-s3"
 	"github.com/conduitio/conduit-connector-s3/config"
@@ -38,6 +44,7 @@ const (
 	EnvAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
 	EnvAWSS3Bucket        = "AWS_S3_BUCKET"
 	EnvAWSRegion          = "AWS_REGION"
+	EnvAWSEndpoint        = "AWS_ENDPOINT_URL"
 )
 
 func TestLocalParquet(t *testing.T) {
@@ -204,6 +211,108 @@ func TestS3Parquet(t *testing.T) {
 		writer.FilesWritten[1], "reference-2.parquet",
 	)
 	is.NoErr(err)
+}
+
+// TestS3MinIO exercises the destination write path against a MinIO
+// S3-compatible store (test/docker-compose.yml, `make test-integration-s3`).
+// It is the regression test for ConduitIO/conduit-connector-s3#963: without a
+// way to configure a custom endpoint and path-style addressing, the connector
+// reached MinIO with virtual-hosted addressing (<bucket>.localhost:9000,
+// RFC 6761), which the default MinIO setup does not recognize: it misparses
+// the bucket as part of the object key and answers PutObject with a 400
+// "MalformedXML: The XML you provided was not well-formed". The test
+// therefore configures aws.endpoint and aws.pathStyle and asserts the write
+// succeeds and the object actually lands: on the unfixed code the PutObject
+// fails, on the fixed code it succeeds.
+//
+// It requires the following environment variables (set by `make
+// test-integration-s3`) and is skipped otherwise: AWS_ENDPOINT_URL,
+// AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET, AWS_REGION.
+func TestS3MinIO(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	env := getEnv(
+		EnvAWSAccessKeyID,
+		EnvAWSSecretAccessKey,
+		EnvAWSS3Bucket,
+		EnvAWSRegion,
+		EnvAWSEndpoint,
+	)
+	skipOnEmptyEnv(t, env)
+
+	// Create the bucket with a path-style client. The connector's own client
+	// is configured with the same addressing style below.
+	bucket := env[EnvAWSS3Bucket]
+	s3Client := newPathStyleS3Client(t, env)
+	_, err := s3Client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	if err != nil && !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou") && !strings.Contains(err.Error(), "BucketAlreadyExists") {
+		t.Fatalf("create bucket: %v", err)
+	}
+
+	underTest := &destination.Destination{}
+
+	cfg := map[string]string{
+		config.ConfigKeyAWSAccessKeyID:     env[EnvAWSAccessKeyID],
+		config.ConfigKeyAWSSecretAccessKey: env[EnvAWSSecretAccessKey],
+		config.ConfigKeyAWSRegion:          env[EnvAWSRegion],
+		config.ConfigKeyAWSBucket:          bucket,
+		config.ConfigKeyAWSEndpoint:        env[EnvAWSEndpoint],
+		config.ConfigKeyAWSPathStyle:       "true",
+		config.ConfigKeyPrefix:             "test",
+		destination.ConfigKeyFormat:        "json",
+	}
+	err = sdk.Util.ParseConfig(ctx, cfg, underTest.Config(), s3Conn.Connector.NewSpecification().DestinationParams)
+	is.NoErr(err) // failed to parse the configuration
+
+	err = underTest.Open(ctx)
+	is.NoErr(err) // failed to initialize destination
+
+	// generate 50 records and write them in a single batch
+	records := generateRecords(50)
+	count, err := underTest.Write(ctx, records)
+	is.NoErr(err) // PutObject against MinIO failed, see issue #963
+	is.Equal(count, 50)
+
+	s3Writer, ok := underTest.Writer.(*writer.S3)
+	is.True(ok) // Destination writer expected to be writer.S3
+
+	err = underTest.Teardown(ctx)
+	is.NoErr(err)
+
+	// the object must have actually landed, not just reported success
+	is.Equal(len(s3Writer.FilesWritten), 1)
+	obj, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(s3Writer.FilesWritten[0]),
+	})
+	is.NoErr(err)
+	defer obj.Body.Close()
+	body, err := io.ReadAll(obj.Body)
+	is.NoErr(err)
+	is.True(strings.Contains(string(body), `"this is a message #1"`))
+}
+
+// newPathStyleS3Client returns an S3 client using path-style addressing, used
+// by the MinIO integration test for bucket setup and verification.
+func newPathStyleS3Client(t *testing.T, env map[string]string) *s3.Client {
+	t.Helper()
+	cfg, err := awsConfig.LoadDefaultConfig(
+		context.Background(),
+		awsConfig.WithRegion(env[EnvAWSRegion]),
+		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			env[EnvAWSAccessKeyID],
+			env[EnvAWSSecretAccessKey],
+			"",
+		)),
+	)
+	if err != nil {
+		t.Fatalf("load aws config: %v", err)
+	}
+	return s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(env[EnvAWSEndpoint])
+		o.UsePathStyle = true
+	})
 }
 
 func generateRecords(count int) []opencdc.Record {

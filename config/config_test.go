@@ -26,6 +26,8 @@ var exampleConfig = config.Config{
 	"aws.secretAccessKey": "secret-key-321",
 	"aws.region":          "us-west-2",
 	"aws.bucket":          "foobucket",
+	"aws.endpoint":        "http://localhost:9000",
+	"aws.pathStyle":       "true",
 	"prefix":              "conduit-",
 }
 
@@ -38,6 +40,8 @@ func TestParseConfig(t *testing.T) {
 		AWSSecretAccessKey: "secret-key-321",
 		AWSRegion:          "us-west-2",
 		AWSBucket:          "foobucket",
+		AWSEndpoint:        "http://localhost:9000",
+		AWSPathStyle:       true,
 		Prefix:             "conduit-",
 	}
 	is.NoErr(err)

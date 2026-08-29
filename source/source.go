@@ -80,7 +80,12 @@ func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
 		return err
 	}
 
-	s.client = s3.NewFromConfig(s3Config)
+	s.client = s3.NewFromConfig(s3Config, func(o *s3.Options) {
+		if s.config.AWSEndpoint != "" {
+			o.BaseEndpoint = aws.String(s.config.AWSEndpoint)
+		}
+		o.UsePathStyle = s.config.AWSPathStyle
+	})
 
 	// check if bucket exists
 	err = s.bucketExists(ctx, s.config.AWSBucket)

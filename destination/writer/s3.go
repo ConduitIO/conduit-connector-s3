@@ -53,6 +53,15 @@ type S3Config struct {
 	Region          string
 	Bucket          string
 	KeyPrefix       string
+	// Endpoint is the S3-compatible endpoint to connect to (for example
+	// http://localhost:9000 for MinIO). Empty means the default AWS endpoints.
+	Endpoint string
+	// PathStyle enables path-style addressing (http://endpoint/bucket/key).
+	// Required by S3-compatible stores that do not support virtual-hosted
+	// addressing, such as the default MinIO setup, which answers virtual-hosted
+	// requests with a 400 MalformedXML
+	// (https://github.com/ConduitIO/conduit-connector-s3/issues/963).
+	PathStyle bool
 }
 
 // NewS3 takes an S3Config reference and produces an S3 Writer
@@ -76,7 +85,12 @@ func NewS3(ctx context.Context, cfg *S3Config) (*S3, error) {
 		Bucket:       cfg.Bucket,
 		KeyPrefix:    cfg.KeyPrefix,
 		FilesWritten: make([]string, 0, S3FilesWrittenLength),
-		Client:       s3.NewFromConfig(awsConfig),
+		Client: s3.NewFromConfig(awsConfig, func(o *s3.Options) {
+			if cfg.Endpoint != "" {
+				o.BaseEndpoint = aws.String(cfg.Endpoint)
+			}
+			o.UsePathStyle = cfg.PathStyle
+		}),
 	}, nil
 }
 
