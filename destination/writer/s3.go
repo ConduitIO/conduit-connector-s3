@@ -58,7 +58,10 @@ type S3Config struct {
 	Endpoint string
 	// PathStyle enables path-style addressing (http://endpoint/bucket/key).
 	// Required by S3-compatible stores that do not support virtual-hosted
-	// addressing, such as the default MinIO setup, which answers virtual-hosted
+	// addressing, such as the default MinIO setup (started without
+	// MINIO_DOMAIN), which does not recognize the bucket in the host name and
+	// takes the first path segment as the bucket instead: PutObject then fails
+	// with a 404 NoSuchBucket, and other S3-compatible stores answer such
 	// requests with a 400 MalformedXML
 	// (https://github.com/ConduitIO/conduit-connector-s3/issues/963).
 	PathStyle bool

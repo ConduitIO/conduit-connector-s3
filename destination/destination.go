@@ -42,6 +42,8 @@ func (d *Destination) Config() sdk.DestinationConfig {
 
 // Open makes sure everything is prepared to receive records.
 func (d *Destination) Open(ctx context.Context) error {
+	d.config.LogEndpointWarnings(ctx)
+
 	// initializing the writer
 	w, err := writer.NewS3(ctx, &writer.S3Config{
 		AccessKeyID:     d.config.AWSAccessKeyID,

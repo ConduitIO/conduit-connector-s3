@@ -92,16 +92,23 @@ pipelines:
           # The endpoint to connect to. Set this when using an S3-compatible
           # object store such as MinIO (for example http://localhost:9000).
           # Leave empty to use the default AWS endpoints. The AWS_ENDPOINT_URL
-          # environment variable is also honored when this is empty.
+          # environment variable is also honored when this is empty. Note that
+          # an http:// endpoint sends every request, including the SigV4
+          # Authorization header that carries the access key ID, in the clear:
+          # use https:// for anything that is not on localhost.
           # Type: string
           # Required: no
           aws.endpoint: ""
           # Use path-style addressing (http://endpoint/bucket/key) instead of
           # virtual-hosted addressing (http://bucket.endpoint/key). Set this to
           # true when using an S3-compatible store that does not support
-          # virtual-hosted addressing: the default MinIO setup misparses
-          # virtual-hosted requests and answers with a 400 MalformedXML. Leave
-          # false for AWS S3.
+          # virtual-hosted addressing. The default MinIO setup (started without
+          # MINIO_DOMAIN) is one: it does not recognize the bucket in the host
+          # name and takes the first path segment as the bucket instead, so
+          # requests fail -- against the MinIO setup in this repository with a
+          # 404 NoSuchBucket on PutObject and a 400 Bad Request on HeadBucket;
+          # other S3-compatible stores answer such requests with a 400
+          # MalformedXML. Leave false for AWS S3.
           # Type: bool
           # Required: no
           aws.pathStyle: "false"
@@ -196,16 +203,23 @@ pipelines:
           # The endpoint to connect to. Set this when using an S3-compatible
           # object store such as MinIO (for example http://localhost:9000).
           # Leave empty to use the default AWS endpoints. The AWS_ENDPOINT_URL
-          # environment variable is also honored when this is empty.
+          # environment variable is also honored when this is empty. Note that
+          # an http:// endpoint sends every request, including the SigV4
+          # Authorization header that carries the access key ID, in the clear:
+          # use https:// for anything that is not on localhost.
           # Type: string
           # Required: no
           aws.endpoint: ""
           # Use path-style addressing (http://endpoint/bucket/key) instead of
           # virtual-hosted addressing (http://bucket.endpoint/key). Set this to
           # true when using an S3-compatible store that does not support
-          # virtual-hosted addressing: the default MinIO setup misparses
-          # virtual-hosted requests and answers with a 400 MalformedXML. Leave
-          # false for AWS S3.
+          # virtual-hosted addressing. The default MinIO setup (started without
+          # MINIO_DOMAIN) is one: it does not recognize the bucket in the host
+          # name and takes the first path segment as the bucket instead, so
+          # requests fail -- against the MinIO setup in this repository with a
+          # 404 NoSuchBucket on PutObject and a 400 Bad Request on HeadBucket;
+          # other S3-compatible stores answer such requests with a 400
+          # MalformedXML. Leave false for AWS S3.
           # Type: bool
           # Required: no
           aws.pathStyle: "false"

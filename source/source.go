@@ -65,6 +65,8 @@ func (s *Source) Config() sdk.SourceConfig {
 
 // Open prepare the plugin to start sending records from the given position
 func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
+	s.config.LogEndpointWarnings(ctx)
+
 	awsCredsProvider := credentials.NewStaticCredentialsProvider(
 		s.config.AWSAccessKeyID,
 		s.config.AWSSecretAccessKey,
