@@ -37,16 +37,24 @@ jobs:
       - name: Start MinIO
         run: docker compose -f test/docker-compose.yml up -d --wait
 
+      # MINIO_ENDPOINT, not AWS_ENDPOINT_URL: the AWS SDK reads AWS_ENDPOINT_URL
+      # itself (aws-sdk-go-v2 config/env_config.go -> cfg.BaseEndpoint), so
+      # setting it here would redirect the client to MinIO whether or not the
+      # connector's own aws.endpoint configuration works -- the tests would
+      # pass even with that plumbing deleted. MINIO_ENDPOINT only ever reaches
+      # the connector through its config, so this job actually exercises it.
+      # The tests fail if AWS_ENDPOINT_URL is set in the environment.
+      #
+      # Both packages run in a single invocation, mirroring
+      # `make test-integration-s3`.
       - name: Test against MinIO
         env:
           AWS_ACCESS_KEY_ID: conduitminio
           AWS_SECRET_ACCESS_KEY: conduitminiosecret
           AWS_S3_BUCKET: conduit-s3-minio-test
           AWS_REGION: us-east-1
-          AWS_ENDPOINT_URL: http://localhost:9000
-        run: |
-          go test -race -count=1 -run '^TestS3MinIO$' ./destination
-          go test -race -count=1 -run '^TestSource_MinIO$' ./source
+          MINIO_ENDPOINT: http://localhost:9000
+        run: go test -race -count=1 -p 1 -run '^(TestS3MinIO|TestSource_MinIO)$' ./destination ./source
 
       - name: Stop MinIO
         if: always()

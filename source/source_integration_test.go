@@ -40,6 +40,19 @@ import (
 	"github.com/matryer/is"
 )
 
+const (
+	// envMinIOEndpoint carries the MinIO endpoint into the connector's own
+	// aws.endpoint configuration, and nowhere else. It is deliberately NOT
+	// named AWS_ENDPOINT_URL: the AWS SDK reads that variable itself, so with
+	// AWS_ENDPOINT_URL set the client reaches MinIO whether or not the
+	// connector's aws.endpoint plumbing works.
+	envMinIOEndpoint = "MINIO_ENDPOINT"
+
+	// envAWSEndpointURL is the SDK's own endpoint override. The MinIO test
+	// refuses to run with it set, see requireNoSDKEndpointEnv.
+	envAWSEndpointURL = "AWS_ENDPOINT_URL"
+)
+
 type Object struct {
 	key      string
 	content  string
@@ -505,30 +518,42 @@ func TestSource_CDCWithPrefix(t *testing.T) {
 // S3-compatible store (test/docker-compose.yml, `make test-integration-s3`).
 // It is the source-side counterpart of TestS3MinIO in the destination package:
 // with aws.endpoint and aws.pathStyle configured, the source must list and
-// read objects back from MinIO, which rejects virtual-hosted addressing with
-// a 400 MalformedXML (ConduitIO/conduit-connector-s3#963).
+// read objects back from MinIO, which does not recognize virtual-hosted
+// addressing in its default setup (no MINIO_DOMAIN) and answers such requests
+// with a 400 Bad Request on HeadBucket against this compose setup (the
+// destination's PutObject gets a 404 NoSuchBucket; other S3-compatible stores
+// answer such requests with a 400 MalformedXML)
+// (ConduitIO/conduit-connector-s3#963).
 //
-// It requires the following environment variables (set by `make
-// test-integration-s3`) and is skipped otherwise: AWS_ENDPOINT_URL,
-// AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION.
+// The endpoint arrives in MINIO_ENDPOINT rather than AWS_ENDPOINT_URL, so that
+// the connector's aws.endpoint configuration is the only thing that can point
+// the SDK at MinIO: the AWS SDK reads AWS_ENDPOINT_URL itself, and with it set
+// this test would pass even with that configuration ignored.
+//
+// The test is skipped when MINIO_ENDPOINT is unset (a plain `make test` run).
+// When it is set the caller asked for this test, so missing credentials or an
+// unreachable endpoint fail instead of silently skipping.
 func TestSource_MinIO(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
+	endpoint := os.Getenv(envMinIOEndpoint)
+	if endpoint == "" {
+		t.Skipf("%v env var must be set", envMinIOEndpoint)
+	}
+	requireNoSDKEndpointEnv(t)
+
 	awsAccessKeyID := os.Getenv("AWS_ACCESS_KEY_ID")
 	awsSecretAccessKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
 	awsRegion := os.Getenv("AWS_REGION")
-	endpoint := os.Getenv("AWS_ENDPOINT_URL")
 	if awsAccessKeyID == "" || awsSecretAccessKey == "" || awsRegion == "" {
-		t.Skip("AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION must be set for the MinIO integration test")
+		t.Fatal("AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and AWS_REGION must be set for the MinIO integration test")
 	}
-	if endpoint == "" {
-		t.Skip("AWS_ENDPOINT_URL not set, skipping MinIO integration test")
-	}
-	// The env vars may be set while no MinIO is running (e.g. a local shell
-	// with leftovers): probe the endpoint and skip instead of hard-failing.
-	if !endpointReachable(endpoint) {
-		t.Skipf("endpoint %q not reachable, skipping MinIO integration test", endpoint)
+	// MINIO_ENDPOINT is specific to this suite, so if it is set the caller
+	// asked for the test: an unreachable endpoint is a failure, not a reason
+	// to skip. A silent skip here is exactly what would hide a broken setup.
+	if !endpointReachable(ctx, endpoint) {
+		t.Fatalf("endpoint %q not reachable: start MinIO with `docker compose -f test/docker-compose.yml up -d --wait`, or unset %s to skip this test", endpoint, envMinIOEndpoint)
 	}
 
 	cfg := map[string]string{
@@ -596,19 +621,33 @@ func prepareIntegrationTest(t *testing.T) (*s3.Client, map[string]string) {
 }
 
 // endpointReachable reports whether the endpoint's host:port accepts TCP
-// connections. Used to skip the MinIO integration tests when the environment
-// variables are set but no MinIO is running.
-func endpointReachable(endpoint string) bool {
+// connections, so the MinIO integration test can tell "MinIO is not running"
+// from a genuine connector failure.
+func endpointReachable(ctx context.Context, endpoint string) bool {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Host == "" {
 		return false
 	}
-	conn, err := net.DialTimeout("tcp", u.Host, 2*time.Second)
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", u.Host)
 	if err != nil {
 		return false
 	}
 	_ = conn.Close()
 	return true
+}
+
+// requireNoSDKEndpointEnv fails the test when AWS_ENDPOINT_URL is set. The AWS
+// SDK reads that variable itself (aws-sdk-go-v2 config/env_config.go ->
+// cfg.BaseEndpoint -> resolveBaseEndpoint), so it would redirect the client to
+// MinIO independently of the connector's aws.endpoint configuration and the
+// test would no longer prove that configuration works.
+func requireNoSDKEndpointEnv(t *testing.T) {
+	t.Helper()
+	if v := os.Getenv(envAWSEndpointURL); v != "" {
+		t.Fatalf("%s is set (%q): the AWS SDK reads it itself, so it would point the client at the endpoint regardless of whether the connector's %s configuration works. Unset it before running the MinIO integration tests.",
+			envAWSEndpointURL, v, config.ConfigKeyAWSEndpoint)
+	}
 }
 
 // newEndpointS3Client returns an S3 client pointed at a custom endpoint using
