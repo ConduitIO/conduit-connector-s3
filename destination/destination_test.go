@@ -17,12 +17,20 @@ package destination_test
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsConfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/conduitio/conduit-commons/opencdc"
 	s3Conn "github.com/conduitio/conduit-connector-s3"
 	"github.com/conduitio/conduit-connector-s3/config"
@@ -38,6 +46,19 @@ const (
 	EnvAWSSecretAccessKey = "AWS_SECRET_ACCESS_KEY"
 	EnvAWSS3Bucket        = "AWS_S3_BUCKET"
 	EnvAWSRegion          = "AWS_REGION"
+
+	// EnvMinIOEndpoint carries the MinIO endpoint into the connector's own
+	// aws.endpoint configuration, and nowhere else. It is deliberately NOT
+	// named AWS_ENDPOINT_URL: the AWS SDK reads that variable itself
+	// (aws-sdk-go-v2 config/env_config.go -> cfg.BaseEndpoint ->
+	// resolveBaseEndpoint), so with AWS_ENDPOINT_URL set the client reaches
+	// MinIO whether or not the connector's aws.endpoint plumbing works, and
+	// this test would pass with that plumbing deleted.
+	EnvMinIOEndpoint = "MINIO_ENDPOINT"
+
+	// EnvAWSEndpointURL is the SDK's own endpoint override. The MinIO tests
+	// refuse to run with it set, see requireNoSDKEndpointEnv.
+	EnvAWSEndpointURL = "AWS_ENDPOINT_URL"
 )
 
 func TestLocalParquet(t *testing.T) {
@@ -206,6 +227,158 @@ func TestS3Parquet(t *testing.T) {
 	is.NoErr(err)
 }
 
+// TestS3MinIO exercises the destination write path against a MinIO
+// S3-compatible store (test/docker-compose.yml, `make test-integration-s3`).
+// It is the regression test for ConduitIO/conduit-connector-s3#963: without a
+// way to configure a custom endpoint and path-style addressing, the connector
+// reached MinIO with virtual-hosted addressing (<bucket>.localhost:9000, which
+// resolves to loopback per RFC 6761), which the default MinIO setup (no
+// MINIO_DOMAIN) does not recognize: it ignores the bucket in the host name and
+// takes the first path segment as the bucket instead. This test configures a
+// key prefix, so the remaining segment is still a key and PutObject comes back
+// with a 404 "NoSuchBucket"; with no prefix there is no key left and MinIO
+// answers with the 400 "MalformedXML" reported in #963. The test configures
+// aws.endpoint and aws.pathStyle and asserts the write succeeds and the object
+// actually lands: on the unfixed code the PutObject fails, on the fixed code
+// it succeeds.
+//
+// The endpoint arrives in MINIO_ENDPOINT rather than AWS_ENDPOINT_URL, so that
+// the connector's aws.endpoint configuration is the only thing that can point
+// the SDK at MinIO; see EnvMinIOEndpoint.
+//
+// The test is skipped when MINIO_ENDPOINT is unset (a plain `make test` run).
+// When it is set the caller asked for this test, so a missing AWS_ACCESS_KEY_ID,
+// AWS_SECRET_ACCESS_KEY, AWS_S3_BUCKET or AWS_REGION, or an unreachable
+// endpoint, fails instead of silently skipping.
+func TestS3MinIO(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	endpoint := os.Getenv(EnvMinIOEndpoint)
+	if endpoint == "" {
+		t.Skipf("%v env var must be set", EnvMinIOEndpoint)
+	}
+	requireNoSDKEndpointEnv(t)
+
+	env := getEnv(
+		EnvAWSAccessKeyID,
+		EnvAWSSecretAccessKey,
+		EnvAWSS3Bucket,
+		EnvAWSRegion,
+	)
+	failOnEmptyEnv(t, env)
+	env[EnvMinIOEndpoint] = endpoint
+
+	// MINIO_ENDPOINT is specific to this suite, so if it is set the caller
+	// asked for the test: an unreachable endpoint is a failure, not a reason
+	// to skip. A silent skip here is exactly what would hide a broken setup.
+	if !endpointReachable(ctx, endpoint) {
+		t.Fatalf("endpoint %q not reachable: start MinIO with `docker compose -f test/docker-compose.yml up -d --wait`, or unset %s to skip this test", endpoint, EnvMinIOEndpoint)
+	}
+
+	// Create the bucket with a path-style client. The connector's own client
+	// is configured with the same addressing style below.
+	bucket := env[EnvAWSS3Bucket]
+	s3Client := newPathStyleS3Client(t, env)
+	_, err := s3Client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	if err != nil && !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou") && !strings.Contains(err.Error(), "BucketAlreadyExists") {
+		t.Fatalf("create bucket: %v", err)
+	}
+
+	underTest := &destination.Destination{}
+
+	cfg := map[string]string{
+		config.ConfigKeyAWSAccessKeyID:     env[EnvAWSAccessKeyID],
+		config.ConfigKeyAWSSecretAccessKey: env[EnvAWSSecretAccessKey],
+		config.ConfigKeyAWSRegion:          env[EnvAWSRegion],
+		config.ConfigKeyAWSBucket:          bucket,
+		config.ConfigKeyAWSEndpoint:        env[EnvMinIOEndpoint],
+		config.ConfigKeyAWSPathStyle:       "true",
+		config.ConfigKeyPrefix:             "test",
+		destination.ConfigKeyFormat:        "json",
+	}
+	err = sdk.Util.ParseConfig(ctx, cfg, underTest.Config(), s3Conn.Connector.NewSpecification().DestinationParams)
+	is.NoErr(err) // failed to parse the configuration
+
+	err = underTest.Open(ctx)
+	is.NoErr(err) // failed to initialize destination
+
+	// generate 50 records and write them in a single batch
+	records := generateRecords(50)
+	count, err := underTest.Write(ctx, records)
+	is.NoErr(err) // PutObject against MinIO failed, see issue #963
+	is.Equal(count, 50)
+
+	s3Writer, ok := underTest.Writer.(*writer.S3)
+	is.True(ok) // Destination writer expected to be writer.S3
+
+	err = underTest.Teardown(ctx)
+	is.NoErr(err)
+
+	// the object must have actually landed, not just reported success
+	is.Equal(len(s3Writer.FilesWritten), 1)
+	obj, err := s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(s3Writer.FilesWritten[0]),
+	})
+	is.NoErr(err)
+	defer obj.Body.Close()
+	body, err := io.ReadAll(obj.Body)
+	is.NoErr(err)
+	is.True(strings.Contains(string(body), `"this is a message #1"`))
+}
+
+// endpointReachable reports whether the endpoint's host:port accepts TCP
+// connections, so the MinIO integration test can tell "MinIO is not running"
+// from a genuine connector failure.
+func endpointReachable(ctx context.Context, endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", u.Host)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// requireNoSDKEndpointEnv fails the test when AWS_ENDPOINT_URL is set. The AWS
+// SDK reads that variable itself, so it would redirect the client to MinIO
+// independently of the connector's aws.endpoint configuration and the test
+// would no longer prove that configuration works.
+func requireNoSDKEndpointEnv(t *testing.T) {
+	t.Helper()
+	if v := os.Getenv(EnvAWSEndpointURL); v != "" {
+		t.Fatalf("%s is set (%q): the AWS SDK reads it itself, so it would point the client at the endpoint regardless of whether the connector's %s configuration works. Unset it before running the MinIO integration tests.",
+			EnvAWSEndpointURL, v, config.ConfigKeyAWSEndpoint)
+	}
+}
+
+// newPathStyleS3Client returns an S3 client using path-style addressing, used
+// by the MinIO integration test for bucket setup and verification.
+func newPathStyleS3Client(t *testing.T, env map[string]string) *s3.Client {
+	t.Helper()
+	cfg, err := awsConfig.LoadDefaultConfig(
+		context.Background(),
+		awsConfig.WithRegion(env[EnvAWSRegion]),
+		awsConfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			env[EnvAWSAccessKeyID],
+			env[EnvAWSSecretAccessKey],
+			"",
+		)),
+	)
+	if err != nil {
+		t.Fatalf("load aws config: %v", err)
+	}
+	return s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(env[EnvMinIOEndpoint])
+		o.UsePathStyle = true
+	})
+}
+
 func generateRecords(count int) []opencdc.Record {
 	var result []opencdc.Record
 
@@ -256,6 +429,18 @@ func skipOnEmptyEnv(t *testing.T, vars map[string]string) {
 	for k, v := range vars {
 		if v == "" {
 			t.Skipf("%v env var must be set", k)
+		}
+	}
+}
+
+// failOnEmptyEnv is skipOnEmptyEnv's counterpart for a test the caller has
+// explicitly asked for: a half-configured environment is a broken setup, and
+// skipping it would report success for a test that never ran.
+func failOnEmptyEnv(t *testing.T, vars map[string]string) {
+	t.Helper()
+	for k, v := range vars {
+		if v == "" {
+			t.Fatalf("%v env var must be set for the MinIO integration test", k)
 		}
 	}
 }
