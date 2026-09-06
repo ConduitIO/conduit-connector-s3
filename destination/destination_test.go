@@ -234,12 +234,13 @@ func TestS3Parquet(t *testing.T) {
 // reached MinIO with virtual-hosted addressing (<bucket>.localhost:9000, which
 // resolves to loopback per RFC 6761), which the default MinIO setup (no
 // MINIO_DOMAIN) does not recognize: it ignores the bucket in the host name and
-// takes the first path segment as the bucket instead, so PutObject comes back
-// with a 404 "NoSuchBucket" against this compose setup (other S3-compatible
-// stores answer such requests with a 400 "MalformedXML"). The test therefore
-// configures aws.endpoint and aws.pathStyle and asserts the write succeeds and
-// the object actually lands: on the unfixed code the PutObject fails, on the
-// fixed code it succeeds.
+// takes the first path segment as the bucket instead. This test configures a
+// key prefix, so the remaining segment is still a key and PutObject comes back
+// with a 404 "NoSuchBucket"; with no prefix there is no key left and MinIO
+// answers with the 400 "MalformedXML" reported in #963. The test configures
+// aws.endpoint and aws.pathStyle and asserts the write succeeds and the object
+// actually lands: on the unfixed code the PutObject fails, on the fixed code
+// it succeeds.
 //
 // The endpoint arrives in MINIO_ENDPOINT rather than AWS_ENDPOINT_URL, so that
 // the connector's aws.endpoint configuration is the only thing that can point

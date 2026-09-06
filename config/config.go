@@ -75,11 +75,11 @@ type Config struct {
 	// virtual-hosted addressing (http://bucket.endpoint/key). Set this to true
 	// when using an S3-compatible store that does not support virtual-hosted
 	// addressing. The default MinIO setup (started without MINIO_DOMAIN) is
-	// one: it does not recognize the bucket in the host name and takes the
-	// first path segment as the bucket instead, so requests fail -- against
-	// the MinIO setup in this repository with a 404 NoSuchBucket on PutObject
-	// and a 400 Bad Request on HeadBucket; other S3-compatible stores answer
-	// such requests with a 400 MalformedXML. Leave false for AWS S3.
+	// one: it ignores the bucket in the host name and takes the first path
+	// segment as the bucket instead. What comes back depends on the key: with
+	// a prefix configured the remaining segments are still a key, so PutObject
+	// fails with a 404 NoSuchBucket; without a prefix there is no key left and
+	// MinIO answers with a 400 MalformedXML. Leave false for AWS S3.
 	AWSPathStyle bool `json:"aws.pathStyle" default:"false"`
 	// the S3 key prefix.
 	Prefix string

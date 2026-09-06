@@ -519,10 +519,9 @@ func TestSource_CDCWithPrefix(t *testing.T) {
 // It is the source-side counterpart of TestS3MinIO in the destination package:
 // with aws.endpoint and aws.pathStyle configured, the source must list and
 // read objects back from MinIO, which does not recognize virtual-hosted
-// addressing in its default setup (no MINIO_DOMAIN) and answers such requests
-// with a 400 Bad Request on HeadBucket against this compose setup (the
-// destination's PutObject gets a 404 NoSuchBucket; other S3-compatible stores
-// answer such requests with a 400 MalformedXML)
+// addressing in its default setup (no MINIO_DOMAIN): the source's HeadBucket
+// comes back with a 400 Bad Request, and the destination's PutObject with a
+// 404 NoSuchBucket or a 400 MalformedXML depending on the key prefix
 // (ConduitIO/conduit-connector-s3#963).
 //
 // The endpoint arrives in MINIO_ENDPOINT rather than AWS_ENDPOINT_URL, so that
