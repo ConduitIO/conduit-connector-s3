@@ -19,9 +19,16 @@
 # standard MinIO dev configuration for SSE-S3.
 services:
   minio:
-    # Pinned to the release the regression tests were verified against;
-    # bump deliberately when a newer release needs testing.
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    # MinIO stopped publishing images: minio/minio was removed from Docker
+    # Hub (the pull fails with "pull access denied", which broke this job
+    # from ~2026-09-15) and quay.io/minio/minio requires authentication.
+    # pgsty/minio is a maintained community build of the same server and a
+    # drop-in for the old image (same entrypoint, `server /data`, env vars,
+    # health endpoint and bundled curl). Pinned by multi-arch index digest
+    # (tag RELEASE.2026-08-04T00-00-00Z) so a third-party retag cannot change
+    # what CI runs; bump the digest deliberately. Same pin as
+    # ConduitIO/conduit test/compose-templates.yaml (ConduitIO/conduit#2893).
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
     ports:
       - "9000:9000"
     environment:
