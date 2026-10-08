@@ -15,6 +15,7 @@
 package source
 
 import (
+	"context"
 	"time"
 
 	"github.com/conduitio/conduit-connector-s3/config"
@@ -33,4 +34,14 @@ type Config struct {
 
 	// polling period for the CDC mode, formatted as a time.Duration string.
 	PollingPeriod time.Duration `json:"pollingPeriod" default:"1s"`
+}
+
+// Validate implements sdk.Validatable: the SDK calls it automatically after
+// configuration parsing. It runs the middleware validations and the ones the
+// parameter specifications cannot express, such as the aws.endpoint URL shape.
+func (c *Config) Validate(ctx context.Context) error {
+	if err := c.DefaultSourceMiddleware.Validate(ctx); err != nil {
+		return err
+	}
+	return config.ValidateEndpoint(c.AWSEndpoint)
 }
