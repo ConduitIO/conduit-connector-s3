@@ -46,6 +46,8 @@ type SnapshotIterator struct {
 	// as the end of the snapshot would hand over to CDC and silently skip every
 	// object not yet listed.
 	listErr error
+	// lastToken is the continuation token the last page was requested with.
+	lastToken string
 }
 
 // NewSnapshotIterator takes the s3 bucket, the client, and the position.
@@ -70,30 +72,48 @@ func (w *SnapshotIterator) shouldRefreshPage() bool {
 	return w.page == nil || len(w.page.Contents) == w.index
 }
 
-// refreshPage retrieves the next page from s3
-// returns an error if the end of bucket is reached
+// refreshPage retrieves the next page from s3. It returns sdk.ErrBackoffRetry
+// only when the listing is really exhausted; every other outcome that is not a
+// page is an error. Nothing about the iterator's position changes unless a page
+// was fetched successfully, so a failed call can be retried without skipping.
 func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
-	w.page = nil
-	w.index = 0
 	for w.paginator.HasMorePages() {
 		var date string
 		nextPage, err := w.paginator.NextPage(ctx, captureDate(&date))
 		if err != nil {
+			// The paginator did not advance, so the same page is fetched again.
 			return fmt.Errorf("could not fetch next page: %w", err)
 		}
-		if t, ok := parseStoreDate(date); ok && !w.startedAtFromStore {
-			// Truncated to a second, so never later than the real start.
-			w.startedAt, w.startedAtFromStore = t, true
+		// A page that claims to be truncated but offers no way to get the next
+		// one (no or repeated continuation token) is a broken listing, not the
+		// end of the bucket: ending here would skip everything after it.
+		next := aws.ToString(nextPage.NextContinuationToken)
+		if aws.ToBool(nextPage.IsTruncated) && (next == "" || next == w.lastToken) {
+			return fmt.Errorf("could not fetch next page: the listing is truncated but has no new continuation token")
 		}
+		w.lastToken = next
+		if !w.startedAtFromStore {
+			if t, ok := resolveStoreTime(w.startedAt, date); ok {
+				// min(host start, store time): never later than the real start.
+				w.startedAt, w.startedAtFromStore = t, true
+			}
+		}
+		w.page, w.index = nextPage, 0
 		if len(nextPage.Contents) > 0 {
-			w.page = nextPage
-			break
+			return nil
 		}
 	}
-	if w.page == nil {
-		return sdk.ErrBackoffRetry
-	}
-	return nil
+	w.page, w.index = nil, 0
+	return sdk.ErrBackoffRetry
+}
+
+// fail records a listing or read error. It is sticky: once the snapshot has
+// failed it never reports "no more objects" or moves on, whatever the caller
+// does next. Treating a failure as the end of the snapshot would hand over to
+// CDC and silently skip every object not yet read.
+func (w *SnapshotIterator) fail(err error) error {
+	w.listErr = err
+	return err
 }
 
 // HasNext returns a boolean that indicates whether the iterator has more objects to return or not.
@@ -107,7 +127,7 @@ func (w *SnapshotIterator) HasNext(ctx context.Context) bool {
 		err := w.refreshPage(ctx)
 		if err != nil {
 			if !errors.Is(err, sdk.ErrBackoffRetry) {
-				w.listErr = err
+				_ = w.fail(err)
 				return true
 			}
 			return false
@@ -117,7 +137,9 @@ func (w *SnapshotIterator) HasNext(ctx context.Context) bool {
 }
 
 // Next returns the next record in the iterator.
-// returns an empty record and an error if anything wrong happened.
+// returns an empty record and an error if anything wrong happened. The position
+// (page index, max LastModified) only advances once the record is fully built,
+// and an error is sticky.
 func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	if w.listErr != nil {
 		return opencdc.Record{}, w.listErr
@@ -125,13 +147,15 @@ func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	if w.shouldRefreshPage() {
 		err := w.refreshPage(ctx)
 		if err != nil {
-			return opencdc.Record{}, err
+			if errors.Is(err, sdk.ErrBackoffRetry) {
+				return opencdc.Record{}, err
+			}
+			return opencdc.Record{}, w.fail(err)
 		}
 	}
 
 	// after making sure the object is available, get the object's key
 	key := w.page.Contents[w.index].Key
-	w.index++
 
 	// read object
 	object, err := w.client.GetObject(ctx, &s3.GetObjectInput{
@@ -139,17 +163,19 @@ func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 		Key:    key,
 	})
 	if err != nil {
-		return opencdc.Record{}, fmt.Errorf("could not fetch the next object: %w", err)
+		return opencdc.Record{}, w.fail(fmt.Errorf("could not fetch the next object: %w", err))
 	}
-
-	// check if maxLastModified should be updated
-	if w.maxLastModified.Before(*object.LastModified) {
-		w.maxLastModified = *object.LastModified
-	}
+	defer object.Body.Close()
 
 	rawBody, err := io.ReadAll(object.Body)
 	if err != nil {
-		return opencdc.Record{}, fmt.Errorf("could not read the object's body: %w", err)
+		return opencdc.Record{}, w.fail(fmt.Errorf("could not read the object's body: %w", err))
+	}
+
+	// Everything that can fail is behind us: only now move the position.
+	w.index++
+	if lm := aws.ToTime(object.LastModified); w.maxLastModified.Before(lm) {
+		w.maxLastModified = lm
 	}
 
 	p := position.Position{
@@ -159,7 +185,7 @@ func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	}
 
 	m := opencdc.Metadata{
-		MetadataS3HeaderPrefix + MetadataContentType: *object.ContentType,
+		MetadataS3HeaderPrefix + MetadataContentType: aws.ToString(object.ContentType),
 	}
 	for key, val := range object.Metadata {
 		m[key] = val

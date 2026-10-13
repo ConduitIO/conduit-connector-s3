@@ -42,6 +42,9 @@ type CombinedIterator struct {
 	lookback      time.Duration
 	client        *s3.Client
 	log           *zerolog.Logger
+	// failed is a handoff failure. It is sticky so that a retry cannot skip
+	// the record that was in hand when the handoff failed.
+	failed error
 }
 
 func NewCombinedIterator(
@@ -86,13 +89,16 @@ func NewCombinedIterator(
 }
 
 func (c *CombinedIterator) HasNext(ctx context.Context) bool {
+	if c.failed != nil {
+		return true // Next reports the error
+	}
 	switch {
 	case c.snapshotIterator != nil:
 		// case of empty bucket or end of bucket
 		if !c.snapshotIterator.HasNext(ctx) {
-			err := c.switchToCDCIterator()
-			if err != nil {
-				return false
+			if err := c.switchToCDCIterator(); err != nil {
+				c.failed = err
+				return true
 			}
 			return false
 		}
@@ -105,6 +111,9 @@ func (c *CombinedIterator) HasNext(ctx context.Context) bool {
 }
 
 func (c *CombinedIterator) Next(ctx context.Context) (opencdc.Record, error) {
+	if c.failed != nil {
+		return opencdc.Record{}, c.failed
+	}
 	switch {
 	case c.snapshotIterator != nil:
 		r, err := c.snapshotIterator.Next(ctx)
@@ -112,22 +121,21 @@ func (c *CombinedIterator) Next(ctx context.Context) (opencdc.Record, error) {
 			return opencdc.Record{}, err
 		}
 		if !c.snapshotIterator.HasNext(ctx) {
-			// switch to cdc iterator
-			handoff := c.handoffTimestamp()
-			err := c.switchToCDCIterator()
-			if err != nil {
+			// The last snapshot record carries the CDC position. It must hold
+			// the handoff watermark, not the snapshot's max LastModified, or a
+			// restart right after the handoff would skip what the snapshot
+			// missed. It is built from the record's key, not parsed back from
+			// the position, so there is no error path that could drop the
+			// record after the snapshot iterator already consumed it.
+			cdcPos := position.Position{
+				Key:       string(r.Key.Bytes()),
+				Timestamp: c.handoffTimestamp(),
+				Type:      position.TypeCDC,
+			}
+			if err := c.switchToCDCIterator(); err != nil {
+				c.failed = err // sticky: the record in hand is not lost silently
 				return opencdc.Record{}, err
 			}
-			// change the last record's position to CDC
-			// The CDC position must carry the handoff watermark, not the
-			// snapshot's max LastModified, or a restart right after the
-			// handoff would skip what the snapshot missed.
-			cdcPos, err := position.ParseRecordPosition(r.Position)
-			if err != nil {
-				return opencdc.Record{}, err
-			}
-			cdcPos.Type = position.TypeCDC
-			cdcPos.Timestamp = handoff
 			r.Position = cdcPos.ToRecordPosition()
 		}
 		return r, nil

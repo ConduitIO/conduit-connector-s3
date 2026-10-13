@@ -65,7 +65,15 @@ func minioSourceEnv(t *testing.T, endpointOverride string) (*s3.Client, map[stri
 		config.ConfigKeyAWSPathStyle:       "true",
 		source.ConfigKeyPollingPeriod:      "100ms",
 	}
-	client := newEndpointS3Client(t, cfg)
+	// The test's own client talks to MinIO directly: a proxy that lies about
+	// time would make the SDK's clock-skew correction sign this client's
+	// requests with a wrong time.
+	direct := map[string]string{}
+	for k, v := range cfg {
+		direct[k] = v
+	}
+	direct[config.ConfigKeyAWSEndpoint] = os.Getenv(envMinIOEndpoint)
+	client := newEndpointS3Client(t, direct)
 	bucket := "conduit-s3-noskip-" + uuid.NewString()
 	createTestBucket(t, client, bucket)
 	t.Cleanup(func() {
@@ -181,6 +189,9 @@ type proxyOpts struct {
 	// shift moves the store's clock: every LastModified in XML and every Date
 	// header is shifted by it (negative: the store is behind the host).
 	shift time.Duration
+	// date, if set, replaces the Date header of every response (an empty
+	// return value sends an empty Date).
+	date func(orig string) string
 	// hide, if set, removes the listed object versions for which it returns
 	// true from ListObjectVersions responses.
 	hide func(key string) bool
@@ -198,6 +209,9 @@ func minioProxy(t *testing.T, endpoint string, opts proxyOpts) string {
 	}
 	rp := httputil.NewSingleHostReverseProxy(target)
 	rp.ModifyResponse = func(resp *http.Response) error {
+		if opts.date != nil {
+			resp.Header.Set("Date", opts.date(resp.Header.Get("Date")))
+		}
 		if opts.shift != 0 {
 			if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
 				resp.Header.Set("Date", d.Add(opts.shift).UTC().Format(http.TimeFormat))
@@ -535,4 +549,72 @@ func TestSource_CDCClockSkew(t *testing.T) {
 		t.Fatalf("object written while the host clock is 10m ahead of the store's was never delivered: %v", err)
 	}
 	is.Equal(string(rec.Key.Bytes()), "skewed")
+}
+
+// TestSource_HostileDateHeader: the Date header comes from whatever endpoint is
+// configured. Whatever it says, an object must never be lost silently. The
+// AWS SDK itself uses the Date header to correct its signing clock, so a date
+// far from the truth makes MinIO reject the source's next requests: that is an
+// error and fails the pipeline loudly, which is acceptable. What is not
+// acceptable is silence. (The watermark arithmetic for every kind of lie is
+// covered without signing in TestResolveStoreTime and the fake-store tests in
+// source/iterator.)
+func TestSource_HostileDateHeader(t *testing.T) {
+	future := func(d time.Duration) func(string) string {
+		return func(string) string { return time.Now().Add(d).UTC().Format(http.TimeFormat) }
+	}
+	for _, tc := range []struct {
+		name string
+		date func(string) string
+	}{
+		{"10 minutes ahead", future(10 * time.Minute)},
+		{"far future", future(100 * 24 * time.Hour)},
+		{"far past", future(-100 * 24 * time.Hour)},
+		{"garbage", func(string) string { return "next tuesday" }},
+		{"missing", func(string) string { return "" }},
+	} {
+		silentLoss := func(t *testing.T, err error, what string) {
+			t.Helper()
+			if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+				return // delivered, or failed loudly
+			}
+			t.Fatalf("%s was silently lost with a %s Date header", what, tc.name)
+		}
+		t.Run(tc.name+"/cdc from empty bucket", func(t *testing.T) {
+			ctx := context.Background()
+			proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{date: tc.date})
+			client, cfg := minioSourceEnv(t, proxy)
+			s := openSource(ctx, t, cfg, nil)
+			if _, err := s.Read(ctx); err != nil && !errors.Is(err, sdk.ErrBackoffRetry) {
+				return // failed loudly
+			}
+			putObject(ctx, t, client, cfg[config.ConfigKeyAWSBucket], "obj")
+			_, err := readWithTimeout(ctx, s, 8*time.Second)
+			silentLoss(t, err, "obj")
+		})
+		t.Run(tc.name+"/snapshot handoff", func(t *testing.T) {
+			ctx := context.Background()
+			proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{date: tc.date})
+			client, cfg := minioSourceEnv(t, proxy)
+			bucket := cfg[config.ConfigKeyAWSBucket]
+			putObject(ctx, t, client, bucket, "old")
+			s := openSource(ctx, t, cfg, nil)
+			if _, err := readWithTimeout(ctx, s, 8*time.Second); err != nil {
+				silentLoss(t, err, "old")
+				return
+			}
+			putObject(ctx, t, client, bucket, "new") // written after the snapshot's only page
+			deadline := time.Now().Add(8 * time.Second)
+			for time.Now().Before(deadline) {
+				rec, err := readWithTimeout(ctx, s, time.Second)
+				if err == nil && string(rec.Key.Bytes()) == "new" {
+					return
+				}
+				if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+					return // failed loudly
+				}
+			}
+			t.Fatalf("new was silently lost with a %s Date header", tc.name)
+		})
+	}
 }
