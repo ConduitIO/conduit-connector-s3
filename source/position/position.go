@@ -79,3 +79,18 @@ func (p Position) ToRecordPosition() opencdc.Position {
 	}
 	return []byte(fmt.Sprintf("%s_%c%d", p.Key, char, p.Timestamp.Unix()))
 }
+
+// ConvertToCDCPosition converts a snapshot position into a CDC position.
+//
+// Deprecated: the connector no longer uses it (the snapshot-to-CDC handoff
+// builds the CDC position itself, with the handoff watermark rather than the
+// snapshot's newest LastModified). It is kept in this patch line only to avoid
+// removing an exported function from a patch release, and is removed on main.
+func ConvertToCDCPosition(p opencdc.Position) (opencdc.Position, error) {
+	cdcPos, err := ParseRecordPosition(p)
+	if err != nil {
+		return opencdc.Position{}, err
+	}
+	cdcPos.Type = TypeCDC
+	return cdcPos.ToRecordPosition(), nil
+}
