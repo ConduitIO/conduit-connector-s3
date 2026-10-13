@@ -15,6 +15,7 @@
 package iterator
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ import (
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 // These tests drive the iterators against a scripted HTTP store, so every
@@ -184,14 +186,21 @@ func assertSticky(t *testing.T, it *SnapshotIterator) {
 	}
 }
 
-func TestSnapshotIterator_ListErrorOnLaterPageIsSticky(t *testing.T) {
-	is := is.New(t)
-	st := &fakeStore{handler: twoPages(func(r *http.Request) *http.Response { //nolint:bodyclose // scripted responses, closed by the SDK
-		if isList(r) && token(r) == "t1" {
+// failSnapshotPage2 fails page 2 only from its second request on: the first one
+// is the anchor listing, the second the snapshot proper.
+func failSnapshotPage2() func(r *http.Request) *http.Response {
+	var n atomic.Int32
+	return func(r *http.Request) *http.Response {
+		if isList(r) && token(r) == "t1" && n.Add(1) >= 2 {
 			return errResp(403)
 		}
 		return nil
-	})}
+	}
+}
+
+func TestSnapshotIterator_ListErrorOnLaterPageIsSticky(t *testing.T) {
+	is := is.New(t)
+	st := &fakeStore{handler: twoPages(failSnapshotPage2())} //nolint:bodyclose // scripted responses, closed by the SDK
 	it := newSnap(t, st.client())
 	ctx := context.Background()
 
@@ -203,8 +212,24 @@ func TestSnapshotIterator_ListErrorOnLaterPageIsSticky(t *testing.T) {
 	_, err := it.Next(ctx) // needs page 2
 	is.True(err != nil)
 	assertSticky(t, it)
-	is.Equal(st.count("continuation-token=t1"), 1) // the failed page is not retried behind the caller's back
+	is.Equal(st.count("continuation-token=t1"), 2) // anchor pass + the one failed request: not retried behind the caller's back
 	is.Equal(st.count("GET /b/c"), 0)              // and c is never read
+}
+
+// The anchor listing runs before the first page; its failure is as sticky as
+// any other and no record is delivered without an anchor.
+func TestSnapshotIterator_AnchorListingFailureIsSticky(t *testing.T) {
+	is := is.New(t)
+	st := &fakeStore{handler: twoPages(func(r *http.Request) *http.Response { //nolint:bodyclose // scripted responses, closed by the SDK
+		if isList(r) && token(r) == "t1" {
+			return errResp(403)
+		}
+		return nil
+	})}
+	it := newSnap(t, st.client())
+	assertSticky(t, it)
+	is.True(it.anchor.IsZero())
+	is.Equal(st.count("GET /b/a"), 0)
 }
 
 func TestSnapshotIterator_FirstPageErrorIsNotAnEmptyBucket(t *testing.T) {
@@ -284,12 +309,7 @@ func TestSnapshotIterator_BrokenContinuationIsNotTheEnd(t *testing.T) {
 
 func TestCombinedIterator_ListErrorNeverHandsOverToCDC(t *testing.T) {
 	is := is.New(t)
-	st := &fakeStore{handler: twoPages(func(r *http.Request) *http.Response { //nolint:bodyclose // scripted responses, closed by the SDK
-		if isList(r) && token(r) == "t1" {
-			return errResp(403)
-		}
-		return nil
-	})}
+	st := &fakeStore{handler: twoPages(failSnapshotPage2())} //nolint:bodyclose // scripted responses, closed by the SDK
 	ctx := context.Background()
 	c, err := NewCombinedIterator(ctx, "b", "", time.Hour, time.Minute, st.client(), position.Position{})
 	is.NoErr(err)
@@ -377,13 +397,20 @@ type simStore struct {
 	mu2     sync.Mutex
 	objects map[string]time.Time // key -> LastModified (store clock)
 	hidden  map[string]bool      // keys not (yet) visible in listings
+	gone    map[string]bool      // keys that are listed but 404 on GET
 	polls   atomic.Int64
 }
 
 func newSimStore(skew time.Duration) *simStore {
-	st := &simStore{skew: skew, objects: map[string]time.Time{}, hidden: map[string]bool{}}
+	st := &simStore{skew: skew, objects: map[string]time.Time{}, hidden: map[string]bool{}, gone: map[string]bool{}}
 	st.handler = func(r *http.Request) *http.Response {
 		if !r.URL.Query().Has("versions") {
+			st.mu2.Lock()
+			gone := st.gone[keyOf(r)]
+			st.mu2.Unlock()
+			if gone {
+				return xmlResp(404, `<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>gone</Message></Error>`)
+			}
 			return objectResp(keyOf(r))
 		}
 		st.polls.Add(1)
@@ -402,13 +429,6 @@ func newSimStore(skew time.Duration) *simStore {
 		return xmlResp(200, b.String(), "Date", "garbage")
 	}
 	return st
-}
-
-// put makes an object visible, stamped with the store's current time.
-func (s *simStore) put(key string) {
-	s.mu2.Lock()
-	defer s.mu2.Unlock()
-	s.objects[key] = time.Now().Add(s.skew)
 }
 
 // putAt makes an object visible with an explicit LastModified.
@@ -507,22 +527,59 @@ func TestSnapshotIterator_ObjectDeletedAfterListingIsSkipped(t *testing.T) {
 	is.Equal(got, []string{"a", "c"}) // b was deleted: skipped, the snapshot goes on
 }
 
-func collect(t *testing.T, it *CDCIterator, want int, within time.Duration) map[string]int {
-	t.Helper()
-	got := map[string]int{}
-	deadline := time.Now().Add(within)
-	for len(got) < want && time.Now().Before(deadline) {
-		k, err := nextKey(t, it, time.Until(deadline))
-		if err != nil {
-			t.Fatalf("after %d of %d objects: %v", len(got), want, err)
-		}
-		got[k]++
-	}
-	return got
+// stepper drives a CDC iterator one poll at a time with an explicit host clock,
+// so the tests do not depend on timers.
+type stepper struct {
+	t  *testing.T
+	st *simStore
+	it *CDCIterator
 }
 
-// The watermark uses only the store's timestamps, so a host clock that is
-// wrong in either direction, by any amount, cannot lose or hide an object.
+func newStepper(t *testing.T, st *simStore, from time.Time, lookback time.Duration, log *zerolog.Logger) *stepper {
+	t.Helper()
+	return &stepper{t: t, st: st, it: newCDCIterator("b", "", lookback, st.client(), from, log)}
+}
+
+// step polls with the given host clock and returns the keys handed over, in
+// order. It also checks the memory accounting invariant.
+func (s *stepper) step(host time.Time) ([]string, error) {
+	s.t.Helper()
+	var keys []string
+	err := s.it.step(context.Background(), host, func(c []CacheEntry) error {
+		for _, e := range c {
+			keys = append(keys, e.key)
+		}
+		return nil
+	})
+	var sum int64
+	for k := range s.it.delivered {
+		sum += k.bytes()
+	}
+	if sum != s.it.deliveredBytes {
+		s.t.Fatalf("deliveredBytes drifted: counter %d, actual %d", s.it.deliveredBytes, sum)
+	}
+	return keys, err
+}
+
+func (s *stepper) mustStep(host time.Time) []string {
+	s.t.Helper()
+	keys, err := s.step(host)
+	if err != nil {
+		s.t.Fatalf("step: %v", err)
+	}
+	return keys
+}
+
+func (s *stepper) mustDeliver(host time.Time, want ...string) {
+	s.t.Helper()
+	got := s.mustStep(host)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		s.t.Fatalf("delivered %v, want %v", got, want)
+	}
+}
+
+// The floor uses the store's timestamps, so a host clock that is wrong in
+// either direction, by any amount, cannot lose or hide an object.
 func TestCDCIterator_HostClockSkewEitherDirection(t *testing.T) {
 	for name, skew := range map[string]time.Duration{
 		"host 10m ahead of the store": -10 * time.Minute,
@@ -531,35 +588,41 @@ func TestCDCIterator_HostClockSkewEitherDirection(t *testing.T) {
 		"host 30h behind the store":   30 * time.Hour,
 	} {
 		t.Run(name, func(t *testing.T) {
-			st := newSimStore(skew)
-			it := startSim(t, st, time.Time{}) // empty bucket
-			for i := 0; i < 4; i++ {
-				st.waitPolls(3)
+			st := newSimStore(0)
+			sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
+			host := time.Now()
+			for i := 0; i < 6; i++ {
+				host = host.Add(10 * time.Second)
 				key := fmt.Sprintf("obj-%d", i)
-				st.put(key)
-				mustDeliver(t, it, key)
+				st.putAt(key, host.Add(skew).Add(-time.Second)) // stamped on the store's clock
+				sp.mustDeliver(host, key)
 			}
+			sp.mustDeliver(host) // and nothing is delivered twice
 		})
 	}
 }
 
-// A store that stamps one object far in the future (its clock stepped forward
-// and back, or a lying endpoint) must not raise the watermark above everything
-// written afterwards.
-func TestCDCIterator_FutureLastModifiedDoesNotHideLaterObjects(t *testing.T) {
-	for name, ahead := range map[string]time.Duration{"1h": time.Hour, "30 days": 30 * 24 * time.Hour} {
+// B1: a store that stamps one object in the future must not raise the floor.
+// With the cap at host + lookback the floor became the host clock and the
+// lookback was gone (later objects slightly older than the poll were lost). The
+// cap is the host clock itself, so the floor is host - lookback.
+func TestCDCIterator_FutureLastModifiedKeepsTheLookback(t *testing.T) {
+	for name, ahead := range map[string]time.Duration{"1h": time.Hour, "2h": 2 * time.Hour, "30 days": 30 * 24 * time.Hour} {
 		t.Run(name, func(t *testing.T) {
 			st := newSimStore(0)
-			it := startSim(t, st, time.Time{})
-			st.waitPolls(2)
-			st.putAt("bogus", time.Now().Add(ahead))
-			mustDeliver(t, it, "bogus")
-			for i := 0; i < 3; i++ {
-				st.waitPolls(3)
-				key := fmt.Sprintf("normal-%d", i)
-				st.put(key)
-				mustDeliver(t, it, key)
+			sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
+			host := time.Now()
+			st.putAt("bogus", host.Add(ahead))
+			sp.mustDeliver(host, "bogus")
+			for i := 0; i < 26; i++ {
+				host = host.Add(2 * time.Second)
+				key := fmt.Sprintf("normal-%02d", i)
+				st.putAt(key, host.Add(-3*time.Second)) // slightly older than the poll, within the lookback
+				sp.mustDeliver(host, key)
 			}
+			// the lookback is intact: a late-visible object 4 minutes behind is still picked up
+			st.putAt("late", host.Add(-4*time.Minute))
+			sp.mustDeliver(host, "late")
 		})
 	}
 }
@@ -580,80 +643,98 @@ func TestCDCIterator_LateVisibleObject(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := newSimStore(0)
-			it := startSim(t, st, time.Time{}, tc.lookback)
-			now := time.Now()
+			sp := newStepper(t, st, time.Time{}, tc.lookback, nil)
+			host := time.Now()
 			st.hide("late", true)
-			st.putAt("late", now.Add(-tc.gap))
-			st.putAt("newer", now)
-			mustDeliver(t, it, "newer")
-			st.waitPolls(3)
+			st.putAt("late", host.Add(-tc.gap))
+			st.putAt("newer", host)
+			sp.mustDeliver(host, "newer")
 			st.hide("late", false)
+			host = host.Add(time.Minute)
 			if tc.want {
-				mustDeliver(t, it, "late")
-				return
-			}
-			if k, err := nextKey(t, it, 300*time.Millisecond); err == nil {
-				t.Fatalf("late was delivered (%s) although it is beyond the lookback", k)
+				sp.mustDeliver(host, "late")
+			} else {
+				sp.mustDeliver(host)
 			}
 		})
 	}
 }
 
-// A catch-up over many old objects must deliver all of them even when they do
-// not fit the dedupe memory limit: only the objects inside the window around
-// the newest one are tracked.
-func TestCDCIterator_CatchUpOverOldObjectsIsNotCapped(t *testing.T) {
+// A catch-up over many old objects must deliver all of them, in order of
+// LastModified, even when neither the candidates nor the dedupe set could hold
+// them all: candidates are delivered in bounded batches and only the objects
+// inside the window around the newest one are tracked.
+func TestCDCIterator_CatchUpOverOldObjectsIsBoundedAndComplete(t *testing.T) {
 	is := is.New(t)
-	old := maxDeliveredBytes
-	maxDeliveredBytes = 100 * 230
-	defer func() { maxDeliveredBytes = old }()
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	entry := deliveredKey{key: "o-000", versionID: "null", etag: `"e-o-000"`}.bytes()
+	maxDeliveredBytes = 100 * entry
+	maxCandidateBytes = 50 * entry
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
 
 	st := newSimStore(0)
-	now := time.Now()
+	host := time.Now()
 	for i := 0; i < 300; i++ {
-		st.putAt(fmt.Sprintf("o-%03d", i), now.Add(-time.Duration(300-i)*10*time.Minute)) // 10 minutes apart
+		st.putAt(fmt.Sprintf("o-%03d", i), host.Add(-time.Duration(300-i)*10*time.Minute)) // 10 minutes apart
 	}
-	it := startSim(t, st, time.Time{})
-	got := collect(t, it, 300, 10*time.Second)
-	is.Equal(len(got), 300)
-	it.Stop()
-	_ = it.tomb.Wait()
-	is.True(len(it.delivered) <= 2) // only the newest object's window is tracked
+	sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
+
+	var all []string
+	for i := 0; i < 20 && len(all) < 300; i++ {
+		keys := sp.mustStep(host)
+		is.True(len(keys) <= 50) // candidates are bounded
+		all = append(all, keys...)
+	}
+	is.Equal(len(all), 300)
+	for i, k := range all {
+		is.Equal(k, fmt.Sprintf("o-%03d", i)) // oldest first, each exactly once
+	}
+	is.True(len(sp.it.delivered) <= 2) // only the newest object's window is tracked
 }
 
 // A window that genuinely holds more than the limit stops the iterator loudly
-// before delivering a batch it could not deduplicate, and lowering the lookback
-// is the way out.
+// before delivering a batch it could not deduplicate. Lowering the lookback is
+// the way out, unless the cause is a host clock behind the store's.
 func TestCDCIterator_WindowOverLimitStopsLoudly(t *testing.T) {
 	is := is.New(t)
-	old := maxDeliveredBytes
-	maxDeliveredBytes = 100 * 230
-	defer func() { maxDeliveredBytes = old }()
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	entry := deliveredKey{key: "o-000", versionID: "null", etag: `"e-o-000"`}.bytes()
+	maxDeliveredBytes = 100 * entry
+	maxCandidateBytes = 10 * maxDeliveredBytes // so the window check, not the batch bound, is what trips
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
 
-	newStore := func() *simStore {
+	host := time.Now()
+	newStore := func(offset time.Duration) *simStore {
 		st := newSimStore(0)
-		now := time.Now()
 		for i := 0; i < 300; i++ {
-			st.putAt(fmt.Sprintf("o-%03d", i), now.Add(-time.Duration(300-i)*time.Second)) // 1s apart
+			st.putAt(fmt.Sprintf("o-%03d", i), host.Add(offset).Add(-time.Duration(300-i)*time.Second)) // 1s apart
 		}
 		return st
 	}
 
 	t.Run("lookback 5m: 300 objects inside the window", func(t *testing.T) {
-		it := startSim(t, newStore(), time.Time{})
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, err := it.Next(ctx)
+		sp := newStepper(t, newStore(0), time.Time{}, 5*time.Minute, nil)
+		_, err := sp.step(host)
 		is.True(errors.Is(err, ErrDedupeWindowOverflow))
 		is.True(strings.Contains(err.Error(), "s3.source.dedupe_window_overflow"))
+		is.True(strings.Contains(err.Error(), "lower lookbackPeriod"))
+		is.Equal(len(sp.it.delivered), 0) // nothing was handed over or tracked
 	})
 	t.Run("lookback 10s: the window is small, everything is delivered", func(t *testing.T) {
-		it := startSim(t, newStore(), time.Time{}, 10*time.Second)
-		got := collect(t, it, 300, 10*time.Second)
+		sp := newStepper(t, newStore(0), time.Time{}, 10*time.Second, nil)
+		got := sp.mustStep(host)
 		is.Equal(len(got), 300)
-		it.Stop()
-		_ = it.tomb.Wait()
-		is.True(it.deliveredBytes <= maxDeliveredBytes)
+	})
+	t.Run("host clock behind the store: the message says to fix the clock", func(t *testing.T) {
+		var buf bytes.Buffer
+		l := zerolog.New(&buf)
+		sp := newStepper(t, newStore(2*time.Hour), time.Time{}, 5*time.Minute, &l) // store 2h ahead of the host
+		_, err := sp.step(host)
+		is.True(errors.Is(err, ErrDedupeWindowOverflow))
+		is.True(strings.Contains(err.Error(), "fix the clock"))
+		is.True(!strings.Contains(err.Error(), "lower lookbackPeriod (config"))
+		is.True(strings.Contains(buf.String(), "s3.source.host_clock_behind_store"))
+		is.Equal(strings.Count(buf.String(), "s3.source.host_clock_behind_store"), 1) // once
 	})
 }
 
@@ -661,20 +742,54 @@ func TestCDCIterator_WindowOverLimitStopsLoudly(t *testing.T) {
 func TestCDCIterator_ChurnKeepsTheSetBounded(t *testing.T) {
 	is := is.New(t)
 	st := newSimStore(0)
-	it := startSim(t, st, time.Time{}, 2*time.Second)
-	base := time.Now().Add(-time.Minute)
+	sp := newStepper(t, st, time.Time{}, 2*time.Second, nil)
+	host := time.Now()
 	total := 0
 	for round := 0; round < 20; round++ {
+		host = host.Add(time.Second)
 		for j := 0; j < 50; j++ {
-			st.putAt(fmt.Sprintf("o-%d-%d", round, j), base.Add(time.Duration(round)*time.Second))
+			st.putAt(fmt.Sprintf("o-%d-%d", round, j), host.Add(-500*time.Millisecond))
 			total++
 		}
-		time.Sleep(10 * time.Millisecond)
+		got := sp.mustStep(host)
+		is.Equal(len(got), 50)
+		is.True(len(sp.it.delivered) <= 50*4) // the last 2-3 seconds of churn, not everything
 	}
-	got := collect(t, it, total, 15*time.Second)
-	is.Equal(len(got), total)
-	st.waitPolls(5)
-	it.Stop()
-	_ = it.tomb.Wait()                 // the poll goroutine owns the set; read it after it stopped
-	is.True(len(it.delivered) <= 50*5) // the last 2-4 seconds of churn, not all 1000
+	is.Equal(total, 1000)
+}
+
+// A listing that returns the same version twice in one poll must not double
+// count it.
+func TestCDCIterator_DuplicateVersionInOneBatchDoesNotDriftTheAccounting(t *testing.T) {
+	is := is.New(t)
+	host := time.Now()
+	body := fmt.Sprintf(`<?xml version="1.0"?><ListVersionsResult><IsTruncated>false</IsTruncated>
+<Version><Key>dup</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest><LastModified>%[1]s</LastModified><ETag>"e"</ETag></Version>
+<Version><Key>dup</Key><VersionId>v1</VersionId><IsLatest>true</IsLatest><LastModified>%[1]s</LastModified><ETag>"e"</ETag></Version>
+</ListVersionsResult>`, host.UTC().Format("2006-01-02T15:04:05.000Z"))
+	st := &fakeStore{handler: func(_ *http.Request) *http.Response { return xmlResp(200, body) }}
+	it := newCDCIterator("b", "", time.Minute, st.client(), time.Time{}, nil)
+	is.NoErr(it.step(context.Background(), host, func([]CacheEntry) error { return nil }))
+	var sum int64
+	for k := range it.delivered {
+		sum += k.bytes()
+	}
+	is.Equal(it.deliveredBytes, sum)
+	is.Equal(len(it.delivered), 1)
+}
+
+// An object deleted between being listed and being read is skipped; the others
+// are delivered.
+func TestCDCIterator_ObjectDeletedAfterListingIsSkipped(t *testing.T) {
+	st := newSimStore(0)
+	it := startSim(t, st, time.Time{})
+	now := time.Now()
+	st.putAt("a", now.Add(-3*time.Second))
+	st.putAt("gone", now.Add(-2*time.Second))
+	st.putAt("c", now.Add(-time.Second))
+	st.mu2.Lock()
+	st.gone["gone"] = true
+	st.mu2.Unlock()
+	mustDeliver(t, it, "a")
+	mustDeliver(t, it, "c") // "gone" was skipped, the iterator did not stop
 }

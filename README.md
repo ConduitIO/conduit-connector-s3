@@ -38,39 +38,60 @@ The connector goes through two modes.
   captures new actions made on the bucket. the _Position_ during this mode is
   the object key attached to an underscore, a "c" for CDC, and the object's
   _lastModifiedDate_ in seconds. As an example: "thisIsAKey_c1634049397". This
-  position is used to resume from the last record returned. Every poll (and a
-  resume) selects the objects modified since `lookbackPeriod` (default 5m)
-  before the newest object seen so far, and skips versions it already
-  delivered, so objects that become visible late are not missed: S3 stamps an
-  object with the time its upload began, a multipart upload with the time it
-  was initiated, and lists in key order. Only the object store's own
-  timestamps decide, so the clock of the machine running Conduit does not
-  matter, with one exception: a store that stamps an object more than
-  `lookbackPeriod` ahead of this machine's clock (a store clock that stepped
-  forward, or a misbehaving endpoint) is capped at this machine's clock plus
-  `lookbackPeriod`, so one bogus timestamp cannot hide the objects written
-  after it. The cap only lowers the watermark, so it can cause redelivery
-  but never a skip.
+  position is used to resume from the last record returned.
 
-  Delivery is at-least-once. After a restart, and when the snapshot hands over
-  to CDC (CDC resumes from the newest object the snapshot read), the objects
-  modified within `lookbackPeriod` of the newest object are delivered again.
-  On a bucket that was bulk loaded recently this is every object written in
-  the last `lookbackPeriod` before the newest one. The set of versions
-  remembered for deduplication is limited to about 256 MiB; if the objects
-  modified within `lookbackPeriod` of the newest one need more, the source
-  stops with the error `s3.source.dedupe_window_overflow` instead of
-  forgetting any; lower `lookbackPeriod` then.
+  **CDC mode is listing based and best effort, bounded by `lookbackPeriod`.**
+  It detects changes by listing the bucket, which cannot be lossless: an
+  object that becomes visible in a listing late can be missed. Lossless S3
+  change capture needs bucket event notifications, which this connector does
+  not use. Every poll selects the objects modified since `lookbackPeriod`
+  (default 5m) before the newest object seen so far, and skips versions it
+  already delivered, so objects that become visible late, within that
+  window, are picked up: S3 stamps an object with the time its upload began,
+  a multipart upload with the time it was initiated, and lists in key order.
+  The object store's own timestamps decide, so the clock of the machine
+  running Conduit does not matter, with one exception: the newest timestamp
+  is capped at this machine's clock, so one bogus timestamp from the future
+  (a store clock that stepped forward, or a misbehaving endpoint) cannot hide
+  the objects written after it. The cap lowers the window's start, which
+  causes redelivery. If this machine's clock is behind the store's by more
+  than `lookbackPeriod` the source logs a warning with the code
+  `s3.source.host_clock_behind_store`: the window is stretched by the skew.
 
-  Known limits: an upload that completes more than `lookbackPeriod` after
-  newer objects were seen can still be missed; an identical re-put of an
-  object within the same second is not seen as a change; in an unversioned
-  bucket an overwrite is reported as a create (there is no older version to
-  compare with) and a delete is not reported; in a versioned bucket
-  intermediate versions that appear and are superseded within one poll are
-  not emitted, only the latest. Objects deleted between being listed and
-  being read during the snapshot are skipped. Values of `lookbackPeriod`
-  above 1h log a warning and above 24h are rejected.
+  Delivery is at-least-once. After a restart the objects modified within
+  `lookbackPeriod` of the newest object are delivered again. The snapshot
+  hands over to CDC from the newest object that existed when the snapshot
+  started (found by one extra listing of the prefix, one request per 1000
+  keys, at the start of the snapshot), minus `lookbackPeriod`, so CDC
+  redelivers the objects written while the snapshot ran, however long it
+  took, plus those within `lookbackPeriod` before it started. On a bucket
+  that was bulk loaded recently this can be every object of the load. The set
+  of versions remembered for deduplication is limited to about 256 MiB; if
+  the objects inside the window need more, the source stops with the error
+  `s3.source.dedupe_window_overflow` instead of forgetting any; lower
+  `lookbackPeriod` then (or fix the clock if the message says so). A catch-up
+  after downtime is delivered in bounded batches, oldest first.
+
+  Known limits (listing cannot see these, or sees them too late):
+  * an upload that takes longer than `lookbackPeriod` to complete is missed
+    when newer objects were seen in the meantime (multipart uploads carry
+    their initiation time);
+  * replica buckets whose replication lag exceeds `lookbackPeriod`;
+  * an identical re-put of an object within the same second is not seen as a
+    change;
+  * in an unversioned bucket an overwrite is reported as a create (there is
+    no older version to compare with) and a delete is not reported;
+  * in a versioned bucket intermediate versions that appear and are
+    superseded within one poll are not emitted, only the latest; removing a
+    delete marker (undelete) and permanently deleting the latest version are
+    not emitted;
+  * a GetObject that fails for another reason than the object having been
+    deleted, for example an object archived to Glacier or Deep Archive,
+    stops the source with that error.
+
+  Objects deleted between being listed and being read are skipped, in the
+  snapshot and in CDC. Values of `lookbackPeriod` above 1h log a warning and
+  above 24h are rejected.
 
 ### Record Keys
 
@@ -149,20 +170,21 @@ pipelines:
           # initiated), not the time it completed, and lists in key order, so an
           # object can show up after newer ones were already delivered. Each
           # poll selects the objects modified since (newest LastModified seen -
-          # lookbackPeriod) that were not delivered yet. Only the store's own
-          # timestamps are used. An upload that completes later than this value
-          # after newer objects were seen can still be missed. Cost: memory for
-          # the objects modified within the window (limit about 256 MiB, the
-          # source stops with s3.source.dedupe_window_overflow beyond it, lower
-          # this value then), and redelivery (at-least-once) of the objects
-          # modified within the window after a restart and when the snapshot
-          # hands over to CDC. Listing cost does not depend on it. Values above
-          # 1h log a warning, above 24h are rejected, and 0 disables the
-          # lookback. Known limits of the deduplication: an identical re-put of
-          # an object within the same second is not seen as a change, an
-          # overwrite in an unversioned bucket is reported as a create, and
-          # intermediate versions that appear and are superseded within one poll
-          # are not emitted.
+          # lookbackPeriod) that were not delivered yet. Listing based CDC is
+          # best effort and bounded by this value: an upload that completes
+          # later than this value after newer objects were seen can still be
+          # missed (see the connector description for the full list of known
+          # limits). Cost: memory for the objects modified within the window
+          # (limit about 256 MiB, the source stops with
+          # s3.source.dedupe_window_overflow beyond it, lower this value then),
+          # and redelivery (at-least-once) of the objects modified within the
+          # window after a restart and when the snapshot hands over to CDC.
+          # Listing cost does not depend on it. Values above 1h log a warning,
+          # above 24h are rejected, and 0 disables the lookback. Known limits of
+          # the deduplication: an identical re-put of an object within the same
+          # second is not seen as a change, an overwrite in an unversioned
+          # bucket is reported as a create, and intermediate versions that
+          # appear and are superseded within one poll are not emitted.
           # Type: duration
           # Required: no
           lookbackPeriod: "5m"

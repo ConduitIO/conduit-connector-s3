@@ -154,17 +154,16 @@ func (c *CombinedIterator) Stop() {
 }
 
 // handoffTimestamp is the position CDC resumes from after a snapshot: the
-// newest LastModified the snapshot read (zero for an empty bucket, which makes
-// CDC select everything). The CDC iterator selects from this minus
-// lookbackPeriod, so objects written while the snapshot ran, which the snapshot
-// may have listed past, are covered, and it uses only the store's own
-// timestamps, so no clock can move it.
+// newest LastModified among the objects that existed when the snapshot started
+// (see SnapshotIterator.anchor; zero for an empty bucket, which makes CDC
+// select everything). The CDC iterator selects from this minus lookbackPeriod,
+// so objects written while the snapshot ran, which the snapshot may have listed
+// past, are covered however long the snapshot took.
 //
-// Invariant 3. Redelivery this causes is bounded: only objects modified within
-// lookbackPeriod of the newest one are delivered a second time (at-least-once
-// permits that).
+// Redelivery this causes is bounded by lookbackPeriod plus the writes during the
+// snapshot (at-least-once permits that).
 func (c *CombinedIterator) handoffTimestamp() time.Time {
-	return c.snapshotIterator.maxLastModified
+	return c.snapshotIterator.anchor
 }
 
 func (c *CombinedIterator) switchToCDCIterator() error {
