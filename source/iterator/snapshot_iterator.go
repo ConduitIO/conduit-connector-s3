@@ -38,15 +38,7 @@ type SnapshotIterator struct {
 	page            *s3.ListObjectsV2Output
 	index           int
 	maxLastModified time.Time
-	// startedAt is when the snapshot began listing. Objects written after
-	// this point may be missing from the snapshot, so CDC must cover them.
-	startedAt time.Time
-	// startedAtFromStore is set once startedAt was replaced by the store's
-	// clock (Date header of the first page), the one LastModified is on.
-	startedAtFromStore bool
-	warnedNoDate       bool
-	trustHost          bool
-	log                *zerolog.Logger
+	log             *zerolog.Logger
 	// listErr is a failed page listing. It must reach the caller: treating it
 	// as the end of the snapshot would hand over to CDC and silently skip every
 	// object not yet listed.
@@ -57,7 +49,7 @@ type SnapshotIterator struct {
 
 // NewSnapshotIterator takes the s3 bucket, the client, and the position.
 // it returns a snapshotIterator starting from the position provided.
-func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Position, log *zerolog.Logger, trustHostClock bool) (*SnapshotIterator, error) {
+func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Position, log *zerolog.Logger) (*SnapshotIterator, error) {
 	if log == nil {
 		nop := zerolog.Nop()
 		log = &nop
@@ -72,9 +64,7 @@ func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Po
 		client:          client,
 		paginator:       s3.NewListObjectsV2Paginator(client, input),
 		maxLastModified: p.Timestamp,
-		startedAt:       time.Now(),
 		log:             log,
-		trustHost:       trustHostClock,
 	}, nil
 }
 
@@ -89,8 +79,7 @@ func (w *SnapshotIterator) shouldRefreshPage() bool {
 // was fetched successfully, so a failed call can be retried without skipping.
 func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
 	for w.paginator.HasMorePages() {
-		var date string
-		nextPage, err := w.paginator.NextPage(ctx, captureDate(&date))
+		nextPage, err := w.paginator.NextPage(ctx)
 		if err != nil {
 			// The paginator did not advance, so the same page is fetched again.
 			return fmt.Errorf("could not fetch next page: %w", err)
@@ -103,32 +92,6 @@ func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
 			return fmt.Errorf("could not fetch next page: the listing is truncated but has no new continuation token")
 		}
 		w.lastToken = next
-		if !w.startedAtFromStore {
-			switch d, st := classifyStoreDate(w.startedAt, date); st {
-			case headerOK:
-				// min(host start, store time): never later than the real start.
-				w.startedAtFromStore = true
-				if d.Before(w.startedAt) {
-					w.startedAt = d
-				}
-			case headerOutOfRange:
-				// Either clock is badly wrong; a handoff point derived from
-				// either would be a guess that can skip objects.
-				return &StoreClockOutOfRangeError{Host: w.startedAt, Store: d, Polls: 1}
-			default:
-				// No Date header. The handoff point would be a guess from the
-				// host clock, which loses objects if it is ahead of the
-				// store's: refuse, unless the operator opted in.
-				if !w.trustHost {
-					return fmt.Errorf("%w: the object store sent no usable Date header, so the snapshot-to-CDC handoff point is unknown; "+
-						"use a store that sends Date, or set trustHostClock only if this host's clock agrees with the store's to within lookbackPeriod", ErrStoreClockUnavailable)
-				}
-				if !w.warnedNoDate {
-					w.warnedNoDate = true
-					w.log.Warn().Msg("trustHostClock is set and the object store sent no usable Date header: the snapshot-to-CDC handoff point comes from this host's clock, which loses objects if it is ahead of the store's by more than lookbackPeriod")
-				}
-			}
-		}
 		w.page, w.index = nextPage, 0
 		if len(nextPage.Contents) > 0 {
 			return nil

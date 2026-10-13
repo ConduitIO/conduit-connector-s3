@@ -7,7 +7,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.0
-	github.com/aws/smithy-go v1.28.5
 	github.com/conduitio/conduit-commons v0.7.0
 	github.com/conduitio/conduit-connector-sdk v0.14.2
 	github.com/google/uuid v1.6.0
@@ -38,6 +37,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.38.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 // indirect
+	github.com/aws/smithy-go v1.28.5 // indirect
 	github.com/conduitio/conduit-connector-protocol v0.9.5 // indirect
 	github.com/conduitio/evolviconf v0.1.1 // indirect
 	github.com/conduitio/evolviconf/evolviyaml v0.1.0 // indirect

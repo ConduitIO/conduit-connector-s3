@@ -510,7 +510,7 @@ func TestSource_CDCLookback(t *testing.T) {
 
 			hidden.Store(true)
 			putObject(ctx, t, client, bucket, "late")
-			time.Sleep(1100 * time.Millisecond) // "newer" gets a later second
+			time.Sleep(3100 * time.Millisecond) // "newer" is 3s newer than "late" (the lookback is measured between them)
 			putObject(ctx, t, client, bucket, "newer")
 			rec, err := readWithTimeout(ctx, s, 10*time.Second)
 			is.NoErr(err)
