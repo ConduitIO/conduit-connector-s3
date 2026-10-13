@@ -33,8 +33,6 @@ const (
 	ConfigKeyPollingPeriod = "pollingPeriod"
 	// ConfigKeyLookbackPeriod is the config name for the CDC lookback window
 	ConfigKeyLookbackPeriod = "lookbackPeriod"
-	// ConfigKeyTrustHostClock is the config name for the host-clock opt-in
-	ConfigKeyTrustHostClock = "trustHostClock"
 )
 
 // Config represents source configuration with S3 configurations
@@ -45,36 +43,26 @@ type Config struct {
 	// polling period for the CDC mode, formatted as a time.Duration string.
 	PollingPeriod time.Duration `json:"pollingPeriod" default:"1s"`
 
-	// How far back every CDC poll looks for objects that became visible late.
-	// S3 stamps an object with the time its upload began (a multipart upload
-	// with the time it was initiated), not the time it completed, so an
-	// object can show up in a listing after newer objects were already
-	// delivered. Each poll therefore selects objects modified since
-	// (start of the previous poll - lookbackPeriod), on the store's clock
-	// (the Date header of the listing response, validated and combined with
-	// the host clock as described in the connector description). An upload that takes longer
-	// than this value can still be missed. Cost: memory for the objects
-	// modified within the window, and redelivery (at-least-once) of the
-	// objects modified within the window after a restart, and, when the
-	// snapshot hands over to CDC, of the objects modified within the window
-	// before the snapshot started and during it (so the redelivery is bounded
-	// by lookbackPeriod plus the snapshot duration). Listing cost does not
-	// depend on it. Values above 1h log a warning, above 24h are rejected,
-	// and 0 disables the lookback. Known limits of the deduplication: an
-	// identical re-put of an object within the same second is not seen as a
-	// change, an overwrite in an unversioned bucket is reported as a create,
-	// and intermediate versions that appear and are superseded within one
-	// poll are not emitted.
+	// How far back, from the newest object seen, every CDC poll looks for
+	// objects that became visible late. S3 stamps an object with the time its
+	// upload began (a multipart upload with the time it was initiated), not
+	// the time it completed, and lists in key order, so an object can show up
+	// after newer ones were already delivered. Each poll selects the objects
+	// modified since (newest LastModified seen - lookbackPeriod) that were not
+	// delivered yet. Only the store's own timestamps are used. An upload that
+	// completes later than this value after newer objects were seen can still
+	// be missed. Cost: memory for the objects modified within the window
+	// (limit about 256 MiB, the source stops with
+	// s3.source.dedupe_window_overflow beyond it, lower this value then), and
+	// redelivery (at-least-once) of the objects modified within the window
+	// after a restart and when the snapshot hands over to CDC. Listing cost
+	// does not depend on it. Values above 1h log a warning, above 24h are
+	// rejected, and 0 disables the lookback. Known limits of the
+	// deduplication: an identical re-put of an object within the same second
+	// is not seen as a change, an overwrite in an unversioned bucket is
+	// reported as a create, and intermediate versions that appear and are
+	// superseded within one poll are not emitted.
 	LookbackPeriod time.Duration `json:"lookbackPeriod" default:"5m"`
-
-	// Use this host's clock when the object store sends no usable Date header.
-	// Off by default and UNSAFE under clock skew: if the clock of the host
-	// running Conduit is ahead of the store's by more than lookbackPeriod,
-	// objects are skipped without any error. Without it, a store that sends no
-	// Date header makes the source stop with s3.source.store_clock_unavailable
-	// instead of guessing. Set it only for a store that cannot send Date and
-	// whose clock is known to agree with this host's.
-	TrustHostClock bool `json:"trustHostClock" default:"false"`
 }
 
 // Validate implements sdk.Validatable: the SDK calls it automatically after

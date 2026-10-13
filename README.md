@@ -40,49 +40,37 @@ The connector goes through two modes.
   _lastModifiedDate_ in seconds. As an example: "thisIsAKey_c1634049397". This
   position is used to resume from the last record returned. Every poll (and a
   resume) selects the objects modified since `lookbackPeriod` (default 5m)
-  before the previous poll started, and skips versions it already delivered, so
-  objects that become visible late are not missed: S3 stamps an object with the
-  time its upload began, a multipart upload with the time it was initiated.
-  "Now" is read from the object store, not only from the host: the `Date`
-  header of the listing response, which is on the same clock as
-  `LastModified`. The header comes from whatever endpoint is configured, so it
-  is checked and the watermark never moves on a reading that could be too
-  high. The source remembers the largest offset between the host clock and
-  the header seen in the last hour and uses the host clock minus that offset
-  as "now", so a store that lies about the time (or one odd header) can only
-  cause extra redelivery, never raise the watermark. A header more than 24h
-  away from the host clock is not believed: the watermark is held (objects
-  are still delivered) and when 10 of the last 60 polls were like that, the
-  source stops with the error `s3.source.store_clock_out_of_range`, naming
-  both clocks. When the header is missing for a poll, the remembered offset
-  is applied. A store that has never sent a usable `Date` header holds the
-  watermark and, after 10 polls, stops the source with
-  `s3.source.store_clock_unavailable`; the host clock alone is used only if
-  `trustHostClock` is set, which loses objects without any error if the host
-  clock is ahead of the store's by more than `lookbackPeriod`. Redelivery
-  after a restart or a handoff is bounded by `lookbackPeriod` plus the
-  snapshot duration, plus the difference between the host clock and a lagging
-  `Date` header (at most 24h). The set of already delivered versions is
-  limited to 1,000,000 entries; beyond that the source stops with
-  `s3.source.dedupe_window_overflow` instead of dropping entries. A header
-  that is consistently wrong but in bounds for more than an hour cannot be
-  detected.
+  before the newest object seen so far, and skips versions it already
+  delivered, so objects that become visible late are not missed: S3 stamps an
+  object with the time its upload began, a multipart upload with the time it
+  was initiated, and lists in key order. Only the object store's own
+  timestamps decide, so the clock of the machine running Conduit does not
+  matter, with one exception: a store that stamps an object more than
+  `lookbackPeriod` ahead of this machine's clock (a store clock that stepped
+  forward, or a misbehaving endpoint) is capped at this machine's clock plus
+  `lookbackPeriod`, so one bogus timestamp cannot hide the objects written
+  after it. The cap only lowers the watermark, so it can cause redelivery
+  but never a skip.
 
-  Delivery is at-least-once. After a restart the objects modified within
-  `lookbackPeriod` are delivered again. When the snapshot hands over to CDC, the
-  objects modified within `lookbackPeriod` before the snapshot started, and
-  everything modified while it ran, are delivered again, so that redelivery is
-  bounded by `lookbackPeriod` plus the snapshot duration.
+  Delivery is at-least-once. After a restart, and when the snapshot hands over
+  to CDC (CDC resumes from the newest object the snapshot read), the objects
+  modified within `lookbackPeriod` of the newest object are delivered again.
+  On a bucket that was bulk loaded recently this is every object written in
+  the last `lookbackPeriod` before the newest one. The set of versions
+  remembered for deduplication is limited to about 256 MiB; if the objects
+  modified within `lookbackPeriod` of the newest one need more, the source
+  stops with the error `s3.source.dedupe_window_overflow` instead of
+  forgetting any; lower `lookbackPeriod` then.
 
-  Known limits: an upload that takes longer than `lookbackPeriod` to complete can
-  still be missed; an identical re-put of an object within the same second is
-  not seen as a change; in an unversioned bucket an overwrite is reported as a
-  create (there is no older version to compare with) and a delete is not
-  reported; in a versioned bucket intermediate versions that appear and are
-  superseded within one poll are not emitted, only the latest. Objects
-  deleted between being listed and being read during the snapshot are
-  skipped. Values of `lookbackPeriod` above 1h log a warning and above 24h
-  are rejected.
+  Known limits: an upload that completes more than `lookbackPeriod` after
+  newer objects were seen can still be missed; an identical re-put of an
+  object within the same second is not seen as a change; in an unversioned
+  bucket an overwrite is reported as a create (there is no older version to
+  compare with) and a delete is not reported; in a versioned bucket
+  intermediate versions that appear and are superseded within one poll are
+  not emitted, only the latest. Objects deleted between being listed and
+  being read during the snapshot are skipped. Values of `lookbackPeriod`
+  above 1h log a warning and above 24h are rejected.
 
 ### Record Keys
 
@@ -154,22 +142,21 @@ pipelines:
           # Type: bool
           # Required: no
           aws.pathStyle: "false"
-          # How far back every CDC poll looks for objects that became visible
-          # late. S3 stamps an object with the time its upload began (a
-          # multipart upload with the time it was initiated), not the time it
-          # completed, so an object can show up in a listing after newer objects
-          # were already delivered. Each poll therefore selects objects modified
-          # since (start of the previous poll - lookbackPeriod), on the store's
-          # clock (the Date header of the listing response, validated and
-          # combined with the host clock as described in the connector
-          # description). An upload that takes longer than this value can still
-          # be missed. Cost: memory for the objects modified within the window,
-          # and redelivery (at-least-once) of the objects modified within the
-          # window after a restart, and, when the snapshot hands over to CDC, of
-          # the objects modified within the window before the snapshot started
-          # and during it (so the redelivery is bounded by lookbackPeriod plus
-          # the snapshot duration). Listing cost does not depend on it. Values
-          # above 1h log a warning, above 24h are rejected, and 0 disables the
+          # How far back, from the newest object seen, every CDC poll looks for
+          # objects that became visible late. S3 stamps an object with the time
+          # its upload began (a multipart upload with the time it was
+          # initiated), not the time it completed, and lists in key order, so an
+          # object can show up after newer ones were already delivered. Each
+          # poll selects the objects modified since (newest LastModified seen -
+          # lookbackPeriod) that were not delivered yet. Only the store's own
+          # timestamps are used. An upload that completes later than this value
+          # after newer objects were seen can still be missed. Cost: memory for
+          # the objects modified within the window (limit about 256 MiB, the
+          # source stops with s3.source.dedupe_window_overflow beyond it, lower
+          # this value then), and redelivery (at-least-once) of the objects
+          # modified within the window after a restart and when the snapshot
+          # hands over to CDC. Listing cost does not depend on it. Values above
+          # 1h log a warning, above 24h are rejected, and 0 disables the
           # lookback. Known limits of the deduplication: an identical re-put of
           # an object within the same second is not seen as a change, an
           # overwrite in an unversioned bucket is reported as a create, and
@@ -187,17 +174,6 @@ pipelines:
           # Type: string
           # Required: no
           prefix: ""
-          # Use this host's clock when the object store sends no usable Date
-          # header. Off by default and UNSAFE under clock skew: if the clock of
-          # the host running Conduit is ahead of the store's by more than
-          # lookbackPeriod, objects are skipped without any error. Without it, a
-          # store that sends no Date header makes the source stop with
-          # s3.source.store_clock_unavailable instead of guessing. Set it only
-          # for a store that cannot send Date and whose clock is known to agree
-          # with this host's.
-          # Type: bool
-          # Required: no
-          trustHostClock: "false"
           # Maximum delay before an incomplete batch is read from the source.
           # Type: duration
           # Required: no

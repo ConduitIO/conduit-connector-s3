@@ -40,7 +40,6 @@ type CombinedIterator struct {
 	prefix        string
 	pollingPeriod time.Duration
 	lookback      time.Duration
-	trustHost     bool
 	client        *s3.Client
 	log           *zerolog.Logger
 	// failed is a handoff failure. It is sticky so that a retry cannot skip
@@ -52,7 +51,6 @@ func NewCombinedIterator(
 	ctx context.Context,
 	bucket, prefix string,
 	pollingPeriod, lookback time.Duration,
-	trustHostClock bool,
 	client *s3.Client,
 	p position.Position,
 ) (*CombinedIterator, error) {
@@ -62,7 +60,6 @@ func NewCombinedIterator(
 		prefix:        prefix,
 		pollingPeriod: pollingPeriod,
 		lookback:      lookback,
-		trustHost:     trustHostClock,
 		client:        client,
 		log:           sdk.Logger(ctx),
 	}
@@ -76,12 +73,12 @@ func NewCombinedIterator(
 				Msg("previous snapshot did not complete successfully. snapshot will be restarted for consistency.")
 		}
 		p = position.Position{} // always start snapshot from the beginning, so position is nil
-		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, client, p, c.log, trustHostClock)
+		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, client, p, c.log)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the snapshot iterator: %w", err)
 		}
 	case position.TypeCDC:
-		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, lookback, trustHostClock, client, p.Timestamp, c.log)
+		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, lookback, client, p.Timestamp, c.log)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the CDC iterator: %w", err)
 		}
@@ -156,22 +153,24 @@ func (c *CombinedIterator) Stop() {
 	}
 }
 
-// handoffTimestamp is the point CDC starts from after a snapshot: when the
-// snapshot began. The CDC iterator selects from this minus the lookback, so
-// the objects written while the snapshot ran (which the snapshot may have
-// listed past, in key order) are covered.
+// handoffTimestamp is the position CDC resumes from after a snapshot: the
+// newest LastModified the snapshot read (zero for an empty bucket, which makes
+// CDC select everything). The CDC iterator selects from this minus
+// lookbackPeriod, so objects written while the snapshot ran, which the snapshot
+// may have listed past, are covered, and it uses only the store's own
+// timestamps, so no clock can move it.
 //
 // Invariant 3. Redelivery this causes is bounded: only objects modified within
-// the lookback before the snapshot started, or after it, are delivered a
-// second time (at-least-once permits that); anything older is not.
+// lookbackPeriod of the newest one are delivered a second time (at-least-once
+// permits that).
 func (c *CombinedIterator) handoffTimestamp() time.Time {
-	return c.snapshotIterator.startedAt
+	return c.snapshotIterator.maxLastModified
 }
 
 func (c *CombinedIterator) switchToCDCIterator() error {
 	var err error
 	timestamp := c.handoffTimestamp()
-	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.lookback, c.trustHost, c.client, timestamp, c.log)
+	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.lookback, c.client, timestamp, c.log)
 	if err != nil {
 		return fmt.Errorf("could not create cdc iterator: %w", err)
 	}
