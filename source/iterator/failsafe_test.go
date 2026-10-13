@@ -1079,7 +1079,7 @@ func TestCDCIterator_ShrinkIntoTheFutureStopsInsteadOfHidingNewObjects(t *testin
 	is.True(strings.Contains(err.Error(), "fix the clock"))
 	is.True(!strings.Contains(err.Error(), "0 MiB")) // its own message, not the memory one
 	is.True(strings.Contains(buf.String(), "s3.source.host_clock_behind_store"))
-	is.True(strings.Contains(buf.String(), "would start in the future")) // WARN before the stop
+	is.True(strings.Contains(buf.String(), "would have to start in the future")) // WARN before the stop
 	// the stop happens before anything is handed over or moved
 	is.Equal(delivered, "")
 	is.True(sp.it.minFloor.IsZero())
@@ -1095,7 +1095,7 @@ func TestCDCIterator_StoreAheadWithinTheLookbackNeverHalts(t *testing.T) {
 	is := is.New(t)
 	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
 	e := deliveredKey{key: "s000", versionID: "null", etag: `"e-s000"`}.bytes()
-	maxDeliveredBytes = 20 * e
+	maxDeliveredBytes = 40 * e // the 30 seconds that are ahead of the host fit; the older ones are forgotten
 	maxCandidateBytes = 1000 * e
 	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
 	host := time.Now().Truncate(time.Second)
@@ -1103,7 +1103,7 @@ func TestCDCIterator_StoreAheadWithinTheLookbackNeverHalts(t *testing.T) {
 	sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
 	skew := 30 * time.Second // store clock ahead of the host
 	for i := 0; i < 100; i++ {
-		st.putAt(fmt.Sprintf("s%03d", i), host.Add(skew).Add(-time.Duration(100-i)*time.Second/2))
+		st.putAt(fmt.Sprintf("s%03d", i), host.Add(skew).Add(-time.Duration(99-i)*time.Second)) // host-69s .. host+30s, one per second
 	}
 	got := sp.mustStep(host)
 	is.Equal(len(got), 100)
@@ -1181,7 +1181,7 @@ func TestCDCIterator_StallThenFloorPassesLosesNothing(t *testing.T) {
 		st.putAt(fmt.Sprintf("n%02d", i), host.Add(-100*time.Second+time.Duration(i)*time.Second))
 	}
 	all := map[string]int{}
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 20; i++ { // enough warm-up polls for the dedupe set to fill
 		for _, k := range sp.mustStep(host) {
 			all[k]++
 		}
@@ -1254,3 +1254,73 @@ func TestCDCIterator_FailedFirstPollDoesNotApplyTheClamp(t *testing.T) {
 	is.Equal(it.maxSeen, from)
 	is.True(!it.clamped)
 }
+
+// A store clock that is ahead of the host, but by less than the lookback, with
+// future-stamped entries that DO NOT fit the budget: raising the shortened
+// window's start past the present would hide every object written from now on
+// (stamped at the present) with only a WARN as the signal. The start never
+// exceeds the host second; if what is left still does not fit, the iterator
+// stops with the clock message. (An earlier revision compared with
+// host + lookback and silently skipped 30 of 30 new objects here.)
+func futureRun(t *testing.T, ahead time.Duration) {
+	t.Helper()
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	e := deliveredKey{key: "f00", versionID: "null", etag: `"e-f00"`}.bytes()
+	maxDeliveredBytes = 20 * e
+	maxCandidateBytes = 1000 * e
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
+	host := time.Unix(1_800_000_000, 0)
+	st := newSimStore(0)
+	sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
+	for i := 0; i < 40; i++ { // bogus future stamps: 40 objects over 40s ending at host+ahead
+		st.putAt(fmt.Sprintf("f%02d", i), host.Add(ahead-time.Duration(39-i)*time.Second))
+	}
+	_, err := sp.step(host)
+	if err != nil {
+		if !errors.Is(err, ErrDedupeWindowOverflow) {
+			t.Fatal(err)
+		}
+		if !strings.Contains(err.Error(), "fix the clock") {
+			t.Fatalf("the stop does not name the clock: %v", err)
+		}
+		return // halting beats skipping
+	}
+	if sp.it.minFloor.After(host.Truncate(time.Second)) {
+		t.Fatalf("minFloor is %v ahead of the host second", sp.it.minFloor.Sub(host))
+	}
+	got := map[string]int{}
+	for i := 1; i <= 30; i++ { // correctly stamped objects written after, at the true time
+		h := host.Add(time.Duration(i) * time.Second)
+		st.putAt(fmt.Sprintf("now%02d", i), h)
+		keys, err := sp.step(h)
+		if err != nil {
+			break // a halt is acceptable, a silent skip is not
+		}
+		for _, k := range keys {
+			got[k]++
+		}
+	}
+	if sp.it.minFloor.After(host.Truncate(time.Second).Add(30 * time.Second)) {
+		t.Fatalf("minFloor ran ahead of the clock: %v", sp.it.minFloor.Sub(host))
+	}
+	// whatever was delivered, nothing below the floor may be new: every new
+	// object is delivered or the iterator stopped loudly
+	for i := 1; i <= 30; i++ {
+		if got[fmt.Sprintf("now%02d", i)] == 0 {
+			if _, stopErr := sp.step(host.Add(time.Duration(i) * time.Second)); stopErr == nil {
+				t.Fatalf("ahead=%v: now%02d never delivered and the iterator did not stop", ahead, i)
+			}
+			return
+		}
+	}
+}
+
+func TestCDCIterator_FutureFloorBelowHostPlusLookbackNeverSkipsSilently(t *testing.T) {
+	futureRun(t, 3*time.Minute)
+}
+
+func TestCDCIterator_FutureFloorBeyondLookbackNeverSkipsSilently(t *testing.T) {
+	futureRun(t, 5*time.Minute+30*time.Second)
+}
+
+func TestCDCIterator_FutureFloorFarAheadNeverSkipsSilently(t *testing.T) { futureRun(t, time.Hour) }

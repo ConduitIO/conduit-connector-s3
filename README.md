@@ -79,11 +79,16 @@ The connector goes through two modes.
   objects is lower than `lookbackPeriod`; lower `lookbackPeriod` to avoid
   the shrinking. The source stops, with the error
   `s3.source.dedupe_window_overflow` (after a warning), only if the versions
-  sharing a single second of `LastModified` do not fit, or when
-  future-stamped objects would push the shortened window's start more than
-  `lookbackPeriod` above this machine's clock (the message then says to fix
-  the clock; a store clock that is ahead by less than `lookbackPeriod` is
-  normal and never stops the source). The shortened window is not
+  sharing a single second of `LastModified` do not fit, or when entries
+  stamped at or after this machine's present second (a store clock that is
+  ahead, or bogus timestamps from the future) take the budget: a shortened
+  window never starts later than the present second, because that would hide
+  the objects written from now on, so the source stops instead (the message
+  names the clock skew and says to fix the clock). A store clock that is ahead
+  by less than `lookbackPeriod` is normal and does not stop the source as long
+  as the entries stamped in the present and the future fit the budget. A
+  future-stamped object can therefore raise the start of the window at most
+  up to the present second, never past it. The shortened window is not
   remembered across restarts: after a restart the window is rebuilt from the
   position and shortened again, so a restart delivers the window's objects
   again (duplicates, never a skip). When more objects share a second than
