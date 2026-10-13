@@ -113,6 +113,22 @@ pipelines:
           # Type: bool
           # Required: no
           aws.pathStyle: "false"
+          # How far back every CDC poll looks for objects that became visible
+          # late. S3 stamps an object with the time its upload began (a
+          # multipart upload with the time it was initiated), not the time it
+          # completed, so an object can show up in a listing after newer objects
+          # were already delivered. Each poll therefore selects objects modified
+          # since (start of the previous poll - lookbackPeriod). An upload that
+          # takes longer than this value can still be missed, and so can objects
+          # when this machine's clock is ahead of the store's by more than it.
+          # The cost is memory for the objects modified within the window and,
+          # after a restart or the switch from snapshot to CDC, redelivery of
+          # the objects modified within the window (at-least-once). Listing cost
+          # does not depend on it: every poll lists the whole prefix anyway. Use
+          # 0 to disable the lookback.
+          # Type: duration
+          # Required: no
+          lookbackPeriod: "5m"
           # polling period for the CDC mode, formatted as a time.Duration
           # string.
           # Type: duration

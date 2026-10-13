@@ -38,13 +38,14 @@ type CombinedIterator struct {
 	bucket        string
 	prefix        string
 	pollingPeriod time.Duration
+	lookback      time.Duration
 	client        *s3.Client
 }
 
 func NewCombinedIterator(
 	ctx context.Context,
 	bucket, prefix string,
-	pollingPeriod time.Duration,
+	pollingPeriod, lookback time.Duration,
 	client *s3.Client,
 	p position.Position,
 ) (*CombinedIterator, error) {
@@ -53,6 +54,7 @@ func NewCombinedIterator(
 		bucket:        bucket,
 		prefix:        prefix,
 		pollingPeriod: pollingPeriod,
+		lookback:      lookback,
 		client:        client,
 	}
 
@@ -70,7 +72,7 @@ func NewCombinedIterator(
 			return nil, fmt.Errorf("could not create the snapshot iterator: %w", err)
 		}
 	case position.TypeCDC:
-		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, client, p.Timestamp)
+		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, lookback, client, p.Timestamp)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the CDC iterator: %w", err)
 		}
@@ -140,32 +142,22 @@ func (c *CombinedIterator) Stop() {
 	}
 }
 
-// snapshotHandoffMargin is subtracted from the snapshot's start time to absorb
-// clock skew between this process and the object store.
-const snapshotHandoffMargin = 10 * time.Second
-
-// handoffTimestamp is the CDC watermark that follows a snapshot.
+// handoffTimestamp is the point CDC starts from after a snapshot: when the
+// snapshot began. The CDC iterator selects from this minus the lookback, so
+// the objects written while the snapshot ran (which the snapshot may have
+// listed past, in key order) are covered.
 //
-// Invariant 3: the snapshot lists in key order and tracks the newest
-// LastModified it has read, but an object created during the snapshot under a
-// page that was already listed is not in the snapshot, and can carry a
-// LastModified older than that maximum. Starting CDC at the maximum would skip
-// it for good. CDC therefore starts no later than the snapshot's own start
-// (minus a skew margin); objects modified since are re-delivered, which
-// at-least-once allows, and skipped ones are not.
+// Invariant 3. Redelivery this causes is bounded: only objects modified within
+// the lookback before the snapshot started, or after it, are delivered a
+// second time (at-least-once permits that); anything older is not.
 func (c *CombinedIterator) handoffTimestamp() time.Time {
-	floor := c.snapshotIterator.startedAt.Add(-snapshotHandoffMargin)
-	ts := c.snapshotIterator.maxLastModified
-	if ts.IsZero() || ts.After(floor) {
-		ts = floor
-	}
-	return ts
+	return c.snapshotIterator.startedAt
 }
 
 func (c *CombinedIterator) switchToCDCIterator() error {
 	var err error
 	timestamp := c.handoffTimestamp()
-	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.client, timestamp)
+	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.lookback, c.client, timestamp)
 	if err != nil {
 		return fmt.Errorf("could not create cdc iterator: %w", err)
 	}
