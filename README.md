@@ -43,11 +43,22 @@ The connector goes through two modes.
   before the previous poll started, and skips versions it already delivered, so
   objects that become visible late are not missed: S3 stamps an object with the
   time its upload began, a multipart upload with the time it was initiated.
-  "Now" is read from the object store (the `Date` header of the listing
-  response), so a host clock that disagrees with the store's does not matter; if
-  the header is missing the host clock is used and a warning is logged, and a
-  warning is also logged when the two clocks differ by more than half of
-  `lookbackPeriod`.
+  "Now" is read from the object store, not only from the host: the `Date`
+  header of the listing response, which is on the same clock as
+  `LastModified`. The header comes from whatever endpoint is configured, so it
+  is checked. The watermark uses the earlier of the host clock and the header,
+  which means a store that lies about the time can only cause extra
+  redelivery. A header more than 24h away from the host clock is not believed:
+  the watermark is held (objects are still delivered) and after 10 such polls
+  in a row the source stops with the error
+  `s3.source.store_clock_out_of_range`, naming both clocks. When the header is
+  missing for a poll, the offset between host and store learned from the last
+  good header is applied; a store that never sends one holds the watermark for
+  10 polls, after which the host clock is used with a warning (only safe if
+  it agrees with the store's to within `lookbackPeriod`). Because the earlier
+  clock wins, redelivery after a restart or a handoff is bounded by
+  `lookbackPeriod` plus the snapshot duration, plus up to the clock
+  difference when the `Date` header lags the host clock (at most 24h).
 
   Delivery is at-least-once. After a restart the objects modified within
   `lookbackPeriod` are delivered again. When the snapshot hands over to CDC, the
@@ -60,8 +71,10 @@ The connector goes through two modes.
   not seen as a change; in an unversioned bucket an overwrite is reported as a
   create (there is no older version to compare with) and a delete is not
   reported; in a versioned bucket intermediate versions that appear and are
-  superseded within one poll are not emitted, only the latest. Values of
-  `lookbackPeriod` above 1h log a warning and above 24h are rejected.
+  superseded within one poll are not emitted, only the latest. Objects
+  deleted between being listed and being read during the snapshot are
+  skipped. Values of `lookbackPeriod` above 1h log a warning and above 24h
+  are rejected.
 
 ### Record Keys
 
@@ -139,20 +152,21 @@ pipelines:
           # completed, so an object can show up in a listing after newer objects
           # were already delivered. Each poll therefore selects objects modified
           # since (start of the previous poll - lookbackPeriod), on the store's
-          # clock (the Date header of the listing response). An upload that
-          # takes longer than this value can still be missed. Cost: memory for
-          # the objects modified within the window, and redelivery
-          # (at-least-once) of the objects modified within the window after a
-          # restart, and, when the snapshot hands over to CDC, of the objects
-          # modified within the window before the snapshot started and during it
-          # (so the redelivery is bounded by lookbackPeriod plus the snapshot
-          # duration). Listing cost does not depend on it. Values above 1h log a
-          # warning, above 24h are rejected, and 0 disables the lookback. Known
-          # limits of the deduplication: an identical re-put of an object within
-          # the same second is not seen as a change, an overwrite in an
-          # unversioned bucket is reported as a create, and intermediate
-          # versions that appear and are superseded within one poll are not
-          # emitted.
+          # clock (the Date header of the listing response, validated and
+          # combined with the host clock as described in the connector
+          # description). An upload that takes longer than this value can still
+          # be missed. Cost: memory for the objects modified within the window,
+          # and redelivery (at-least-once) of the objects modified within the
+          # window after a restart, and, when the snapshot hands over to CDC, of
+          # the objects modified within the window before the snapshot started
+          # and during it (so the redelivery is bounded by lookbackPeriod plus
+          # the snapshot duration). Listing cost does not depend on it. Values
+          # above 1h log a warning, above 24h are rejected, and 0 disables the
+          # lookback. Known limits of the deduplication: an identical re-put of
+          # an object within the same second is not seen as a change, an
+          # overwrite in an unversioned bucket is reported as a create, and
+          # intermediate versions that appear and are superseded within one poll
+          # are not emitted.
           # Type: duration
           # Required: no
           lookbackPeriod: "5m"

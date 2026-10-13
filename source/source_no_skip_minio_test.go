@@ -426,7 +426,7 @@ func TestSource_HandoffRedeliveryIsBounded(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	client, cfg := minioSourceEnv(t, "")
-	cfg[source.ConfigKeyLookbackPeriod] = "2s"
+	setLookback(cfg, "2s")
 	bucket := cfg[config.ConfigKeyAWSBucket]
 
 	putObject(ctx, t, client, bucket, "old")
@@ -502,7 +502,7 @@ func TestSource_CDCLookback(t *testing.T) {
 			}})
 			client, cfg := minioSourceEnv(t, proxy)
 			if tc.lookback != "" {
-				cfg[source.ConfigKeyLookbackPeriod] = tc.lookback
+				setLookback(cfg, tc.lookback)
 			}
 			bucket := cfg[config.ConfigKeyAWSBucket]
 			s := openSource(ctx, t, cfg, nil)
@@ -616,5 +616,15 @@ func TestSource_HostileDateHeader(t *testing.T) {
 			}
 			t.Fatalf("new was silently lost with a %s Date header", tc.name)
 		})
+	}
+}
+
+// setLookback sets lookbackPeriod when the connector has that parameter. The
+// parameter does not exist on the code these tests are written against, so on
+// it the tests run with the old behavior instead of failing on "unrecognized
+// parameter", and fail for the real reason (a lost object).
+func setLookback(cfg map[string]string, v string) {
+	if _, ok := s3Conn.Connector.NewSpecification().SourceParams["lookbackPeriod"]; ok {
+		cfg["lookbackPeriod"] = v
 	}
 }

@@ -16,6 +16,7 @@ package iterator
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -38,27 +39,95 @@ func TestClockGuard_StoreNow(t *testing.T) {
 	t.Run("store clock is used and agreeing clocks are silent", func(t *testing.T) {
 		is := is.New(t)
 		g, buf := newGuard(5 * time.Minute)
-		is.Equal(g.storeNow(host, hdr(-time.Second)), host.Add(-time.Second))
+		got, adv, err := g.storeNow(host, hdr(-time.Second))
+		is.NoErr(err)
+		is.True(adv)
+		is.Equal(got, host.Add(-time.Second))
 		is.Equal(buf.Len(), 0)
 	})
 	t.Run("skew over half the lookback warns once a minute", func(t *testing.T) {
 		is := is.New(t)
 		g, buf := newGuard(5 * time.Minute)
-		got := g.storeNow(host, hdr(-10*time.Minute))
+		got, _, _ := g.storeNow(host, hdr(-10*time.Minute))
 		is.Equal(got, host.Add(-10*time.Minute)) // the store's clock wins
 		is.True(strings.Contains(buf.String(), "differs from the object store's"))
-		g.storeNow(host.Add(time.Second), hdr(-10*time.Minute))
+		_, _, _ = g.storeNow(host.Add(time.Second), hdr(-10*time.Minute))
 		is.Equal(strings.Count(buf.String(), "differs from the object store's"), 1) // rate limited
-		g.storeNow(host.Add(2*time.Minute), hdr(-10*time.Minute))
+		_, _, _ = g.storeNow(host.Add(2*time.Minute), hdr(-10*time.Minute))
 		is.Equal(strings.Count(buf.String(), "differs from the object store's"), 2)
 	})
-	t.Run("missing or bad header falls back to the host clock with a warning", func(t *testing.T) {
+	t.Run("a lost header reuses the last good offset", func(t *testing.T) {
 		is := is.New(t)
-		for _, h := range []string{"", "not a date"} {
-			g, buf := newGuard(5 * time.Minute)
-			is.Equal(g.storeNow(host, h), host)
-			is.True(strings.Contains(buf.String(), "no usable Date header"))
+		g, _ := newGuard(5 * time.Minute)
+		_, _, _ = g.storeNow(host, hdr(-10*time.Minute)) // host is 10m ahead
+		later := host.Add(time.Minute)
+		got, adv, err := g.storeNow(later, "")
+		is.NoErr(err)
+		is.True(adv)
+		is.Equal(got, later.Add(-10*time.Minute)) // not the host clock
+		got, adv, _ = g.storeNow(later, "not a date")
+		is.True(adv)
+		is.Equal(got, later.Add(-10*time.Minute))
+	})
+	t.Run("no offset ever: hold, then host clock after N polls with one WARN", func(t *testing.T) {
+		is := is.New(t)
+		g, buf := newGuard(5 * time.Minute)
+		for i := 1; i < maxUnusableDatePolls; i++ {
+			_, adv, err := g.storeNow(host, "")
+			is.NoErr(err)
+			is.True(!adv) // held
 		}
+		got, adv, _ := g.storeNow(host, "")
+		is.True(adv)
+		is.Equal(got, host)
+		_, _, _ = g.storeNow(host, "")
+		is.Equal(strings.Count(buf.String(), "never sends a usable Date header"), 1)
+	})
+	t.Run("a valid header resets the counters", func(t *testing.T) {
+		is := is.New(t)
+		g, _ := newGuard(5 * time.Minute)
+		for i := 0; i < maxUnusableDatePolls-1; i++ {
+			_, _, _ = g.storeNow(host, "")
+		}
+		_, _, _ = g.storeNow(host, hdr(0))
+		_, adv, _ := g.storeNow(host, "")
+		is.True(adv) // has an offset now
+	})
+	t.Run("out of range holds, then fails loudly naming both clocks", func(t *testing.T) {
+		is := is.New(t)
+		g, _ := newGuard(5 * time.Minute)
+		var err error
+		for i := 1; i <= maxUnusableDatePolls; i++ {
+			var adv bool
+			_, adv, err = g.storeNow(host, hdr(-30*time.Hour))
+			is.True(!adv)
+			if i < maxUnusableDatePolls {
+				is.NoErr(err)
+			}
+		}
+		is.True(errors.Is(err, ErrStoreClockOutOfRange))
+		msg := err.Error()
+		is.True(strings.Contains(msg, "s3.source.store_clock_out_of_range"))
+		is.True(strings.Contains(msg, host.UTC().Format(time.RFC3339)))
+		is.True(strings.Contains(msg, host.Add(-30*time.Hour).UTC().Format(time.RFC3339)))
+	})
+	t.Run("out of range never falls back to the host clock even with an offset", func(t *testing.T) {
+		is := is.New(t)
+		g, _ := newGuard(5 * time.Minute)
+		_, _, _ = g.storeNow(host, hdr(-10*time.Minute))
+		_, adv, err := g.storeNow(host, hdr(-30*time.Hour))
+		is.NoErr(err)
+		is.True(!adv)
+	})
+	t.Run("an in-range header resets the out-of-range count", func(t *testing.T) {
+		is := is.New(t)
+		g, _ := newGuard(5 * time.Minute)
+		for i := 0; i < maxUnusableDatePolls-1; i++ {
+			_, _, _ = g.storeNow(host, hdr(-30*time.Hour))
+		}
+		_, _, _ = g.storeNow(host, hdr(0))
+		_, _, err := g.storeNow(host, hdr(-30*time.Hour))
+		is.NoErr(err)
 	})
 }
 

@@ -174,7 +174,10 @@ func (w *CDCIterator) startCDC() error {
 			if err != nil {
 				return err
 			}
-			pollStart := w.clock.storeNow(hostStart, dateHeader)
+			pollStart, advance, err := w.clock.storeNow(hostStart, dateHeader)
+			if err != nil {
+				return err
+			}
 
 			if len(cache) > 0 {
 				sort.Slice(cache, func(i, j int) bool {
@@ -192,8 +195,11 @@ func (w *CDCIterator) startCDC() error {
 			}
 
 			// Only after a complete listing (and handover) may the watermark
-			// move. An empty poll advances it too.
-			w.advanceWatermark(pollStart)
+			// move, and only when the store's clock is known well enough
+			// (see clockGuard). An empty poll advances it too.
+			if advance {
+				w.advanceWatermark(pollStart)
+			}
 		}
 	}
 }

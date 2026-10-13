@@ -73,7 +73,7 @@ func NewCombinedIterator(
 				Msg("previous snapshot did not complete successfully. snapshot will be restarted for consistency.")
 		}
 		p = position.Position{} // always start snapshot from the beginning, so position is nil
-		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, client, p)
+		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, client, p, c.log)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the snapshot iterator: %w", err)
 		}

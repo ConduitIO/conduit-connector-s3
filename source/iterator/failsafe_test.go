@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -133,7 +134,7 @@ func keyOf(r *http.Request) string { return strings.TrimPrefix(r.URL.Path, "/b/"
 func token(r *http.Request) string { return r.URL.Query().Get("continuation-token") }
 func newSnap(t *testing.T, c *s3.Client) *SnapshotIterator {
 	t.Helper()
-	it, err := NewSnapshotIterator("b", "", c, position.Position{})
+	it, err := NewSnapshotIterator("b", "", c, position.Position{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,69 +389,249 @@ func TestCDCIterator_PollFailureDoesNotMoveState(t *testing.T) {
 	})
 }
 
-func versionsXML(modified string, keys ...string) string {
-	var b strings.Builder
-	b.WriteString(`<?xml version="1.0"?><ListVersionsResult><IsTruncated>false</IsTruncated>`)
-	for _, k := range keys {
-		fmt.Fprintf(&b, `<Version><Key>%s</Key><VersionId>null</VersionId><IsLatest>true</IsLatest><LastModified>%s</LastModified><ETag>"e"</ETag></Version>`, k, modified)
+// simStore is a store whose clock is host + skew (negative: the store is behind
+// the host). It lists the objects published so far with LastModified on its own
+// clock, and sends a Date header chosen by dateFn.
+type simStore struct {
+	fakeStore
+	skew time.Duration
+	// dateFn returns the Date header for a poll given the store's time. nil: a
+	// correct one.
+	dateFn func(storeNow time.Time) string
+
+	mu2     sync.Mutex
+	objects map[string]time.Time // key -> LastModified (store clock)
+	polls   atomic.Int64
+}
+
+func newSimStore(skew time.Duration, dateFn func(time.Time) string) *simStore {
+	st := &simStore{skew: skew, dateFn: dateFn, objects: map[string]time.Time{}}
+	st.handler = func(r *http.Request) *http.Response {
+		if !r.URL.Query().Has("versions") {
+			return objectResp(keyOf(r))
+		}
+		st.polls.Add(1)
+		now := time.Now().Add(st.skew).UTC()
+		date := now.Format(http.TimeFormat)
+		if st.dateFn != nil {
+			date = st.dateFn(now)
+		}
+		st.mu2.Lock()
+		defer st.mu2.Unlock()
+		var b strings.Builder
+		b.WriteString(`<?xml version="1.0"?><ListVersionsResult><IsTruncated>false</IsTruncated>`)
+		for k, t := range st.objects {
+			fmt.Fprintf(&b, `<Version><Key>%s</Key><VersionId>null</VersionId><IsLatest>true</IsLatest><LastModified>%s</LastModified><ETag>"e-%s"</ETag></Version>`,
+				k, t.UTC().Format("2006-01-02T15:04:05.000Z"), k)
+		}
+		b.WriteString(`</ListVersionsResult>`)
+		resp := xmlResp(200, b.String())
+		if date != "" {
+			resp.Header.Set("Date", date)
+		}
+		return resp
 	}
-	b.WriteString(`</ListVersionsResult>`)
-	return b.String()
+	return st
+}
+
+// put makes an object visible, stamped with the store's current time.
+func (s *simStore) put(key string) {
+	s.mu2.Lock()
+	defer s.mu2.Unlock()
+	s.objects[key] = time.Now().Add(s.skew)
+}
+
+func (s *simStore) waitPolls(n int64) {
+	target := s.polls.Load() + n
+	for s.polls.Load() < target {
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func startSim(t *testing.T, st *simStore, from time.Time) *CDCIterator {
+	t.Helper()
+	it, err := NewCDCIterator("b", "", 5*time.Millisecond, 5*time.Minute, st.client(), from, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(it.Stop)
+	return it
+}
+
+func nextKey(t *testing.T, it *CDCIterator, within time.Duration) (string, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), within)
+	defer cancel()
+	rec, err := it.Next(ctx)
+	if err != nil {
+		return "", err
+	}
+	return string(rec.Key.Bytes()), nil
+}
+
+func mustDeliver(t *testing.T, it *CDCIterator, key string) {
+	t.Helper()
+	got, err := nextKey(t, it, 5*time.Second)
+	if err != nil {
+		t.Fatalf("%s was lost: %v", key, err)
+	}
+	if got != key {
+		t.Fatalf("got %s, want %s", got, key)
+	}
+}
+
+// A header dropped on a poll while the host clock is 10 minutes AHEAD of the
+// store's. The watermark used to jump to host - lookback on the host-only
+// reading and never come back, so an object stamped on the store's clock was
+// below it and lost.
+func TestCDCIterator_DroppedDateHeaderWithHostAhead(t *testing.T) {
+	var drop atomic.Bool
+	st := newSimStore(-10*time.Minute, func(now time.Time) string {
+		if drop.Load() {
+			return ""
+		}
+		return now.Format(http.TimeFormat)
+	})
+	it := startSim(t, st, time.Now().Add(-10*time.Minute))
+
+	st.waitPolls(5) // valid headers: the offset is learned
+	drop.Store(true)
+	st.waitPolls(5) // polls without a header advance the watermark (old code)
+	st.put("late")
+	st.waitPolls(3)
+	drop.Store(false)
+	mustDeliver(t, it, "late")
+}
+
+func TestCDCIterator_IntermittentDateHeader(t *testing.T) {
+	var n atomic.Int64
+	st := newSimStore(-10*time.Minute, func(now time.Time) string {
+		if n.Add(1)%2 == 0 {
+			return ""
+		}
+		return now.Format(http.TimeFormat)
+	})
+	it := startSim(t, st, time.Now().Add(-10*time.Minute))
+
+	for i := 0; i < 5; i++ {
+		key := fmt.Sprintf("obj-%d", i)
+		st.waitPolls(3)
+		st.put(key)
+		mustDeliver(t, it, key)
+	}
+}
+
+// A store that never sends Date: nothing can be corrected, but nothing may be
+// skipped either. The watermark is held for a while, then the host clock (the
+// only one there is) takes over, with one WARN.
+func TestCDCIterator_StoreThatNeverSendsDate(t *testing.T) {
+	st := newSimStore(0, func(time.Time) string { return "" })
+	it := startSim(t, st, time.Now())
+
+	st.waitPolls(2)
+	st.put("early") // while the watermark is held
+	mustDeliver(t, it, "early")
+
+	st.waitPolls(maxUnusableDatePolls + 5) // host-only advancement has started
+	st.put("later")
+	mustDeliver(t, it, "later")
+}
+
+// The HOST is the liar: its clock is 30h ahead of the store's, and both the
+// Date header and LastModified are on the store's clock. No object may be
+// skipped, and the iterator must stop loudly instead of guessing.
+func TestCDCIterator_HostClockFarAheadFailsLoudly(t *testing.T) {
+	is := is.New(t)
+	st := newSimStore(-30*time.Hour, nil)
+	it := startSim(t, st, time.Now().Add(-30*time.Hour))
+
+	st.waitPolls(2)
+	st.put("obj")
+	mustDeliver(t, it, "obj") // delivered while the watermark is held
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := it.Next(ctx)
+	is.True(errors.Is(err, ErrStoreClockOutOfRange))
+	is.True(strings.Contains(err.Error(), "s3.source.store_clock_out_of_range"))
+
+	// and it stays failed
+	for i := 0; i < 3; i++ {
+		_, err := it.Next(ctx)
+		is.True(errors.Is(err, ErrStoreClockOutOfRange))
+	}
+}
+
+// Next on a stopped iterator must report an error on every call, never an
+// empty record (a receive from the closed buffer).
+func TestCDCIterator_NextOnDeadIteratorAlwaysErrors(t *testing.T) {
+	st := newSimStore(0, nil)
+	it := startSim(t, st, time.Now())
+	st.waitPolls(2)
+	it.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for i := 0; i < 10; i++ {
+		rec, err := it.Next(ctx)
+		if err == nil {
+			t.Fatalf("call %d returned a record (%q) from a dead iterator", i, rec.Key.Bytes())
+		}
+	}
+}
+
+func TestSnapshotIterator_ObjectDeletedAfterListingIsSkipped(t *testing.T) {
+	is := is.New(t)
+	st := &fakeStore{handler: twoPages(func(r *http.Request) *http.Response { //nolint:bodyclose // scripted responses, closed by the SDK
+		if isGet(r) && keyOf(r) == "b" {
+			return xmlResp(404, `<?xml version="1.0"?><Error><Code>NoSuchKey</Code><Message>gone</Message></Error>`)
+		}
+		return nil
+	})}
+	it := newSnap(t, st.client())
+	ctx := context.Background()
+
+	var got []string
+	for it.HasNext(ctx) {
+		rec, err := it.Next(ctx)
+		if errors.Is(err, sdk.ErrBackoffRetry) {
+			break
+		}
+		is.NoErr(err)
+		got = append(got, string(rec.Key.Bytes()))
+	}
+	is.Equal(got, []string{"a", "c"}) // b was deleted: skipped, the snapshot goes on
 }
 
 // TestCDCIterator_HostileDateNeverSkips: end to end through the iterator, with
 // a store whose Date header lies. The object is modified "now" on the store's
-// clock; it must be delivered whatever the header says.
+// clock; it must be delivered whatever the header says. A header that is out of
+// range holds the watermark (the object is still delivered) and then fails the
+// iterator loudly.
 func TestCDCIterator_HostileDateNeverSkips(t *testing.T) {
-	for name, date := range map[string]func() string{
-		"far future":  func() string { return time.Now().Add(100 * 24 * time.Hour).UTC().Format(http.TimeFormat) },
-		"near future": func() string { return time.Now().Add(2 * time.Hour).UTC().Format(http.TimeFormat) },
-		"far past":    func() string { return time.Now().Add(-100 * 24 * time.Hour).UTC().Format(http.TimeFormat) },
-		"garbage":     func() string { return "next tuesday" },
-		"missing":     func() string { return "" },
-		// a host clock ahead of the store: the store's clock (Date and
-		// LastModified) is 10 minutes behind, with a 5 minute lookback
-		"host ahead of store": func() string { return time.Now().Add(-10 * time.Minute).UTC().Format(http.TimeFormat) },
+	for name, tc := range map[string]struct {
+		date       func(store time.Time) string
+		failsAfter bool
+	}{
+		"far future":  {func(time.Time) string { return time.Now().Add(100 * 24 * time.Hour).UTC().Format(http.TimeFormat) }, true},
+		"far past":    {func(time.Time) string { return time.Now().Add(-100 * 24 * time.Hour).UTC().Format(http.TimeFormat) }, true},
+		"near future": {func(time.Time) string { return time.Now().Add(2 * time.Hour).UTC().Format(http.TimeFormat) }, false},
+		"garbage":     {func(time.Time) string { return "next tuesday" }, false},
+		"missing":     {func(time.Time) string { return "" }, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			is := is.New(t)
-			var mu sync.Mutex
-			published := false
-			st := &fakeStore{handler: func(r *http.Request) *http.Response {
-				if r.URL.Query().Has("versions") {
-					mu.Lock()
-					defer mu.Unlock()
-					storeNow := time.Now().UTC()
-					if d, ok := parseStoreDate(date()); ok && name == "host ahead of store" {
-						storeNow = d
-					}
-					if !published {
-						return xmlResp(200, versionsXML(lm), "Date", date()) // empty listing
-					}
-					return xmlResp(200, versionsXML(storeNow.Format("2006-01-02T15:04:05.000Z"), "obj"), "Date", date())
+			st := newSimStore(0, tc.date)
+			it := startSim(t, st, time.Now())
+			st.waitPolls(2)
+			st.put("obj")
+			mustDeliver(t, it, "obj")
+			if tc.failsAfter {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, err := it.Next(ctx)
+				if !errors.Is(err, ErrStoreClockOutOfRange) {
+					t.Fatalf("want a loud ErrStoreClockOutOfRange, got %v", err)
 				}
-				return objectResp(keyOf(r))
-			}}
-			from := time.Now() // the start point, as the snapshot hands it over (min of host and store)
-			if name == "host ahead of store" {
-				from = from.Add(-10 * time.Minute)
 			}
-			it, err := NewCDCIterator("b", "", 10*time.Millisecond, 5*time.Minute, st.client(), from, nil)
-			is.NoErr(err)
-			defer it.Stop()
-
-			time.Sleep(100 * time.Millisecond) // a few empty polls first
-			mu.Lock()
-			published = true
-			mu.Unlock()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			rec, err := it.Next(ctx)
-			if err != nil {
-				t.Fatalf("object lost with a %s Date header: %v", name, err)
-			}
-			is.Equal(string(rec.Key.Bytes()), "obj")
 		})
 	}
 }
