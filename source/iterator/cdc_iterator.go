@@ -280,7 +280,7 @@ var maxCandidateBytes = maxDeliveredBytes / 4
 // bounded and the order by LastModified that restart positions rely on holds.
 func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func([]CacheEntry) error) error {
 	base := w.baseMax(hostNow)
-	cache, deferredFrom, err := w.poll(ctx, laterOf(w.floorFor(base, hostNow), w.minFloor))
+	cache, deferredFrom, err := w.poll(ctx, laterOf(w.floorFor(base, hostNow), w.effMinFloor(hostNow)))
 	if err != nil {
 		return err
 	}
@@ -299,10 +299,10 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 	if rawMax.Sub(hostNow) > w.lookback {
 		w.warnHostClockBehind(rawMax, hostNow)
 	}
-	newFloor := laterOf(w.floorFor(newMax, hostNow), w.minFloor)
+	newFloor := laterOf(w.floorFor(newMax, hostNow), w.effMinFloor(hostNow))
 
 	keep, seen := w.trackedAfter(cache, newFloor)
-	newMinFloor := w.minFloor
+	newMinFloor := w.effMinFloor(hostNow)
 	var untrack untrackPlan
 	if keepBytes(keep) > maxDeliveredBytes {
 		minFloor, plan, err := w.shrink(keep, shrinkContext{
@@ -467,9 +467,19 @@ func (w *CDCIterator) shrink(keep []tracked, sc shrinkContext) (minFloor time.Ti
 	}
 	sort.Slice(secs, func(i, j int) bool { return secs[i] < secs[j] })
 
+	// The minimum floor never exceeds the host second: a future-stamped entry
+	// can raise the floor only up to the present, never past it, or objects
+	// written from now on (stamped at the present) would be hidden. So only
+	// seconds strictly below the host second may be forgotten by second.
+	hostSec := sc.hostNow.Unix()
+	blockedByHost := false
 	plan.upTo = -1
 	for i := 0; i < len(secs) && total > maxDeliveredBytes; i++ {
 		if (deferred && secs[i] >= cutSec) || (!deferred && i == len(secs)-1) {
+			break
+		}
+		if secs[i] >= hostSec {
+			blockedByHost = true
 			break
 		}
 		total -= perSecond[secs[i]]
@@ -479,23 +489,22 @@ func (w *CDCIterator) shrink(keep []tracked, sc shrinkContext) (minFloor time.Ti
 		plan.drop, total = dropNewestAbove(keep, cutSec, total)
 	}
 	if total > maxDeliveredBytes {
+		if blockedByHost {
+			// What is left does not fit because entries stamped at or after the
+			// host second (a store clock that is ahead, or bogus timestamps) take
+			// the budget, and forgetting them by second would hide new objects.
+			return time.Time{}, untrackPlan{}, w.stopFloorInTheFuture(sc.hostNow, total, sc)
+		}
 		return time.Time{}, untrackPlan{}, w.stopOverflow(total, sc, "the objects of one second alone need more tracking memory than the limit")
 	}
 
-	minFloor = laterOf(time.Unix(plan.upTo+1, 0), w.minFloor)
+	minFloor = laterOf(time.Unix(plan.upTo+1, 0), w.effMinFloor(sc.hostNow))
 	if deferred {
 		if capped := sc.deferredFrom.Truncate(time.Second); capped.Before(minFloor) {
 			minFloor = capped
 		}
 	}
-	minFloor = laterOf(minFloor, w.minFloor)
-	if limit := sc.hostNow.Add(w.lookback); minFloor.After(limit) {
-		// Future-stamped entries pushed the floor further ahead of the host
-		// clock than any plausible skew between the clocks (a skew below the
-		// lookback is normal and never gets here): new objects would be hidden
-		// until the host catches up. Stop instead.
-		return time.Time{}, untrackPlan{}, w.stopFloorInTheFuture(minFloor, sc)
-	}
+	minFloor = laterOf(minFloor, w.effMinFloor(sc.hostNow))
 
 	evicted := len(plan.drop)
 	for _, t := range keep {
@@ -534,28 +543,44 @@ func dropNewestAbove(keep []tracked, cutSec, total int64) (map[deliveredKey]stru
 	return drop, total
 }
 
-// FloorInTheFutureError is the error of an iterator that stopped because the
-// shortened window would start far ahead of the host clock.
+// FloorInTheFutureError is the error of an iterator that stopped because
+// object versions stamped at or after the host clock's present second take the
+// tracking budget, so the window could only be shortened by raising its start
+// past the present, which would hide new objects.
 type FloorInTheFutureError struct {
-	Floor, Host time.Time
-	Lookback    time.Duration
+	Host     time.Time
+	Newest   time.Time
+	Needed   int64
+	Lookback time.Duration
 }
 
 func (e *FloorInTheFutureError) Error() string {
-	return fmt.Sprintf("%s: the shortened CDC window would start at %s, %s ahead of this host's clock (%s) and beyond the lookback of %s, "+
-		"which would hide objects written from now on; object timestamps from the future (a store clock that is ahead, or bogus timestamps) are the cause: "+
+	return fmt.Sprintf("%s: the object versions stamped at or after this host's present second (%s) need about %d KiB to track, more than the limit of %d KiB, "+
+		"and the window cannot be shortened past the present without hiding new objects; the newest object timestamp is %s ahead of this host's clock. "+
+		"Object timestamps from the future (a store clock that is ahead, or bogus timestamps) are the cause: "+
 		"fix the clock of the host running Conduit or of the store, or remove the future-stamped objects",
-		ErrDedupeWindowOverflow.Error(), e.Floor.UTC().Format(time.RFC3339), e.Floor.Sub(e.Host).Round(time.Second), e.Host.UTC().Format(time.RFC3339), e.Lookback)
+		ErrDedupeWindowOverflow.Error(), e.Host.UTC().Format(time.RFC3339), e.Needed>>10, maxDeliveredBytes>>10, e.Newest.Sub(e.Host).Round(time.Second))
 }
 
 func (e *FloorInTheFutureError) Is(target error) bool { return target == ErrDedupeWindowOverflow }
 
-func (w *CDCIterator) stopFloorInTheFuture(floor time.Time, sc shrinkContext) error {
-	w.warnHostClockBehind(sc.rawMax, sc.hostNow)
-	err := &FloorInTheFutureError{Floor: floor, Host: sc.hostNow, Lookback: w.lookback}
+func (w *CDCIterator) stopFloorInTheFuture(host time.Time, needed int64, sc shrinkContext) error {
+	if sc.rawMax.Sub(host) > w.lookback {
+		w.warnHostClockBehind(sc.rawMax, host)
+	}
+	err := &FloorInTheFutureError{Host: host, Newest: sc.rawMax, Needed: needed, Lookback: w.lookback}
 	w.log.Warn().Str("code", ErrDedupeWindowOverflow.Error()).
-		Msg("the shortened window would start in the future; stopping the CDC iterator. " + err.Error())
+		Msg("the shortened window would have to start in the future; stopping the CDC iterator. " + err.Error())
 	return err
+}
+
+// effMinFloor is the minimum floor in effect: never above the host second, even
+// if the host clock moved back since it was set.
+func (w *CDCIterator) effMinFloor(hostNow time.Time) time.Time {
+	if limit := hostNow.Truncate(time.Second); w.minFloor.After(limit) {
+		return limit
+	}
+	return w.minFloor
 }
 
 // stopOverflow warns, then returns the error that stops the iterator.
