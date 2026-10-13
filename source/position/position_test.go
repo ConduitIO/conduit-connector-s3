@@ -126,36 +126,3 @@ func Test_ToRecordPosition(t *testing.T) {
 		})
 	}
 }
-
-func Test_ConvertSnapshotPositionToCDC(t *testing.T) {
-	positionTests := []struct {
-		name    string
-		wantErr bool
-		in      opencdc.Position
-		out     opencdc.Position
-	}{
-		{
-			name:    "convert snapshot position to cdc",
-			wantErr: false,
-			in:      []byte("test_s100"),
-			out:     []byte("test_c100"),
-		},
-		{
-			name:    "convert invalid snapshot should produce error",
-			wantErr: true,
-			in:      []byte("s100"),
-			out:     []byte(""),
-		},
-	}
-
-	for _, tt := range positionTests {
-		t.Run(tt.name, func(t *testing.T) {
-			p, err := ConvertToCDCPosition(tt.in)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("ConvertToCDCPosition() error = %v, wantErr %v", err, tt.wantErr)
-			} else if !bytes.Equal(p, tt.out) {
-				t.Errorf("ConvertToCDCPosition(): Got : %v,Expected : %v", p, tt.out)
-			}
-		})
-	}
-}

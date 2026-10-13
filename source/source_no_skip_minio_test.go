@@ -166,7 +166,11 @@ func TestSource_SnapshotHandoffDoesNotSkipObjects(t *testing.T) {
 	}
 }
 
-var lastModifiedRe = regexp.MustCompile(`<LastModified>[^<]*</LastModified>`)
+var (
+	lastModifiedRe = regexp.MustCompile(`<LastModified>[^<]*</LastModified>`)
+	versionRe      = regexp.MustCompile(`(?s)<Version>.*?</Version>`)
+	keyRe          = regexp.MustCompile(`<Key>([^<]*)</Key>`)
+)
 
 // proxyOpts shapes a forwarding proxy in front of MinIO.
 type proxyOpts struct {
@@ -174,6 +178,12 @@ type proxyOpts struct {
 	// the returned value (RFC 3339). MinIO reports milliseconds and AWS whole
 	// seconds; this makes the same-second cases reproducible on demand.
 	lastModified func(orig string) string
+	// shift moves the store's clock: every LastModified in XML and every Date
+	// header is shifted by it (negative: the store is behind the host).
+	shift time.Duration
+	// hide, if set, removes the listed object versions for which it returns
+	// true from ListObjectVersions responses.
+	hide func(key string) bool
 	// before runs for every request before it is forwarded. Returning a
 	// non-zero status answers the request with that S3 error instead.
 	before func(r *http.Request) (status int)
@@ -188,7 +198,13 @@ func minioProxy(t *testing.T, endpoint string, opts proxyOpts) string {
 	}
 	rp := httputil.NewSingleHostReverseProxy(target)
 	rp.ModifyResponse = func(resp *http.Response) error {
-		if opts.lastModified == nil || !strings.Contains(resp.Header.Get("Content-Type"), "xml") {
+		if opts.shift != 0 {
+			if d, err := http.ParseTime(resp.Header.Get("Date")); err == nil {
+				resp.Header.Set("Date", d.Add(opts.shift).UTC().Format(http.TimeFormat))
+			}
+		}
+		if (opts.lastModified == nil && opts.shift == 0 && opts.hide == nil) ||
+			!strings.Contains(resp.Header.Get("Content-Type"), "xml") {
 			return nil
 		}
 		body, err := io.ReadAll(resp.Body)
@@ -196,9 +212,24 @@ func minioProxy(t *testing.T, endpoint string, opts proxyOpts) string {
 			return err
 		}
 		_ = resp.Body.Close()
+		if opts.hide != nil {
+			body = versionRe.ReplaceAllFunc(body, func(m []byte) []byte {
+				k := keyRe.FindSubmatch(m)
+				if k != nil && opts.hide(string(k[1])) {
+					return nil
+				}
+				return m
+			})
+		}
 		body = lastModifiedRe.ReplaceAllFunc(body, func(m []byte) []byte {
 			orig := strings.TrimSuffix(strings.TrimPrefix(string(m), "<LastModified>"), "</LastModified>")
-			return []byte("<LastModified>" + opts.lastModified(orig) + "</LastModified>")
+			if opts.lastModified != nil {
+				orig = opts.lastModified(orig)
+			}
+			if t, err := time.Parse(time.RFC3339Nano, orig); err == nil && opts.shift != 0 {
+				orig = t.Add(opts.shift).UTC().Format("2006-01-02T15:04:05.000Z")
+			}
+			return []byte("<LastModified>" + orig + "</LastModified>")
 		})
 		resp.Body = io.NopCloser(strings.NewReader(string(body)))
 		resp.ContentLength = int64(len(body))
@@ -221,9 +252,12 @@ func minioProxy(t *testing.T, endpoint string, opts proxyOpts) string {
 }
 
 // fixedSecond makes every object look like it was modified at the same whole
-// second, which is the worst case of AWS's one-second resolution.
+// second, which is the worst case of AWS's one-second resolution. The second is
+// 3s in the future so that the objects written after the first poll still carry
+// the same timestamp as the first one (and so that a watermark taken from the
+// newest LastModified, as the old code did, is exactly that second).
 func fixedSecond() func(string) string {
-	fixed := time.Now().UTC().Truncate(time.Second).Format("2006-01-02T15:04:05.000Z")
+	fixed := time.Now().UTC().Truncate(time.Second).Add(3 * time.Second).Format("2006-01-02T15:04:05.000Z")
 	return func(string) string { return fixed }
 }
 
@@ -425,4 +459,80 @@ func TestSource_ObjectsCreatedRightAfterOpenAreDelivered(t *testing.T) {
 			t.Errorf("%s was written after Open and never delivered (%d of %d)", k, len(seen), n)
 		}
 	}
+}
+
+// TestSource_CDCLookback: an object that is listed late (here: hidden from
+// ListObjectVersions for a while, like a multipart upload that completes after
+// newer objects were already delivered) is only delivered if the lookback is
+// longer than the delay. This is what the lookback is for, and what proves the
+// other tests do not pass by accident with lookbackPeriod=0.
+func TestSource_CDCLookback(t *testing.T) {
+	const hideFor = 4 * time.Second
+	for _, tc := range []struct {
+		name          string
+		lookback      string // "" is the default
+		wantDelivered bool
+	}{
+		{"default lookback delivers the late object", "", true},
+		{"lookback 0 loses it", "0s", false},
+		// documented bound: an object that becomes visible later than the
+		// lookback after its LastModified can be missed
+		{"lookback shorter than the delay loses it", "1s", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			ctx := context.Background()
+			var hidden atomic.Bool
+			proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{hide: func(key string) bool {
+				return key == "late" && hidden.Load()
+			}})
+			client, cfg := minioSourceEnv(t, proxy)
+			if tc.lookback != "" {
+				cfg[source.ConfigKeyLookbackPeriod] = tc.lookback
+			}
+			bucket := cfg[config.ConfigKeyAWSBucket]
+			s := openSource(ctx, t, cfg, nil)
+			startCDC(ctx, t, s)
+
+			hidden.Store(true)
+			putObject(ctx, t, client, bucket, "late")
+			time.Sleep(1100 * time.Millisecond) // "newer" gets a later second
+			putObject(ctx, t, client, bucket, "newer")
+			rec, err := readWithTimeout(ctx, s, 10*time.Second)
+			is.NoErr(err)
+			is.Equal(string(rec.Key.Bytes()), "newer") // late is invisible
+
+			time.Sleep(hideFor)
+			hidden.Store(false)
+			seen := drainKeys(ctx, s, 3*time.Second)
+
+			if tc.wantDelivered {
+				is.True(seen["late"] >= 1) // delivered once it became visible
+			} else if seen["late"] != 0 {
+				t.Fatalf("late was delivered although the lookback (%s) is shorter than the %s it was hidden: %v", tc.lookback, hideFor, seen)
+			}
+		})
+	}
+}
+
+// TestSource_CDCClockSkew: the host clock is ahead of the store's by more than
+// the lookback (the store's Date headers and LastModified are shifted 10
+// minutes into the past). The watermark must come from the store's clock;
+// taken from the host's, every new object would look older than the watermark
+// and be lost.
+func TestSource_CDCClockSkew(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{shift: -10 * time.Minute})
+	client, cfg := minioSourceEnv(t, proxy)
+	bucket := cfg[config.ConfigKeyAWSBucket]
+	s := openSource(ctx, t, cfg, nil)
+	startCDC(ctx, t, s)
+
+	putObject(ctx, t, client, bucket, "skewed")
+	rec, err := readWithTimeout(ctx, s, 10*time.Second)
+	if err != nil {
+		t.Fatalf("object written while the host clock is 10m ahead of the store's was never delivered: %v", err)
+	}
+	is.Equal(string(rec.Key.Bytes()), "skewed")
 }

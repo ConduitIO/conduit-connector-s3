@@ -7,10 +7,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.33.9
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.9
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.0
+	github.com/aws/smithy-go v1.28.5
 	github.com/conduitio/conduit-commons v0.7.0
 	github.com/conduitio/conduit-connector-sdk v0.14.2
 	github.com/google/uuid v1.6.0
 	github.com/matryer/is v1.4.1
+	github.com/rs/zerolog v1.35.1
 	github.com/xitongsys/parquet-go v1.6.2
 	github.com/xitongsys/parquet-go-source v0.0.0-20211228015320-b4f792c43cd0
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
@@ -36,7 +38,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.38.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4 // indirect
-	github.com/aws/smithy-go v1.28.5 // indirect
 	github.com/conduitio/conduit-connector-protocol v0.9.5 // indirect
 	github.com/conduitio/evolviconf v0.1.1 // indirect
 	github.com/conduitio/evolviconf/evolviyaml v0.1.0 // indirect
@@ -63,7 +64,6 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/oklog/run v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.8 // indirect
-	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/samber/lo v1.53.0 // indirect
 	github.com/samber/slog-common v0.21.0 // indirect
 	github.com/samber/slog-zerolog/v2 v2.9.2 // indirect

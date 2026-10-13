@@ -24,6 +24,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -40,6 +41,7 @@ type CombinedIterator struct {
 	pollingPeriod time.Duration
 	lookback      time.Duration
 	client        *s3.Client
+	log           *zerolog.Logger
 }
 
 func NewCombinedIterator(
@@ -56,6 +58,7 @@ func NewCombinedIterator(
 		pollingPeriod: pollingPeriod,
 		lookback:      lookback,
 		client:        client,
+		log:           sdk.Logger(ctx),
 	}
 
 	switch p.Type {
@@ -72,7 +75,7 @@ func NewCombinedIterator(
 			return nil, fmt.Errorf("could not create the snapshot iterator: %w", err)
 		}
 	case position.TypeCDC:
-		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, lookback, client, p.Timestamp)
+		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, lookback, client, p.Timestamp, c.log)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the CDC iterator: %w", err)
 		}
@@ -157,7 +160,7 @@ func (c *CombinedIterator) handoffTimestamp() time.Time {
 func (c *CombinedIterator) switchToCDCIterator() error {
 	var err error
 	timestamp := c.handoffTimestamp()
-	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.lookback, c.client, timestamp)
+	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.lookback, c.client, timestamp, c.log)
 	if err != nil {
 		return fmt.Errorf("could not create cdc iterator: %w", err)
 	}
