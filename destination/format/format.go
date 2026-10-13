@@ -82,3 +82,17 @@ func (f Format) MakeBytes(records []opencdc.Record) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported format: %s", f)
 	}
 }
+
+// dataString returns the bytes of d as a string, or "" when d is nil.
+//
+// Records legitimately carry nil data: a delete has no After image, and a
+// keyless record has no Key. Calling Bytes on a nil opencdc.Data panics, which
+// took the destination down on the first delete (#1030) before the batch was
+// written, so nothing was acked and the pipeline could not make progress.
+// Before images are not stored by either format (documented limitation).
+func dataString(d opencdc.Data) string {
+	if d == nil {
+		return ""
+	}
+	return string(d.Bytes())
+}

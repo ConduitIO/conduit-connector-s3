@@ -45,8 +45,8 @@ func makeParquetBytes(records []opencdc.Record) ([]byte, error) {
 		pr := &parquetRecord{
 			Operation: r.Operation.String(),
 			Position:  string(r.Position),
-			Payload:   string(r.Payload.After.Bytes()),
-			Key:       string(r.Key.Bytes()),
+			Payload:   dataString(r.Payload.After),
+			Key:       dataString(r.Key),
 			Metadata:  r.Metadata,
 		}
 
