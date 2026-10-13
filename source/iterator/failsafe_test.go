@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -419,7 +420,13 @@ func newSimStore(skew time.Duration) *simStore {
 		defer st.mu2.Unlock()
 		var b strings.Builder
 		b.WriteString(`<?xml version="1.0"?><ListVersionsResult><IsTruncated>false</IsTruncated>`)
-		for k, t := range st.objects {
+		keys := make([]string, 0, len(st.objects))
+		for k := range st.objects {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys) // real S3 lists in key order; a map would hide ordering bugs
+		for _, k := range keys {
+			t := st.objects[k]
 			if st.hidden[k] {
 				continue
 			}
@@ -1062,17 +1069,160 @@ func TestCDCIterator_ShrinkIntoTheFutureStopsInsteadOfHidingNewObjects(t *testin
 	for i := 0; i < 60; i++ {
 		st.putAt(fmt.Sprintf("f%02d", i), host.Add(time.Hour+time.Duration(i)*time.Second))
 	}
-	_, err := sp.step(host)
+	before := sp.it.maxSeen
+	delivered := ""
+	err := sp.it.step(context.Background(), host, func(_ []CacheEntry) error {
+		delivered = "handed over"
+		return nil
+	})
 	is.True(errors.Is(err, ErrDedupeWindowOverflow))
 	is.True(strings.Contains(err.Error(), "fix the clock"))
+	is.True(!strings.Contains(err.Error(), "0 MiB")) // its own message, not the memory one
 	is.True(strings.Contains(buf.String(), "s3.source.host_clock_behind_store"))
 	is.True(strings.Contains(buf.String(), "would start in the future")) // WARN before the stop
-	is.True(sp.it.minFloor.IsZero())                                     // state untouched
+	// the stop happens before anything is handed over or moved
+	is.Equal(delivered, "")
+	is.True(sp.it.minFloor.IsZero())
+	is.Equal(len(sp.it.delivered), 0)
+	is.Equal(sp.it.deliveredBytes, int64(0))
+	is.Equal(sp.it.maxSeen, before)
+}
+
+// A store whose clock is ahead of the host by less than the lookback is normal
+// and must never halt, even when the window is dense and has to shrink: nothing
+// is hidden and new objects keep arriving.
+func TestCDCIterator_StoreAheadWithinTheLookbackNeverHalts(t *testing.T) {
+	is := is.New(t)
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	e := deliveredKey{key: "s000", versionID: "null", etag: `"e-s000"`}.bytes()
+	maxDeliveredBytes = 20 * e
+	maxCandidateBytes = 1000 * e
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
+	host := time.Now().Truncate(time.Second)
+	st := newSimStore(0)
+	sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
+	skew := 30 * time.Second // store clock ahead of the host
+	for i := 0; i < 100; i++ {
+		st.putAt(fmt.Sprintf("s%03d", i), host.Add(skew).Add(-time.Duration(100-i)*time.Second/2))
+	}
+	got := sp.mustStep(host)
+	is.Equal(len(got), 100)
+	// new objects, stamped on the store's clock, keep being delivered
+	for i := 0; i < 5; i++ {
+		h := host.Add(time.Duration(i+1) * time.Second)
+		key := fmt.Sprintf("new-%d", i)
+		st.putAt(key, h.Add(skew))
+		is.Equal(sp.mustStep(h), []string{key})
+	}
+}
+
+// F1 x F3, the stall: one second of late-visible objects larger than the
+// candidate budget (but far below the dedupe budget) while the dedupe set is
+// full of newer ones. The candidates handed over must stay tracked, or the next
+// poll picks the same subset again (real S3 lists in key order) and the rest of
+// the second, and everything newer, is deferred forever.
+func TestCDCIterator_SameSecondBurstOverCandidateBudgetWithShrinkMakesProgress(t *testing.T) {
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	e := deliveredKey{key: "n00", versionID: "null", etag: `"e-n00"`}.bytes()
+	maxDeliveredBytes = 50 * e
+	maxCandidateBytes = 5 * e
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
+	host := time.Now().Truncate(time.Second)
+	st := newSimStore(0)
+	sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
+	for i := 0; i < 48; i++ {
+		st.putAt(fmt.Sprintf("n%02d", i), host.Add(-100*time.Second+time.Duration(i)*time.Second))
+	}
+	all := map[string]int{}
+	for i := 0; i < 20; i++ {
+		for _, k := range sp.mustStep(host) {
+			all[k]++
+		}
+	}
+	T := host.Add(-200 * time.Second)
+	for j := 0; j < 10; j++ {
+		st.putAt(fmt.Sprintf("L%02d", j), T)
+	}
+	for i := 0; i < 200; i++ {
+		keys, err := sp.step(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range keys {
+			all[k]++
+		}
+	}
+	for j := 0; j < 10; j++ {
+		k := fmt.Sprintf("L%02d", j)
+		if all[k] == 0 {
+			t.Errorf("%s was listed and visible for 200 polls and never delivered", k)
+		}
+		if all[k] > 3 {
+			t.Errorf("%s delivered %d times: should settle after at most a few duplicates", k, all[k])
+		}
+	}
+	if got := sp.mustStep(host); len(got) != 0 {
+		t.Errorf("still redelivering %d objects after settling", len(got))
+	}
+}
+
+// Same stall, then time moves on with one new object per poll: nothing that was
+// deferred may fall below the floor for good, and the new objects are delivered.
+func TestCDCIterator_StallThenFloorPassesLosesNothing(t *testing.T) {
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	e := deliveredKey{key: "n00", versionID: "null", etag: `"e-n00"`}.bytes()
+	maxDeliveredBytes = 50 * e
+	maxCandidateBytes = 5 * e
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
+	host := time.Now().Truncate(time.Second)
+	st := newSimStore(0)
+	sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
+	for i := 0; i < 48; i++ {
+		st.putAt(fmt.Sprintf("n%02d", i), host.Add(-100*time.Second+time.Duration(i)*time.Second))
+	}
+	all := map[string]int{}
+	for i := 0; i < 5; i++ {
+		for _, k := range sp.mustStep(host) {
+			all[k]++
+		}
+	}
+	T := host.Add(-200 * time.Second)
+	for j := 0; j < 10; j++ {
+		st.putAt(fmt.Sprintf("L%02d", j), T)
+	}
+	for i := 0; i < 10; i++ {
+		for _, k := range sp.mustStep(host) {
+			all[k]++
+		}
+	}
+	for i := 0; i < 400; i++ { // time passes, one new object per poll
+		h := host.Add(time.Duration(i+1) * time.Second)
+		st.putAt(fmt.Sprintf("p%03d", i), h)
+		keys, err := sp.step(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range keys {
+			all[k]++
+		}
+	}
+	for j := 0; j < 10; j++ {
+		if k := fmt.Sprintf("L%02d", j); all[k] == 0 {
+			t.Errorf("%s lost for good", k)
+		}
+	}
+	for i := 0; i < 400; i++ {
+		if k := fmt.Sprintf("p%03d", i); all[k] == 0 {
+			t.Errorf("%s (a new object) was never delivered", k)
+		}
+	}
 }
 
 // A resume position from an older release can lie in the future. It is clamped
-// to the host clock (with a WARN), so objects written after the restart are not
-// hidden by it.
+// to the host clock at the first poll, which becomes the state: on a quiet
+// bucket the floor then stays where the restart put it instead of following the
+// host clock, so late objects are tolerated for the full lookback after the
+// restart. (Without the clamp the floor would be host - lookback at every poll.)
 func TestCDCIterator_FuturePositionFromAnOlderReleaseIsClamped(t *testing.T) {
 	is := is.New(t)
 	var buf bytes.Buffer
@@ -1080,8 +1230,27 @@ func TestCDCIterator_FuturePositionFromAnOlderReleaseIsClamped(t *testing.T) {
 	host := time.Now()
 	st := newSimStore(0)
 	sp := newStepper(t, st, host.Add(2*time.Hour), 5*time.Minute, &l)
-	st.putAt("after-restart", host.Add(-time.Minute)) // within the lookback of the host clock
-	is.Equal(sp.mustStep(host), []string{"after-restart"})
+	is.Equal(len(sp.mustStep(host)), 0) // quiet bucket: the clamp becomes the state
 	is.True(strings.Contains(buf.String(), "resume position carries a timestamp in the future"))
 	is.True(!sp.it.maxSeen.After(host))
+
+	// ten minutes later an object that became visible late (stamped one minute
+	// after the restart) shows up: inside the lookback of the restart, outside
+	// the lookback of the poll
+	st.putAt("late", host.Add(-time.Minute))
+	is.Equal(sp.mustStep(host.Add(10*time.Minute)), []string{"late"})
+}
+
+// The clamp is applied to the value used, and becomes state only once a poll
+// succeeded: a failed first poll leaves the state untouched.
+func TestCDCIterator_FailedFirstPollDoesNotApplyTheClamp(t *testing.T) {
+	is := is.New(t)
+	host := time.Now()
+	st := &fakeStore{handler: func(_ *http.Request) *http.Response { return errResp(403) }}
+	from := host.Add(2 * time.Hour)
+	it := newCDCIterator("b", "", 5*time.Minute, st.client(), from, nil)
+	err := it.step(context.Background(), host, func([]CacheEntry) error { return nil })
+	is.True(err != nil)
+	is.Equal(it.maxSeen, from)
+	is.True(!it.clamped)
 }

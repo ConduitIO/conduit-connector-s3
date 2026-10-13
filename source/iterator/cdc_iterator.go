@@ -83,6 +83,7 @@ type CDCIterator struct {
 	deliveredBytes int64
 	skewWarned     bool
 	clamped        bool
+	clampWarned    bool
 	// minFloor is raised when the dedupe set had to shrink (see step): the
 	// effective floor is max(computed, minFloor). It only moves forward.
 	minFloor time.Time
@@ -278,11 +279,15 @@ var maxCandidateBytes = maxDeliveredBytes / 4
 // A catch-up is delivered in successive polls, oldest first, so memory stays
 // bounded and the order by LastModified that restart positions rely on holds.
 func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func([]CacheEntry) error) error {
-	w.clampPosition(hostNow)
-	cache, deferredFrom, err := w.poll(ctx, w.floor(hostNow))
+	base := w.baseMax(hostNow)
+	cache, deferredFrom, err := w.poll(ctx, laterOf(w.floorFor(base, hostNow), w.minFloor))
 	if err != nil {
 		return err
 	}
+	// A poll succeeded: from now on the clamped position is the state. (Nothing
+	// changes if the first poll fails.)
+	w.maxSeen = base
+	w.clamped = true
 	if len(cache) == 0 {
 		return nil
 	}
@@ -298,15 +303,15 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 
 	keep, seen := w.trackedAfter(cache, newFloor)
 	newMinFloor := w.minFloor
-	untrackUpTo := int64(-1) // entries with LastModified up to this second (inclusive) are not tracked
+	var untrack untrackPlan
 	if keepBytes(keep) > maxDeliveredBytes {
-		minFloor, upTo, err := w.shrink(keep, shrinkContext{
+		minFloor, plan, err := w.shrink(keep, shrinkContext{
 			newMax: newMax, rawMax: rawMax, hostNow: hostNow, newFloor: newFloor, deferredFrom: deferredFrom,
 		})
 		if err != nil {
 			return err
 		}
-		newMinFloor, untrackUpTo = minFloor, upTo
+		newMinFloor, untrack = minFloor, plan
 		newFloor = laterOf(newFloor, newMinFloor)
 	}
 
@@ -318,13 +323,13 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 	w.maxSeen = newMax
 	w.minFloor = newMinFloor
 	for k := range seen {
-		if _, already := w.delivered[k]; !already && !k.modified.Before(newFloor) && k.modified.Unix() > untrackUpTo {
+		if _, already := w.delivered[k]; !already && !k.modified.Before(newFloor) && !untrack.has(k) {
 			w.delivered[k] = struct{}{}
 			w.deliveredBytes += k.bytes()
 		}
 	}
 	for k := range w.delivered {
-		if k.modified.Before(newFloor) || k.modified.Unix() <= untrackUpTo {
+		if k.modified.Before(newFloor) || untrack.has(k) {
 			delete(w.delivered, k)
 			w.deliveredBytes -= k.bytes()
 		}
@@ -332,19 +337,21 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 	return nil
 }
 
-// clampPosition clamps a resume position that lies in the future to the host
-// clock. This build never writes one (position timestamps are capped at the
-// host clock when observed); only an older release could have persisted it.
-func (w *CDCIterator) clampPosition(hostNow time.Time) {
-	if w.clamped {
-		return
+// baseMax is the newest-seen time a poll starts from. A resume position that
+// lies in the future is clamped to the host clock. This build never writes one
+// (position timestamps are capped at the host clock when observed); only an
+// older release could have persisted it. The clamp is applied to the value
+// used, and becomes state only once a poll succeeded.
+func (w *CDCIterator) baseMax(hostNow time.Time) time.Time {
+	if w.clamped || !w.maxSeen.After(hostNow) {
+		return w.maxSeen
 	}
-	w.clamped = true
-	if w.maxSeen.After(hostNow) {
+	if !w.clampWarned {
+		w.clampWarned = true
 		w.log.Warn().Time("position_timestamp", w.maxSeen).Time("host", hostNow).
 			Msg("the resume position carries a timestamp in the future (written by an older version of the connector, or the host clock moved back); using this host's clock instead")
-		w.maxSeen = hostNow
 	}
+	return hostNow
 }
 
 // observe applies the observation-time cap: the newest timestamp, and the
@@ -352,7 +359,7 @@ func (w *CDCIterator) clampPosition(hostNow time.Time) {
 // at this poll. A future-stamped object can then only lower the floor. rawMax
 // is the uncapped newest, for diagnostics.
 func (w *CDCIterator) observe(cache []CacheEntry, hostNow time.Time) (newMax, rawMax time.Time) {
-	newMax, rawMax = w.maxSeen, w.maxSeen
+	newMax, rawMax = w.maxSeen, w.maxSeen // maxSeen is already clamped by step
 	for i := range cache {
 		if cache[i].lastModified.After(rawMax) {
 			rawMax = cache[i].lastModified
@@ -413,21 +420,41 @@ type shrinkContext struct {
 	deferredFrom time.Time
 }
 
+// untrackPlan says which tracked entries are forgotten: whole seconds up to
+// upTo (inclusive), plus individually dropped entries.
+type untrackPlan struct {
+	upTo int64
+	drop map[deliveredKey]struct{}
+}
+
+func (u untrackPlan) has(k deliveredKey) bool {
+	if k.modified.Unix() <= u.upTo && u.upTo >= 0 {
+		return true
+	}
+	_, ok := u.drop[k]
+	return ok
+}
+
 // shrink handles a window that does not fit the memory bound. Instead of
-// stopping, it forgets the oldest tracked entries by whole seconds of
-// LastModified (untrackUpTo is the last such second) and returns a floor just
-// above them, so they are not delivered again. The candidates of this poll are
-// still handed over (they are not lost, only no longer tracked). The cost is a
-// lower tolerance for objects that become visible late: the effective lookback
-// is shorter until the window moves on. It stops only if even the newest second
-// does not fit, or if the floor would end up in the future.
+// stopping, it forgets tracked entries and returns a floor above the ones
+// forgotten by whole seconds, so they are not delivered again. The candidates
+// of this poll are still handed over (they are not lost, only no longer
+// tracked). The cost is a lower tolerance for objects that become visible
+// late: the effective lookback is shorter until the window moves on.
 //
-// The floor never rises above a deferred candidate: a candidate left for a
-// later poll by the budget is still listed and must stay selectable. Entries
-// between the capped floor and untrackUpTo are not tracked, so they are
-// delivered again (duplicates, never a skip) until the deferred candidates are
-// through; deferred candidates are older than them and go first.
-func (w *CDCIterator) shrink(keep []tracked, sc shrinkContext) (minFloor time.Time, untrackUpTo int64, err error) {
+// Normally the oldest seconds go first. When the candidate budget deferred
+// something (deferredFrom), the second of the cutoff and everything after it
+// must NOT be forgotten by second: the candidates of that second that were
+// handed over now have to stay tracked, or the next poll picks the same subset
+// again (a real S3 lists in key order) and the deferred rest never gets its
+// turn. Budget is then freed by dropping the newest tracked entries above the
+// cutoff second one by one; they come back later as duplicates, never a skip.
+// If the cutoff second and what is older than the entries dropped still do not
+// fit, it stops.
+func (w *CDCIterator) shrink(keep []tracked, sc shrinkContext) (minFloor time.Time, plan untrackPlan, err error) {
+	deferred := !sc.deferredFrom.IsZero()
+	cutSec := sc.deferredFrom.Unix()
+
 	perSecond := map[int64]int64{}
 	var total int64
 	for _, t := range keep {
@@ -439,31 +466,40 @@ func (w *CDCIterator) shrink(keep []tracked, sc shrinkContext) (minFloor time.Ti
 		secs = append(secs, sec)
 	}
 	sort.Slice(secs, func(i, j int) bool { return secs[i] < secs[j] })
-	untrackUpTo = -1
-	for i := 0; i < len(secs)-1 && total > maxDeliveredBytes; i++ {
+
+	plan.upTo = -1
+	for i := 0; i < len(secs) && total > maxDeliveredBytes; i++ {
+		if (deferred && secs[i] >= cutSec) || (!deferred && i == len(secs)-1) {
+			break
+		}
 		total -= perSecond[secs[i]]
-		untrackUpTo = secs[i]
+		plan.upTo = secs[i]
+	}
+	if total > maxDeliveredBytes && deferred {
+		plan.drop, total = dropNewestAbove(keep, cutSec, total)
 	}
 	if total > maxDeliveredBytes {
-		return time.Time{}, 0, w.stopOverflow(total, sc, "the objects of one second alone need more tracking memory than the limit")
+		return time.Time{}, untrackPlan{}, w.stopOverflow(total, sc, "the objects of one second alone need more tracking memory than the limit")
 	}
 
-	minFloor = time.Unix(untrackUpTo+1, 0)
-	if !sc.deferredFrom.IsZero() {
+	minFloor = laterOf(time.Unix(plan.upTo+1, 0), w.minFloor)
+	if deferred {
 		if capped := sc.deferredFrom.Truncate(time.Second); capped.Before(minFloor) {
 			minFloor = capped
 		}
 	}
 	minFloor = laterOf(minFloor, w.minFloor)
-	if minFloor.After(sc.hostNow) {
-		// Future-stamped entries pushed the floor above the host clock: new
-		// objects would be hidden until the host catches up. Stop instead.
-		return time.Time{}, 0, w.stopOverflow(total, sc, "the shortened window would start in the future")
+	if limit := sc.hostNow.Add(w.lookback); minFloor.After(limit) {
+		// Future-stamped entries pushed the floor further ahead of the host
+		// clock than any plausible skew between the clocks (a skew below the
+		// lookback is normal and never gets here): new objects would be hidden
+		// until the host catches up. Stop instead.
+		return time.Time{}, untrackPlan{}, w.stopFloorInTheFuture(minFloor, sc)
 	}
 
-	evicted := 0
+	evicted := len(plan.drop)
 	for _, t := range keep {
-		if t.k.modified.Unix() <= untrackUpTo {
+		if plan.upTo >= 0 && t.k.modified.Unix() <= plan.upTo {
 			evicted++
 		}
 	}
@@ -474,7 +510,52 @@ func (w *CDCIterator) shrink(keep []tracked, sc shrinkContext) (minFloor time.Ti
 		Msg("more object versions are inside the CDC lookback window than the dedupe memory limit allows; the window was shortened. " +
 			"Objects that become visible late by more than the effective lookback can be missed until the window moves on; " +
 			"lower lookbackPeriod to avoid this")
-	return minFloor, untrackUpTo, nil
+	return minFloor, plan, nil
+}
+
+// dropNewestAbove picks the newest tracked entries with a LastModified second
+// above cutSec to forget one by one until total fits the budget again.
+func dropNewestAbove(keep []tracked, cutSec, total int64) (map[deliveredKey]struct{}, int64) {
+	var above []tracked
+	for _, t := range keep {
+		if t.k.modified.Unix() > cutSec {
+			above = append(above, t)
+		}
+	}
+	sort.Slice(above, func(i, j int) bool { return above[i].k.modified.After(above[j].k.modified) })
+	drop := map[deliveredKey]struct{}{}
+	for _, t := range above {
+		if total <= maxDeliveredBytes {
+			break
+		}
+		drop[t.k] = struct{}{}
+		total -= t.k.bytes()
+	}
+	return drop, total
+}
+
+// FloorInTheFutureError is the error of an iterator that stopped because the
+// shortened window would start far ahead of the host clock.
+type FloorInTheFutureError struct {
+	Floor, Host time.Time
+	Lookback    time.Duration
+}
+
+func (e *FloorInTheFutureError) Error() string {
+	return fmt.Sprintf("%s: the shortened CDC window would start at %s, %s ahead of this host's clock (%s) and beyond the lookback of %s, "+
+		"which would hide objects written from now on; object timestamps from the future (a store clock that is ahead, or bogus timestamps) are the cause: "+
+		"fix the clock of the host running Conduit or of the store, or remove the future-stamped objects",
+		ErrDedupeWindowOverflow.Error(), e.Floor.UTC().Format(time.RFC3339), e.Floor.Sub(e.Host).Round(time.Second), e.Host.UTC().Format(time.RFC3339), e.Lookback)
+}
+
+func (e *FloorInTheFutureError) Is(target error) bool { return target == ErrDedupeWindowOverflow }
+
+func (w *CDCIterator) stopFloorInTheFuture(floor time.Time, sc shrinkContext) error {
+	w.warnHostClockBehind(sc.rawMax, sc.hostNow)
+	err := &FloorInTheFutureError{Floor: floor, Host: sc.hostNow, Lookback: w.lookback}
+	w.log.Warn().Str("code", ErrDedupeWindowOverflow.Error()).
+		Msg("the shortened window would start in the future; stopping the CDC iterator. " + err.Error())
+	return err
 }
 
 // stopOverflow warns, then returns the error that stops the iterator.
@@ -498,13 +579,9 @@ func laterOf(a, b time.Time) time.Time {
 	return a
 }
 
-// floor is the lower bound of a poll: min(newest observed LastModified, host)
-// minus lookback, floored to the second (AWS timestamps may be
-// second-truncated), and never below minFloor.
-func (w *CDCIterator) floor(hostNow time.Time) time.Time {
-	return laterOf(w.floorFor(w.maxSeen, hostNow), w.minFloor)
-}
-
+// floorFor is the lower bound of a poll: min(newest observed LastModified,
+// host) minus lookback, floored to the second (AWS timestamps may be
+// second-truncated).
 func (w *CDCIterator) floorFor(newest, hostNow time.Time) time.Time {
 	if newest.IsZero() {
 		return time.Time{}
@@ -630,8 +707,11 @@ type collector struct {
 	// the dropped one may be kept. Dropping the newest until things fit is not
 	// enough on its own: with keys of different lengths a newer, shorter
 	// candidate seen later still fits in the slack, and the new floor (newest
-	// delivered - lookback) would then pass the dropped, older object. Ties are
-	// kept.
+	// delivered - lookback) would then pass the dropped, older object. A
+	// candidate with exactly the cutoff timestamp is still accepted, but may be
+	// dropped again; what matters is that every dropped one stays selectable
+	// (floor and minimum floor never rise above the cutoff second) and that the
+	// ones handed over stay tracked, so the next poll moves on to the rest.
 	cutoff time.Time
 
 	// Versions of one key are contiguous in the listing, so update
