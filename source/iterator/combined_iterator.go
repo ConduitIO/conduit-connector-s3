@@ -40,6 +40,7 @@ type CombinedIterator struct {
 	prefix        string
 	pollingPeriod time.Duration
 	lookback      time.Duration
+	trustHost     bool
 	client        *s3.Client
 	log           *zerolog.Logger
 	// failed is a handoff failure. It is sticky so that a retry cannot skip
@@ -51,6 +52,7 @@ func NewCombinedIterator(
 	ctx context.Context,
 	bucket, prefix string,
 	pollingPeriod, lookback time.Duration,
+	trustHostClock bool,
 	client *s3.Client,
 	p position.Position,
 ) (*CombinedIterator, error) {
@@ -60,6 +62,7 @@ func NewCombinedIterator(
 		prefix:        prefix,
 		pollingPeriod: pollingPeriod,
 		lookback:      lookback,
+		trustHost:     trustHostClock,
 		client:        client,
 		log:           sdk.Logger(ctx),
 	}
@@ -73,12 +76,12 @@ func NewCombinedIterator(
 				Msg("previous snapshot did not complete successfully. snapshot will be restarted for consistency.")
 		}
 		p = position.Position{} // always start snapshot from the beginning, so position is nil
-		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, client, p, c.log)
+		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, client, p, c.log, trustHostClock)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the snapshot iterator: %w", err)
 		}
 	case position.TypeCDC:
-		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, lookback, client, p.Timestamp, c.log)
+		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, lookback, trustHostClock, client, p.Timestamp, c.log)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the CDC iterator: %w", err)
 		}
@@ -168,7 +171,7 @@ func (c *CombinedIterator) handoffTimestamp() time.Time {
 func (c *CombinedIterator) switchToCDCIterator() error {
 	var err error
 	timestamp := c.handoffTimestamp()
-	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.lookback, c.client, timestamp, c.log)
+	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.lookback, c.trustHost, c.client, timestamp, c.log)
 	if err != nil {
 		return fmt.Errorf("could not create cdc iterator: %w", err)
 	}

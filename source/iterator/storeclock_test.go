@@ -69,39 +69,69 @@ func TestClockGuard_StoreNow(t *testing.T) {
 		is.True(adv)
 		is.Equal(got, later.Add(-10*time.Minute))
 	})
-	t.Run("no offset ever: hold, then host clock after N polls with one WARN", func(t *testing.T) {
-		is := is.New(t)
-		g, buf := newGuard(5 * time.Minute)
-		for i := 1; i < maxUnusableDatePolls; i++ {
-			_, adv, err := g.storeNow(host, "")
-			is.NoErr(err)
-			is.True(!adv) // held
-		}
-		got, adv, _ := g.storeNow(host, "")
-		is.True(adv)
-		is.Equal(got, host)
-		_, _, _ = g.storeNow(host, "")
-		is.Equal(strings.Count(buf.String(), "never sends a usable Date header"), 1)
-	})
-	t.Run("a valid header resets the counters", func(t *testing.T) {
+	t.Run("no offset ever: hold, then fail with a stable code, never the host clock", func(t *testing.T) {
 		is := is.New(t)
 		g, _ := newGuard(5 * time.Minute)
-		for i := 0; i < maxUnusableDatePolls-1; i++ {
-			_, _, _ = g.storeNow(host, "")
+		var err error
+		for i := 1; i <= maxBadDatePolls; i++ {
+			var adv bool
+			_, adv, err = g.storeNow(host, "")
+			is.True(!adv) // held, the host clock is never used
+			if i < maxBadDatePolls {
+				is.NoErr(err)
+			}
 		}
-		_, _, _ = g.storeNow(host, hdr(0))
-		_, adv, _ := g.storeNow(host, "")
-		is.True(adv) // has an offset now
+		is.True(errors.Is(err, ErrStoreClockUnavailable))
+		is.True(strings.Contains(err.Error(), "s3.source.store_clock_unavailable"))
+	})
+	t.Run("trustHostClock is the explicit opt-in to the host clock", func(t *testing.T) {
+		is := is.New(t)
+		g, buf := newGuard(5 * time.Minute)
+		g.trustHost = true
+		got, adv, err := g.storeNow(host, "")
+		is.NoErr(err)
+		is.True(adv)
+		is.Equal(got, host)
+		is.True(strings.Contains(buf.String(), "trustHostClock is set"))
+	})
+	t.Run("a single in-bound outlier cannot raise the watermark", func(t *testing.T) {
+		is := is.New(t)
+		g, _ := newGuard(5 * time.Minute)
+		_, _, _ = g.storeNow(host, hdr(-10*time.Minute))           // true offset: 10m
+		got, adv, err := g.storeNow(host.Add(time.Second), hdr(0)) // outlier: claims store == host
+		is.NoErr(err)
+		is.True(adv)
+		is.Equal(got, host.Add(time.Second).Add(-10*time.Minute)) // still the lowest plausible time
+	})
+	t.Run("an outlier that claims an earlier time only lowers it, and ages out", func(t *testing.T) {
+		is := is.New(t)
+		g, _ := newGuard(5 * time.Minute)
+		_, _, _ = g.storeNow(host, hdr(-time.Second))
+		got, _, _ := g.storeNow(host, hdr(-20*time.Hour)) // in bound, absurd
+		is.Equal(got, host.Add(-20*time.Hour))            // more redelivery, not a skip
+		later := host.Add(offsetWindow + 2*time.Minute)
+		got, _, _ = g.storeNow(later, later.Add(-time.Second).Format(http.TimeFormat))
+		is.Equal(got, later.Add(-time.Second)) // the window moved on
+	})
+	t.Run("alternating good and bad headers still trip the breaker", func(t *testing.T) {
+		is := is.New(t)
+		g, _ := newGuard(5 * time.Minute)
+		var err error
+		for i := 0; i < 2*maxBadDatePolls && err == nil; i++ {
+			_, _, _ = g.storeNow(host, hdr(-time.Second))
+			_, _, err = g.storeNow(host, hdr(-30*time.Hour))
+		}
+		is.True(errors.Is(err, ErrStoreClockOutOfRange))
 	})
 	t.Run("out of range holds, then fails loudly naming both clocks", func(t *testing.T) {
 		is := is.New(t)
 		g, _ := newGuard(5 * time.Minute)
 		var err error
-		for i := 1; i <= maxUnusableDatePolls; i++ {
+		for i := 1; i <= maxBadDatePolls; i++ {
 			var adv bool
 			_, adv, err = g.storeNow(host, hdr(-30*time.Hour))
 			is.True(!adv)
-			if i < maxUnusableDatePolls {
+			if i < maxBadDatePolls {
 				is.NoErr(err)
 			}
 		}
@@ -118,16 +148,6 @@ func TestClockGuard_StoreNow(t *testing.T) {
 		_, adv, err := g.storeNow(host, hdr(-30*time.Hour))
 		is.NoErr(err)
 		is.True(!adv)
-	})
-	t.Run("an in-range header resets the out-of-range count", func(t *testing.T) {
-		is := is.New(t)
-		g, _ := newGuard(5 * time.Minute)
-		for i := 0; i < maxUnusableDatePolls-1; i++ {
-			_, _, _ = g.storeNow(host, hdr(-30*time.Hour))
-		}
-		_, _, _ = g.storeNow(host, hdr(0))
-		_, _, err := g.storeNow(host, hdr(-30*time.Hour))
-		is.NoErr(err)
 	})
 }
 
