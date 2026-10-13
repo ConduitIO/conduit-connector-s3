@@ -52,17 +52,14 @@ type Config struct {
 	// delivered yet. Listing based CDC is best effort and bounded by this
 	// value: an upload that completes later than this value after newer
 	// objects were seen can still be missed (see the connector description for
-	// the full list of known limits). Cost: memory for the objects modified within the window
-	// (limit about 256 MiB, the source stops with
-	// s3.source.dedupe_window_overflow beyond it, lower this value then), and
-	// redelivery (at-least-once) of the objects modified within the window
+	// the full list of known limits). Cost: memory for the objects modified
+	// within the window (limit about 256 MiB; beyond it the window is
+	// shortened with a warning s3.source.dedupe_window_shrunk, which lowers
+	// the tolerance for late-visible objects, so lower this value instead),
+	// and redelivery (at-least-once) of the objects modified within the window
 	// after a restart and when the snapshot hands over to CDC. Listing cost
 	// does not depend on it. Values above 1h log a warning, above 24h are
-	// rejected, and 0 disables the lookback. Known limits of the
-	// deduplication: an identical re-put of an object within the same second
-	// is not seen as a change, an overwrite in an unversioned bucket is
-	// reported as a create, and intermediate versions that appear and are
-	// superseded within one poll are not emitted.
+	// rejected, and 0 disables the lookback.
 	LookbackPeriod time.Duration `json:"lookbackPeriod" default:"5m"`
 }
 

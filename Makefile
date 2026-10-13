@@ -9,8 +9,9 @@ test:
 	go test $(GOTEST_FLAGS) -race ./...
 
 # test-integration-s3 starts the MinIO container (test/docker-compose.yml),
-# runs the S3-compatible-store integration tests (TestS3MinIO in destination,
-# TestSource_MinIO in source) against it and stops the container again.
+# runs the S3-compatible-store integration tests (TestS3MinIO* in destination,
+# TestSource_MinIO and every TestMinIO_* regression test in source) against it
+# and stops the container again. Name a new test that needs MinIO TestMinIO_<Name>.
 #
 # Both packages are tested by a single `go test` invocation on purpose: an
 # environment-variable prefix applies only to the command it precedes, so a
@@ -33,7 +34,7 @@ test-integration-s3:
 		AWS_S3_BUCKET=conduit-s3-minio-test \
 		AWS_REGION=us-east-1 \
 		MINIO_ENDPOINT=http://localhost:9000 \
-		go test -race -count=1 -p 1 -run '^(TestS3MinIO|TestSource_MinIO)$$' ./destination ./source
+		go test -race -count=1 -p 1 -run '^(TestS3MinIO.*|TestSource_MinIO|TestMinIO_.*)$$' ./destination ./source
 
 .PHONY: lint
 lint:

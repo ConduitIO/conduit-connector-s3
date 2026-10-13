@@ -43,7 +43,9 @@ import (
 )
 
 // These are the regression tests for #1029: the source must not skip objects.
-// Like TestSource_MinIO they need MINIO_ENDPOINT (see `make test-integration-s3`).
+// They need MINIO_ENDPOINT (see `make test-integration-s3`). The TestMinIO_ name
+// prefix is what the CI selector (Makefile, test.yml) matches: name every new
+// test that needs MinIO TestMinIO_<Name> or it will not run in CI.
 
 // minioSourceEnv returns an S3 client and a source config for a fresh bucket on
 // the MinIO at endpointOverride (or MINIO_ENDPOINT when empty).
@@ -132,7 +134,7 @@ func drainKeys(ctx context.Context, s *source.Source, quiet time.Duration) map[s
 	}
 }
 
-// TestSource_SnapshotHandoffDoesNotSkipObjects: an object created while the
+// TestMinIO_SnapshotHandoffDoesNotSkipObjects: an object created while the
 // snapshot is paginating, under a page the snapshot already passed, must not be
 // lost at the snapshot-to-CDC handoff.
 //
@@ -141,7 +143,7 @@ func drainKeys(ctx context.Context, s *source.Source, quiet time.Duration) map[s
 // after the first page was listed and so is missing from the snapshot, but it
 // is created before "z-late", which the snapshot does read and which therefore
 // pushes the CDC watermark past a-late's LastModified.
-func TestSource_SnapshotHandoffDoesNotSkipObjects(t *testing.T) {
+func TestMinIO_SnapshotHandoffDoesNotSkipObjects(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	client, cfg := minioSourceEnv(t, "")
@@ -275,12 +277,12 @@ func fixedSecond() func(string) string {
 	return func(string) string { return fixed }
 }
 
-// TestSource_CDCSameSecondObjectsNotSkipped: S3 reports LastModified with
+// TestMinIO_CDCSameSecondObjectsNotSkipped: S3 reports LastModified with
 // one-second resolution, and the CDC watermark used to be a strict
 // "LastModified > watermark". An object that lands later in the same second as
 // the last one the poll delivered was then never emitted. Here every listed
 // timestamp is the same second, so the case is deterministic.
-func TestSource_CDCSameSecondObjectsNotSkipped(t *testing.T) {
+func TestMinIO_CDCSameSecondObjectsNotSkipped(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{lastModified: fixedSecond()})
@@ -303,10 +305,10 @@ func TestSource_CDCSameSecondObjectsNotSkipped(t *testing.T) {
 	is.Equal(seen["same-second-1"], 0) // and the delivered one is not delivered again
 }
 
-// TestSource_CDCSameSecondOverwriteDelivered: in an unversioned bucket the
+// TestMinIO_CDCSameSecondOverwriteDelivered: in an unversioned bucket the
 // version id is always "null", so an overwrite within the same second differs
 // from the earlier write only by its ETag.
-func TestSource_CDCSameSecondOverwriteDelivered(t *testing.T) {
+func TestMinIO_CDCSameSecondOverwriteDelivered(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{lastModified: fixedSecond()})
@@ -332,13 +334,13 @@ func TestSource_CDCSameSecondOverwriteDelivered(t *testing.T) {
 	is.Equal(string(rec.Payload.After.Bytes()), "v2")
 }
 
-// TestSource_CDCPollSpanningPagesDoesNotSkip: a poll that needs more than one
+// TestMinIO_CDCPollSpanningPagesDoesNotSkip: a poll that needs more than one
 // ListObjectVersions page. Between page 1 and page 2 two objects appear: "a-late"
 // sorts into the part of the key space page 1 already listed, "z-late" into
 // page 2. A watermark taken from the newest LastModified of the listing
 // (z-late) would move past a-late, which this poll never saw, and skip it for
 // good.
-func TestSource_CDCPollSpanningPagesDoesNotSkip(t *testing.T) {
+func TestMinIO_CDCPollSpanningPagesDoesNotSkip(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 
@@ -385,10 +387,10 @@ func TestSource_CDCPollSpanningPagesDoesNotSkip(t *testing.T) {
 	}
 }
 
-// TestSource_SnapshotListErrorIsNotEndOfSnapshot: a failed page listing used to
+// TestMinIO_SnapshotListErrorIsNotEndOfSnapshot: a failed page listing used to
 // make the snapshot look finished, so the source handed over to CDC and the
 // objects it had not listed yet were never delivered.
-func TestSource_SnapshotListErrorIsNotEndOfSnapshot(t *testing.T) {
+func TestMinIO_SnapshotListErrorIsNotEndOfSnapshot(t *testing.T) {
 	ctx := context.Background()
 	var failList atomic.Bool
 	proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{before: func(r *http.Request) int {
@@ -418,11 +420,11 @@ func TestSource_SnapshotListErrorIsNotEndOfSnapshot(t *testing.T) {
 	}
 }
 
-// TestSource_HandoffRedeliveryIsBounded: the snapshot-to-CDC handoff covers
+// TestMinIO_HandoffRedeliveryIsBounded: the snapshot-to-CDC handoff covers
 // objects written while the snapshot ran by starting CDC at (snapshot start -
 // lookback). That redelivers objects, but only the ones modified within the
 // lookback; an older object is delivered exactly once.
-func TestSource_HandoffRedeliveryIsBounded(t *testing.T) {
+func TestMinIO_HandoffRedeliveryIsBounded(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	client, cfg := minioSourceEnv(t, "")
@@ -442,11 +444,11 @@ func TestSource_HandoffRedeliveryIsBounded(t *testing.T) {
 	is.Equal(len(seen), 2)       // nothing else appears
 }
 
-// TestSource_ObjectsCreatedRightAfterOpenAreDelivered is the regression test
+// TestMinIO_ObjectsCreatedRightAfterOpenAreDelivered is the regression test
 // for #1032: on an empty bucket the source went straight to CDC at the client's
 // time.Now(), so objects written in the first moments after Open could carry an
 // earlier (server, millisecond or second resolution) LastModified and were lost.
-func TestSource_ObjectsCreatedRightAfterOpenAreDelivered(t *testing.T) {
+func TestMinIO_ObjectsCreatedRightAfterOpenAreDelivered(t *testing.T) {
 	ctx := context.Background()
 	client, cfg := minioSourceEnv(t, "")
 	bucket := cfg[config.ConfigKeyAWSBucket]
@@ -475,12 +477,12 @@ func TestSource_ObjectsCreatedRightAfterOpenAreDelivered(t *testing.T) {
 	}
 }
 
-// TestSource_CDCLookback: an object that is listed late (here: hidden from
+// TestMinIO_CDCLookback: an object that is listed late (here: hidden from
 // ListObjectVersions for a while, like a multipart upload that completes after
 // newer objects were already delivered) is only delivered if the lookback is
 // longer than the delay. This is what the lookback is for, and what proves the
 // other tests do not pass by accident with lookbackPeriod=0.
-func TestSource_CDCLookback(t *testing.T) {
+func TestMinIO_CDCLookback(t *testing.T) {
 	const hideFor = 4 * time.Second
 	for _, tc := range []struct {
 		name          string
@@ -529,12 +531,12 @@ func TestSource_CDCLookback(t *testing.T) {
 	}
 }
 
-// TestSource_CDCClockSkew: the host clock is ahead of the store's by more than
+// TestMinIO_CDCClockSkew: the host clock is ahead of the store's by more than
 // the lookback (the store's Date headers and LastModified are shifted 10
 // minutes into the past). The watermark must come from the store's clock;
 // taken from the host's, every new object would look older than the watermark
 // and be lost.
-func TestSource_CDCClockSkew(t *testing.T) {
+func TestMinIO_CDCClockSkew(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{shift: -10 * time.Minute})
@@ -551,7 +553,7 @@ func TestSource_CDCClockSkew(t *testing.T) {
 	is.Equal(string(rec.Key.Bytes()), "skewed")
 }
 
-// TestSource_HostileDateHeader: the Date header comes from whatever endpoint is
+// TestMinIO_HostileDateHeader: the Date header comes from whatever endpoint is
 // configured. Whatever it says, an object must never be lost silently. The
 // AWS SDK itself uses the Date header to correct its signing clock, so a date
 // far from the truth makes MinIO reject the source's next requests: that is an
@@ -559,7 +561,7 @@ func TestSource_CDCClockSkew(t *testing.T) {
 // acceptable is silence. (The watermark arithmetic for every kind of lie is
 // covered without signing in TestResolveStoreTime and the fake-store tests in
 // source/iterator.)
-func TestSource_HostileDateHeader(t *testing.T) {
+func TestMinIO_HostileDateHeader(t *testing.T) {
 	future := func(d time.Duration) func(string) string {
 		return func(string) string { return time.Now().Add(d).UTC().Format(http.TimeFormat) }
 	}
@@ -629,13 +631,13 @@ func setLookback(cfg map[string]string, v string) {
 	}
 }
 
-// TestSource_SnapshotLongerThanLookbackDoesNotSkip: the snapshot takes longer
+// TestMinIO_SnapshotLongerThanLookbackDoesNotSkip: the snapshot takes longer
 // than lookbackPeriod. An object written early in the snapshot, under a key
 // range that was already listed, must still be delivered, although objects
 // written much later are read by the snapshot's second page. The handoff is
 // anchored to the objects that existed when the snapshot started, not to the
 // newest object the snapshot happens to read (#1032).
-func TestSource_SnapshotLongerThanLookbackDoesNotSkip(t *testing.T) {
+func TestMinIO_SnapshotLongerThanLookbackDoesNotSkip(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
 	client, cfg := minioSourceEnv(t, "")

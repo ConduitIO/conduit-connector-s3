@@ -54,7 +54,8 @@ type SnapshotIterator struct {
 	// those would leave an object written early in the snapshot, under an
 	// already listed key range, below the CDC floor whenever the snapshot
 	// took longer than lookbackPeriod (#1032). Cost: one extra full listing of
-	// the prefix (one ListObjectsV2 request per 1000 keys) per snapshot. Zero
+	// the prefix (one ListObjectsV2 request per 1000 keys) per snapshot, capped at
+	// the host clock when it was taken. Zero
 	// for an empty bucket, which makes CDC select everything.
 	prefix   string
 	anchor   time.Time
@@ -147,6 +148,13 @@ func (w *SnapshotIterator) findAnchor(ctx context.Context) error {
 			return errors.New("the listing is truncated but has no new continuation token")
 		}
 		last = next
+	}
+	// Capped at the host clock at the time of the listing: a future-stamped
+	// object in the bucket must not make the handoff point (and with it the CDC
+	// floor) land above objects written during the snapshot. The cap only
+	// lowers the anchor, which means more redelivery.
+	if now := time.Now(); newest.After(now) {
+		newest = now
 	}
 	w.anchor, w.anchored = newest, true
 	return nil

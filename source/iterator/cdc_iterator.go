@@ -82,8 +82,11 @@ type CDCIterator struct {
 	delivered      map[deliveredKey]struct{}
 	deliveredBytes int64
 	skewWarned     bool
-	caches         chan []CacheEntry
-	tomb           *tomb.Tomb
+	// minFloor is raised when the dedupe set had to shrink (see step): the
+	// effective floor is max(computed, minFloor). It only moves forward.
+	minFloor time.Time
+	caches   chan []CacheEntry
+	tomb     *tomb.Tomb
 }
 
 // deliveredKey identifies one stored version of an object. The ETag is part of
@@ -115,6 +118,11 @@ type CacheEntry struct {
 	etag         string
 	operation    opencdc.Operation
 	lastModified time.Time
+	// posTime is the timestamp that goes into the record's position:
+	// min(lastModified, host clock at the poll that observed it). A
+	// future-stamped object must not leave a position that lies in the future,
+	// or a restart from it would put the floor above objects delivered after it.
+	posTime time.Time
 }
 
 func (e CacheEntry) deliveredKey() deliveredKey {
@@ -126,8 +134,9 @@ func (e CacheEntry) deliveredKey() deliveredKey {
 var maxDeliveredBytes int64 = 256 << 20
 
 // ErrDedupeWindowOverflow is the stable error code of an iterator that stopped
-// because the object versions modified within lookbackPeriod of the newest one
-// need more memory than maxDeliveredBytes to deduplicate. Lower lookbackPeriod.
+// because the object versions that share one second of LastModified need more
+// memory than maxDeliveredBytes to deduplicate. (A window that is merely too
+// long is shortened instead, with a WARN s3.source.dedupe_window_shrunk.)
 var ErrDedupeWindowOverflow = errors.New("s3.source.dedupe_window_overflow")
 
 // DedupeWindowOverflowError carries the numbers. ClockSkew is how far the
@@ -146,8 +155,9 @@ func (e *DedupeWindowOverflowError) Error() string {
 			"fix the clock of the host running Conduit (or the store's clock), lowering lookbackPeriod will not help",
 			ErrDedupeWindowOverflow.Error(), e.Bytes>>20, maxDeliveredBytes>>20, e.ClockSkew.Round(time.Second))
 	}
-	return fmt.Sprintf("%s: the object versions modified within the CDC lookback window need about %d MiB to track, more than the limit of %d MiB; "+
-		"lower lookbackPeriod (config path: lookbackPeriod) so that fewer objects fall inside the window",
+	return fmt.Sprintf("%s: the object versions that share one second of LastModified need about %d MiB to track, more than the limit of %d MiB; "+
+		"the window can be shortened but not below one second, and lookbackPeriod cannot help (config path: lookbackPeriod); "+
+		"split the writes over time or use a prefix that holds fewer objects",
 		ErrDedupeWindowOverflow.Error(), e.Bytes>>20, maxDeliveredBytes>>20)
 }
 
@@ -258,16 +268,16 @@ func (w *CDCIterator) startCDC() error {
 }
 
 // maxCandidateBytes bounds the memory of the candidates of one poll (versions
-// to hand over). A variable so tests can lower it.
-var maxCandidateBytes = maxDeliveredBytes / 2
+// to hand over). Peak memory is about the dedupe budget plus the candidates plus
+// the per-poll "seen" map, i.e. roughly 1.5 times maxDeliveredBytes. A variable
+// so tests can lower it.
+var maxCandidateBytes = maxDeliveredBytes / 4
 
 // step runs one poll: list, decide, hand over, then (and only then) move state.
 // A catch-up is delivered in successive polls, oldest first, so memory stays
 // bounded and the order by LastModified that restart positions rely on holds.
 func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func([]CacheEntry) error) error {
-	floor := w.floor(hostNow)
-
-	cache, err := w.poll(ctx, floor)
+	cache, err := w.poll(ctx, w.floor(hostNow))
 	if err != nil {
 		return err
 	}
@@ -278,42 +288,21 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 		return cache[i].lastModified.Before(cache[j].lastModified)
 	})
 
-	// Everything below the new floor needs no tracking (it is never selected
-	// again), so only the entries that stay inside the window count towards
-	// the memory bound. Overflow is decided BEFORE the handover: a catch-up
-	// over old objects never trips it, and a window that is genuinely too
-	// large stops the iterator without having delivered a batch it could not
-	// deduplicate.
-	newMax := w.maxSeen
-	for _, e := range cache {
-		if e.lastModified.After(newMax) {
-			newMax = e.lastModified
-		}
+	newMax, rawMax := w.observe(cache, hostNow)
+	if rawMax.Sub(hostNow) > w.lookback {
+		w.warnHostClockBehind(rawMax, hostNow)
 	}
-	newFloor := w.floorFor(newMax, hostNow)
-	retained := w.deliveredBytes
-	for k := range w.delivered {
-		if k.modified.Before(newFloor) {
-			retained -= k.bytes()
+	newFloor := laterOf(w.floorFor(newMax, hostNow), w.minFloor)
+
+	keep, seen := w.trackedAfter(cache, newFloor)
+	newMinFloor := w.minFloor
+	if keepBytes(keep) > maxDeliveredBytes {
+		minFloor, err := w.shrink(keep, newMax, rawMax, hostNow, newFloor)
+		if err != nil {
+			return err
 		}
-	}
-	seen := make(map[deliveredKey]struct{}, len(cache))
-	for _, e := range cache {
-		k := e.deliveredKey()
-		if _, dup := seen[k]; dup {
-			continue
-		}
-		seen[k] = struct{}{}
-		if _, tracked := w.delivered[k]; !tracked && !k.modified.Before(newFloor) {
-			retained += k.bytes()
-		}
-	}
-	if retained > maxDeliveredBytes {
-		skew := time.Duration(0)
-		if d := newMax.Sub(hostNow); d > w.lookback {
-			skew = d
-		}
-		return &DedupeWindowOverflowError{Bytes: retained, ClockSkew: skew}
+		newMinFloor = minFloor
+		newFloor = laterOf(newFloor, newMinFloor)
 	}
 
 	if err := handover(cache); err != nil {
@@ -322,8 +311,9 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 
 	// Only after the handover does any state move.
 	w.maxSeen = newMax
+	w.minFloor = newMinFloor
 	for k := range seen {
-		if _, tracked := w.delivered[k]; !tracked && !k.modified.Before(newFloor) {
+		if _, already := w.delivered[k]; !already && !k.modified.Before(newFloor) {
 			w.delivered[k] = struct{}{}
 			w.deliveredBytes += k.bytes()
 		}
@@ -337,11 +327,130 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 	return nil
 }
 
+// observe applies the observation-time cap: the newest timestamp, and the
+// timestamp that goes into each record's position, never exceed the host clock
+// at this poll. A future-stamped object can then only lower the floor. rawMax
+// is the uncapped newest, for diagnostics.
+func (w *CDCIterator) observe(cache []CacheEntry, hostNow time.Time) (newMax, rawMax time.Time) {
+	newMax, rawMax = w.maxSeen, w.maxSeen
+	for i := range cache {
+		if cache[i].lastModified.After(rawMax) {
+			rawMax = cache[i].lastModified
+		}
+		pt := cache[i].lastModified
+		if pt.After(hostNow) {
+			pt = hostNow
+		}
+		cache[i].posTime = pt
+		if pt.After(newMax) {
+			newMax = pt
+		}
+	}
+	return newMax, rawMax
+}
+
+type tracked struct {
+	k     deliveredKey
+	isNew bool
+}
+
+func keepBytes(keep []tracked) int64 {
+	var n int64
+	for _, t := range keep {
+		n += t.k.bytes()
+	}
+	return n
+}
+
+// trackedAfter lists what would be tracked after this poll: everything below
+// the new floor needs no tracking (it is never selected again), so a catch-up
+// over old objects is never capped by the memory bound. seen are the distinct
+// versions of this batch.
+func (w *CDCIterator) trackedAfter(cache []CacheEntry, newFloor time.Time) (keep []tracked, seen map[deliveredKey]struct{}) {
+	seen = make(map[deliveredKey]struct{}, len(cache))
+	for k := range w.delivered {
+		if !k.modified.Before(newFloor) {
+			keep = append(keep, tracked{k, false})
+		}
+	}
+	for _, e := range cache {
+		k := e.deliveredKey()
+		if _, dup := seen[k]; dup {
+			continue
+		}
+		seen[k] = struct{}{}
+		if _, already := w.delivered[k]; !already && !k.modified.Before(newFloor) {
+			keep = append(keep, tracked{k, true})
+		}
+	}
+	return keep, seen
+}
+
+// shrink handles a window that does not fit the memory bound. Instead of
+// stopping, it forgets the oldest tracked entries by whole seconds of
+// LastModified and returns a floor just above them, so they are not delivered
+// again. The candidates of this poll are still handed over (they are not lost,
+// only no longer tracked). The cost is a lower tolerance for objects that
+// become visible late: the effective lookback is shorter until the window moves
+// on. It stops only if even the newest second does not fit.
+func (w *CDCIterator) shrink(keep []tracked, newMax, rawMax, hostNow, newFloor time.Time) (time.Time, error) {
+	perSecond := map[int64]int64{}
+	var total int64
+	for _, t := range keep {
+		perSecond[t.k.modified.Unix()] += t.k.bytes()
+		total += t.k.bytes()
+	}
+	secs := make([]int64, 0, len(perSecond))
+	for sec := range perSecond {
+		secs = append(secs, sec)
+	}
+	sort.Slice(secs, func(i, j int) bool { return secs[i] < secs[j] })
+	var evictedUpTo int64 = -1
+	for i := 0; i < len(secs)-1 && total > maxDeliveredBytes; i++ {
+		total -= perSecond[secs[i]]
+		evictedUpTo = secs[i]
+	}
+	if total > maxDeliveredBytes {
+		skew := time.Duration(0)
+		if d := rawMax.Sub(hostNow); d > w.lookback {
+			skew = d
+			w.warnHostClockBehind(rawMax, hostNow)
+		}
+		err := &DedupeWindowOverflowError{Bytes: total, ClockSkew: skew}
+		w.log.Warn().Str("code", ErrDedupeWindowOverflow.Error()).Int64("needed_bytes", total).
+			Int64("limit_bytes", maxDeliveredBytes).
+			Msg("the objects of one second alone need more tracking memory than the limit; stopping the CDC iterator. " + err.Error())
+		return time.Time{}, err
+	}
+	evicted := 0
+	for _, t := range keep {
+		if t.k.modified.Unix() <= evictedUpTo {
+			evicted++
+		}
+	}
+	minFloor := time.Unix(evictedUpTo+1, 0)
+	w.log.Warn().Str("code", "s3.source.dedupe_window_shrunk").
+		Dur("configured_lookback", w.lookback).
+		Dur("effective_lookback", newMax.Sub(laterOf(newFloor, minFloor)).Round(time.Second)).
+		Int("evicted_entries", evicted).
+		Msg("more object versions are inside the CDC lookback window than the dedupe memory limit allows; the window was shortened. " +
+			"Objects that become visible late by more than the effective lookback can be missed until the window moves on; " +
+			"lower lookbackPeriod to avoid this")
+	return minFloor, nil
+}
+
+func laterOf(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
 // floor is the lower bound of a poll: min(newest observed LastModified, host)
 // minus lookback, floored to the second (AWS timestamps may be
-// second-truncated).
+// second-truncated), and never below minFloor.
 func (w *CDCIterator) floor(hostNow time.Time) time.Time {
-	return w.floorFor(w.maxSeen, hostNow)
+	return laterOf(w.floorFor(w.maxSeen, hostNow), w.minFloor)
 }
 
 func (w *CDCIterator) floorFor(newest, hostNow time.Time) time.Time {
@@ -350,16 +459,23 @@ func (w *CDCIterator) floorFor(newest, hostNow time.Time) time.Time {
 	}
 	// The host clock only caps the newest timestamp (see CDCIterator).
 	if newest.After(hostNow) {
-		if d := newest.Sub(hostNow); d > w.lookback && !w.skewWarned {
-			w.skewWarned = true
-			w.log.Warn().Str("code", "s3.source.host_clock_behind_store").
-				Dur("skew", d).Dur("lookbackPeriod", w.lookback).
-				Time("newest_last_modified", newest).Time("host", hostNow).
-				Msg("the newest object timestamp is ahead of this host's clock by more than lookbackPeriod: either the host clock is behind the store's or a timestamp is bogus. The CDC window is stretched by that difference, which causes redelivery and can exhaust the dedupe memory; fix the clock")
+		if newest.Sub(hostNow) > w.lookback {
+			w.warnHostClockBehind(newest, hostNow)
 		}
 		newest = hostNow
 	}
 	return newest.Add(-w.lookback).Truncate(time.Second)
+}
+
+func (w *CDCIterator) warnHostClockBehind(newest, hostNow time.Time) {
+	if w.skewWarned {
+		return
+	}
+	w.skewWarned = true
+	w.log.Warn().Str("code", "s3.source.host_clock_behind_store").
+		Dur("skew", newest.Sub(hostNow)).Dur("lookbackPeriod", w.lookback).
+		Time("newest_last_modified", newest).Time("host", hostNow).
+		Msg("the newest object timestamp is ahead of this host's clock by more than lookbackPeriod: either the host clock is behind the store's or a timestamp is bogus. The CDC window is stretched by that difference, which causes redelivery and can exhaust the dedupe memory; fix the clock")
 }
 
 // isNew reports whether a version must be emitted: it was modified at or after
@@ -412,24 +528,10 @@ func (w *CDCIterator) flush() error {
 // has older versions (an update), is decided across pages: a key's versions can
 // straddle a page boundary.
 func (w *CDCIterator) poll(ctx context.Context, floor time.Time) ([]CacheEntry, error) {
-	var (
-		cands   candidateHeap
-		bytes   int64
-		updated = make(map[string]bool)
-		input   = &s3.ListObjectVersionsInput{ // default is 1000 keys max
-			Bucket: aws.String(w.bucket),
-			Prefix: aws.String(w.prefix),
-		}
-	)
-	// add keeps the oldest candidates that fit maxCandidateBytes: when the
-	// budget is exceeded the newest candidate is dropped, to be picked up by a
-	// later poll (it stays at or above the floor and undelivered).
-	add := func(e CacheEntry) {
-		heap.Push(&cands, e)
-		bytes += e.bytes()
-		for bytes > maxCandidateBytes && cands.Len() > 1 {
-			bytes -= heap.Pop(&cands).(CacheEntry).bytes()
-		}
+	c := &collector{w: w, floor: floor}
+	input := &s3.ListObjectVersionsInput{ // default is 1000 keys max
+		Bucket: aws.String(w.bucket),
+		Prefix: aws.String(w.prefix),
 	}
 
 	for {
@@ -438,27 +540,12 @@ func (w *CDCIterator) poll(ctx context.Context, floor time.Time) ([]CacheEntry, 
 			return nil, fmt.Errorf("couldn't get latest objects: %w", err)
 		}
 
-		for _, v := range objects.Versions {
-			if aws.ToBool(v.IsLatest) {
-				if w.isNew(floor, *v.Key, aws.ToString(v.VersionId), aws.ToString(v.ETag), *v.LastModified) {
-					add(CacheEntry{
-						key: *v.Key, versionID: aws.ToString(v.VersionId), etag: aws.ToString(v.ETag),
-						lastModified: *v.LastModified, operation: opencdc.OperationCreate,
-					})
-				}
-			} else {
-				// this is a version that is not the latest, this means this
-				// object was updated
-				updated[*v.Key] = true
-			}
+		// no flush between pages: the versions of a key can continue on the next one
+		for i := range objects.Versions {
+			c.version(&objects.Versions[i])
 		}
-		for _, v := range objects.DeleteMarkers {
-			if aws.ToBool(v.IsLatest) && w.isNew(floor, *v.Key, aws.ToString(v.VersionId), "", *v.LastModified) {
-				add(CacheEntry{
-					key: *v.Key, versionID: aws.ToString(v.VersionId),
-					lastModified: *v.LastModified, operation: opencdc.OperationDelete,
-				})
-			}
+		for i := range objects.DeleteMarkers {
+			c.deleteMarker(&objects.DeleteMarkers[i])
 		}
 
 		if !aws.ToBool(objects.IsTruncated) {
@@ -476,13 +563,89 @@ func (w *CDCIterator) poll(ctx context.Context, floor time.Time) ([]CacheEntry, 
 		input.VersionIdMarker = objects.NextVersionIdMarker
 	}
 
-	cache := []CacheEntry(cands)
-	for i, e := range cache {
-		if e.operation == opencdc.OperationCreate && updated[e.key] {
-			cache[i].operation = opencdc.OperationUpdate
+	c.flush()
+	return []CacheEntry(c.cands), nil
+}
+
+// collector gathers the candidates of one poll within the memory budget.
+type collector struct {
+	w     *CDCIterator
+	floor time.Time
+
+	cands candidateHeap
+	bytes int64
+	// cutoff: once a candidate was dropped for the budget, nothing newer than
+	// the dropped one may be kept. Dropping the newest until things fit is not
+	// enough on its own: with keys of different lengths a newer, shorter
+	// candidate seen later still fits in the slack, and the new floor (newest
+	// delivered - lookback) would then pass the dropped, older object. Ties are
+	// kept.
+	cutoff time.Time
+
+	// Versions of one key are contiguous in the listing, so update
+	// classification needs one pending entry, not a map of every key with older
+	// versions.
+	curKey   string
+	curOlder bool
+	pending  *CacheEntry
+}
+
+func (c *collector) add(e CacheEntry) {
+	if !c.cutoff.IsZero() && e.lastModified.After(c.cutoff) {
+		return // newer than something already dropped: left for a later poll
+	}
+	heap.Push(&c.cands, e)
+	c.bytes += e.bytes()
+	for c.bytes > maxCandidateBytes && c.cands.Len() > 1 {
+		dropped := heap.Pop(&c.cands).(CacheEntry)
+		c.bytes -= dropped.bytes()
+		if c.cutoff.IsZero() || dropped.lastModified.Before(c.cutoff) {
+			c.cutoff = dropped.lastModified
 		}
 	}
-	return cache, nil
+}
+
+func (c *collector) flush() {
+	if c.pending != nil {
+		c.add(*c.pending)
+		c.pending = nil
+	}
+}
+
+func (c *collector) version(v *types.ObjectVersion) {
+	if *v.Key != c.curKey {
+		c.flush()
+		c.curKey, c.curOlder = *v.Key, false
+	}
+	if !aws.ToBool(v.IsLatest) {
+		// this is a version that is not the latest, this means this object
+		// was updated
+		c.curOlder = true
+		if c.pending != nil {
+			c.pending.operation = opencdc.OperationUpdate
+		}
+		return
+	}
+	if !c.w.isNew(c.floor, *v.Key, aws.ToString(v.VersionId), aws.ToString(v.ETag), *v.LastModified) {
+		return
+	}
+	op := opencdc.OperationCreate
+	if c.curOlder {
+		op = opencdc.OperationUpdate
+	}
+	c.pending = &CacheEntry{
+		key: *v.Key, versionID: aws.ToString(v.VersionId), etag: aws.ToString(v.ETag),
+		lastModified: *v.LastModified, operation: op,
+	}
+}
+
+func (c *collector) deleteMarker(v *types.DeleteMarkerEntry) {
+	if aws.ToBool(v.IsLatest) && c.w.isNew(c.floor, *v.Key, aws.ToString(v.VersionId), "", *v.LastModified) {
+		c.add(CacheEntry{
+			key: *v.Key, versionID: aws.ToString(v.VersionId),
+			lastModified: *v.LastModified, operation: opencdc.OperationDelete,
+		})
+	}
 }
 
 // candidateHeap is a max-heap by LastModified (the newest on top), so the
@@ -539,9 +702,13 @@ func (w *CDCIterator) buildRecord(entry CacheEntry) (opencdc.Record, error) {
 		}
 	}
 
+	pt := entry.posTime
+	if pt.IsZero() {
+		pt = entry.lastModified
+	}
 	p := position.Position{
 		Key:       entry.key,
-		Timestamp: entry.lastModified,
+		Timestamp: pt,
 		Type:      position.TypeCDC,
 	}
 
