@@ -48,3 +48,25 @@ func TestParseConfig(t *testing.T) {
 	is.NoErr(err)
 	is.Equal(want, got)
 }
+
+func TestConfig_Validate_LookbackPeriod(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		in      time.Duration
+		wantErr bool
+	}{
+		{"zero disables the lookback", 0, false},
+		{"default", 5 * time.Minute, false},
+		{"above the warning threshold is accepted", 2 * time.Hour, false},
+		{"exactly the maximum", MaxLookbackPeriod, false},
+		{"above the maximum", MaxLookbackPeriod + time.Second, true},
+		{"negative", -time.Second, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			c := Config{LookbackPeriod: tc.in}
+			err := c.Validate(t.Context())
+			is.Equal(err != nil, tc.wantErr)
+		})
+	}
+}

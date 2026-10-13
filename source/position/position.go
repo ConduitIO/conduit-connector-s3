@@ -79,12 +79,3 @@ func (p Position) ToRecordPosition() opencdc.Position {
 	}
 	return []byte(fmt.Sprintf("%s_%c%d", p.Key, char, p.Timestamp.Unix()))
 }
-
-func ConvertToCDCPosition(p opencdc.Position) (opencdc.Position, error) {
-	cdcPos, err := ParseRecordPosition(p)
-	if err != nil {
-		return opencdc.Position{}, err
-	}
-	cdcPos.Type = TypeCDC
-	return cdcPos.ToRecordPosition(), nil
-}

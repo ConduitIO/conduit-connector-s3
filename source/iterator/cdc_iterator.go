@@ -27,6 +27,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/rs/zerolog"
 	"gopkg.in/tomb.v2"
 )
 
@@ -51,6 +52,7 @@ type CDCIterator struct {
 	buffer   chan opencdc.Record
 	ticker   *time.Ticker
 	lookback time.Duration
+	clock    *clockGuard
 	// watermark is the lower bound of the next poll (see above). It only moves
 	// forward and is only touched by the startCDC goroutine.
 	watermark time.Time
@@ -95,7 +97,12 @@ func NewCDCIterator(
 	pollingPeriod, lookback time.Duration,
 	client *s3.Client,
 	from time.Time,
+	log *zerolog.Logger,
 ) (*CDCIterator, error) {
+	if log == nil {
+		nop := zerolog.Nop()
+		log = &nop
+	}
 	cdc := CDCIterator{
 		bucket:    bucket,
 		prefix:    prefix,
@@ -105,6 +112,7 @@ func NewCDCIterator(
 		ticker:    time.NewTicker(pollingPeriod),
 		tomb:      &tomb.Tomb{},
 		lookback:  lookback,
+		clock:     &clockGuard{log: log, lookback: lookback},
 		watermark: from.Add(-lookback),
 		delivered: make(map[deliveredKey]struct{}),
 	}
@@ -151,12 +159,15 @@ func (w *CDCIterator) startCDC() error {
 		case <-w.ticker.C: // detect changes every polling period
 			// The clock reading is taken BEFORE listing: everything that
 			// becomes visible during or after the listing is at or after it.
-			pollStart := time.Now()
+			// It is the store's clock (Date header of the first listing
+			// call), the one LastModified is on.
+			hostStart := time.Now()
 
-			cache, err := w.poll(w.tomb.Context(nil)) //nolint:staticcheck // SA1012 tomb expects nil
+			cache, dateHeader, err := w.poll(w.tomb.Context(nil)) //nolint:staticcheck // SA1012 tomb expects nil
 			if err != nil {
 				return err
 			}
+			pollStart := w.clock.storeNow(hostStart, dateHeader)
 
 			if len(cache) > 0 {
 				sort.Slice(cache, func(i, j int) bool {
@@ -235,20 +246,21 @@ func (w *CDCIterator) flush() error {
 // that must be emitted. Whether a version is the latest one, and whether its key
 // has older versions (an update), is decided across pages: a key's versions can
 // straddle a page boundary.
-func (w *CDCIterator) poll(ctx context.Context) ([]CacheEntry, error) {
+func (w *CDCIterator) poll(ctx context.Context) ([]CacheEntry, string, error) {
 	var (
-		cache   []CacheEntry
-		updated = make(map[string]bool)
-		input   = &s3.ListObjectVersionsInput{ // default is 1000 keys max
+		dateHeader string
+		cache      []CacheEntry
+		updated    = make(map[string]bool)
+		input      = &s3.ListObjectVersionsInput{ // default is 1000 keys max
 			Bucket: aws.String(w.bucket),
 			Prefix: aws.String(w.prefix),
 		}
 	)
 
 	for {
-		objects, err := w.client.ListObjectVersions(ctx, input)
+		objects, err := w.client.ListObjectVersions(ctx, input, captureDate(&dateHeader))
 		if err != nil {
-			return nil, fmt.Errorf("couldn't get latest objects: %w", err)
+			return nil, "", fmt.Errorf("couldn't get latest objects: %w", err)
 		}
 
 		for _, v := range objects.Versions {
@@ -288,7 +300,7 @@ func (w *CDCIterator) poll(ctx context.Context) ([]CacheEntry, error) {
 			cache[i].operation = opencdc.OperationUpdate
 		}
 	}
-	return cache, nil
+	return cache, dateHeader, nil
 }
 
 func (w *CDCIterator) fetchS3Object(entry CacheEntry) (*s3.GetObjectOutput, []byte, error) {

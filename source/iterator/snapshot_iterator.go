@@ -39,6 +39,9 @@ type SnapshotIterator struct {
 	// startedAt is when the snapshot began listing. Objects written after
 	// this point may be missing from the snapshot, so CDC must cover them.
 	startedAt time.Time
+	// startedAtFromStore is set once startedAt was replaced by the store's
+	// clock (Date header of the first page), the one LastModified is on.
+	startedAtFromStore bool
 	// listErr is a failed page listing. It must reach the caller: treating it
 	// as the end of the snapshot would hand over to CDC and silently skip every
 	// object not yet listed.
@@ -73,9 +76,14 @@ func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
 	w.page = nil
 	w.index = 0
 	for w.paginator.HasMorePages() {
-		nextPage, err := w.paginator.NextPage(ctx)
+		var date string
+		nextPage, err := w.paginator.NextPage(ctx, captureDate(&date))
 		if err != nil {
 			return fmt.Errorf("could not fetch next page: %w", err)
+		}
+		if t, ok := parseStoreDate(date); ok && !w.startedAtFromStore {
+			// Truncated to a second, so never later than the real start.
+			w.startedAt, w.startedAtFromStore = t, true
 		}
 		if len(nextPage.Contents) > 0 {
 			w.page = nextPage

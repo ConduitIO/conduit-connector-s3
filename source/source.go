@@ -66,6 +66,10 @@ func (s *Source) Config() sdk.SourceConfig {
 // Open prepare the plugin to start sending records from the given position
 func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
 	s.config.LogEndpointWarnings(ctx)
+	if s.config.LookbackPeriod > WarnLookbackPeriod {
+		sdk.Logger(ctx).Warn().Dur("lookbackPeriod", s.config.LookbackPeriod).
+			Msg("lookbackPeriod is large: after every restart, and at the snapshot-to-CDC handoff, the objects modified within that window are delivered again")
+	}
 
 	awsCredsProvider := credentials.NewStaticCredentialsProvider(
 		s.config.AWSAccessKeyID,

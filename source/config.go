@@ -24,6 +24,11 @@ import (
 )
 
 const (
+	// MaxLookbackPeriod is the largest accepted lookbackPeriod.
+	MaxLookbackPeriod = 24 * time.Hour
+	// WarnLookbackPeriod is the lookbackPeriod above which Open warns.
+	WarnLookbackPeriod = time.Hour
+
 	// ConfigKeyPollingPeriod is the config name for the S3 CDC polling period
 	ConfigKeyPollingPeriod = "pollingPeriod"
 	// ConfigKeyLookbackPeriod is the config name for the CDC lookback window
@@ -43,14 +48,20 @@ type Config struct {
 	// with the time it was initiated), not the time it completed, so an
 	// object can show up in a listing after newer objects were already
 	// delivered. Each poll therefore selects objects modified since
-	// (start of the previous poll - lookbackPeriod). An upload that takes
-	// longer than this value can still be missed, and so can objects when
-	// this machine's clock is ahead of the store's by more than it. The cost
-	// is memory for the objects modified within the window and, after a
-	// restart or the switch from snapshot to CDC, redelivery of the objects
-	// modified within the window (at-least-once). Listing cost does not
-	// depend on it: every poll lists the whole prefix anyway. Use 0 to
-	// disable the lookback.
+	// (start of the previous poll - lookbackPeriod), on the store's clock
+	// (the Date header of the listing response). An upload that takes longer
+	// than this value can still be missed. Cost: memory for the objects
+	// modified within the window, and redelivery (at-least-once) of the
+	// objects modified within the window after a restart, and, when the
+	// snapshot hands over to CDC, of the objects modified within the window
+	// before the snapshot started and during it (so the redelivery is bounded
+	// by lookbackPeriod plus the snapshot duration). Listing cost does not
+	// depend on it. Values above 1h log a warning, above 24h are rejected,
+	// and 0 disables the lookback. Known limits of the deduplication: an
+	// identical re-put of an object within the same second is not seen as a
+	// change, an overwrite in an unversioned bucket is reported as a create,
+	// and intermediate versions that appear and are superseded within one
+	// poll are not emitted.
 	LookbackPeriod time.Duration `json:"lookbackPeriod" default:"5m"`
 }
 
@@ -63,6 +74,9 @@ func (c *Config) Validate(ctx context.Context) error {
 	}
 	if c.LookbackPeriod < 0 {
 		return fmt.Errorf("%s: must not be negative, got %v (use 0 to disable the lookback)", ConfigKeyLookbackPeriod, c.LookbackPeriod)
+	}
+	if c.LookbackPeriod > MaxLookbackPeriod {
+		return fmt.Errorf("%s: %v is above the maximum of %v (every restart would redeliver that much history); use a smaller value", ConfigKeyLookbackPeriod, c.LookbackPeriod, MaxLookbackPeriod)
 	}
 	return config.ValidateEndpoint(c.AWSEndpoint)
 }
