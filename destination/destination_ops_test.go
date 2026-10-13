@@ -28,7 +28,10 @@ import (
 	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/google/uuid"
 	"github.com/matryer/is"
+	"github.com/xitongsys/parquet-go-source/buffer"
+	"github.com/xitongsys/parquet-go/reader"
 )
 
 // TestS3MinIO_UpdateAndDeleteRecords writes update and delete records (the
@@ -59,7 +62,7 @@ func TestS3MinIO_UpdateAndDeleteRecords(t *testing.T) {
 		t.Run(format, func(t *testing.T) {
 			is := is.New(t)
 			underTest := destination.NewDestination()
-			prefix := "ops-" + format
+			prefix := "ops-" + format + "-" + uuid.NewString() // unique per run: the bucket outlives the test
 			err := sdk.Util.ParseConfig(ctx, map[string]string{
 				config.ConfigKeyAWSAccessKeyID:       env[EnvAWSAccessKeyID],
 				config.ConfigKeyAWSSecretAccessKey:   env[EnvAWSSecretAccessKey],
@@ -92,15 +95,43 @@ func TestS3MinIO_UpdateAndDeleteRecords(t *testing.T) {
 
 			list, err := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix + "/")})
 			is.NoErr(err)
-			is.True(len(list.Contents) > 0)
-			obj, err := s3Client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: list.Contents[len(list.Contents)-1].Key})
+			is.Equal(len(list.Contents), 1) // one batch, one object, under this run's prefix
+			obj, err := s3Client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(bucket), Key: list.Contents[0].Key})
 			is.NoErr(err)
 			defer obj.Body.Close()
 			body, err := io.ReadAll(obj.Body)
 			is.NoErr(err)
-			if format == "json" {
-				is.True(strings.Contains(string(body), `"k2"`))
-				is.True(strings.Contains(string(body), "delete"))
+			switch format {
+			case "json":
+				lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+				is.Equal(len(lines), 2)
+				is.True(strings.Contains(lines[0], `"Operation":"update"`))
+				is.True(strings.Contains(lines[0], `"Payload":"new-1"`))
+				is.True(strings.Contains(lines[1], `"Operation":"delete"`))
+				is.True(strings.Contains(lines[1], `"Key":"k2"`))
+				is.True(strings.Contains(lines[1], `"Payload":""`)) // delete: no After image
+			case "parquet":
+				pr, err := reader.NewParquetReader(buffer.NewBufferFileFromBytes(body), new(struct {
+					Operation string `parquet:"name=operation, type=BYTE_ARRAY"`
+					Position  string `parquet:"name=position, type=BYTE_ARRAY"`
+					Payload   string `parquet:"name=payload, type=BYTE_ARRAY"`
+					Key       string `parquet:"name=key, type=BYTE_ARRAY"`
+				}), 1)
+				is.NoErr(err)
+				defer pr.ReadStop()
+				is.Equal(pr.GetNumRows(), int64(2))
+				rows := make([]struct {
+					Operation string `parquet:"name=operation, type=BYTE_ARRAY"`
+					Position  string `parquet:"name=position, type=BYTE_ARRAY"`
+					Payload   string `parquet:"name=payload, type=BYTE_ARRAY"`
+					Key       string `parquet:"name=key, type=BYTE_ARRAY"`
+				}, 2)
+				is.NoErr(pr.Read(&rows))
+				is.Equal(rows[0].Operation, "update")
+				is.Equal(rows[0].Payload, "new-1")
+				is.Equal(rows[1].Operation, "delete")
+				is.Equal(rows[1].Key, "k2")
+				is.Equal(rows[1].Payload, "")
 			}
 		})
 	}
