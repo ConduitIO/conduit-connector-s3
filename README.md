@@ -79,8 +79,18 @@ The connector goes through two modes.
   objects is lower than `lookbackPeriod`; lower `lookbackPeriod` to avoid
   the shrinking. The source stops, with the error
   `s3.source.dedupe_window_overflow` (after a warning), only if the versions
-  sharing a single second of `LastModified` do not fit. A catch-up after
-  downtime is delivered in bounded batches, oldest first.
+  sharing a single second of `LastModified` do not fit, or when
+  future-stamped objects would push the shortened window's start above this
+  machine's clock (the message then says to fix the clock). The shortened
+  window is not remembered across restarts: after a restart the window is
+  rebuilt from the position and shortened again, so a restart delivers the
+  window's objects again (duplicates, never a skip). While the window is
+  shortened, objects that were forgotten but are still inside the configured
+  window can be delivered again in bounded batches, oldest first, until the
+  window moves on. A catch-up after downtime is also delivered in bounded
+  batches, oldest first. A resume position with a timestamp in the future,
+  which only an older release could have written, is clamped to this
+  machine's clock with a warning.
 
   Known limits (listing cannot see these, or sees them too late):
   * an upload that takes longer than `lookbackPeriod` to complete is missed

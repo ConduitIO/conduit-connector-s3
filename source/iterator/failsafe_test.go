@@ -364,7 +364,7 @@ func TestCDCIterator_PollFailureDoesNotMoveState(t *testing.T) {
 				bucket: "b", client: (&fakeStore{handler: handler}).client(),
 				maxSeen: wm, delivered: map[deliveredKey]struct{}{},
 			}
-			cache, err := w.poll(context.Background(), wm)
+			cache, _, err := w.poll(context.Background(), wm)
 			is.True(err != nil)
 			is.Equal(len(cache), 0) // nothing partial is handed over
 			is.Equal(w.maxSeen, wm) // and the newest-seen time did not move
@@ -995,4 +995,93 @@ func TestSnapshotIterator_AnchorIsCappedAtHostClock(t *testing.T) {
 	is.True(it.HasNext(context.Background()))
 	is.True(!it.anchor.After(time.Now()))
 	is.True(!it.anchor.Before(before.Add(-time.Second))) // capped at "now", not at the 10 minute old object
+}
+
+// F1 x F3: the candidate budget defers some candidates; the shrink must not
+// raise the floor above a deferred one. The tracked set is full of NEWER
+// entries and a mass of late-visible OLDER objects (same-second pairs, as on
+// AWS) is listed: the budget defers some of them, the shrink evicts up to the
+// last kept second, and the minimum floor used to land above the deferred
+// ones, which were then listed and visible but never delivered, without a WARN.
+func TestCDCIterator_ShrinkNeverRaisesTheFloorAboveADeferredCandidate(t *testing.T) {
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	e := deliveredKey{key: "n00", versionID: "null", etag: `"e-n00"`}.bytes()
+	maxDeliveredBytes = 50 * e
+	maxCandidateBytes = 5 * e
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
+	host := time.Now().Truncate(time.Second)
+	st := newSimStore(0)
+	sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
+	for i := 0; i < 50; i++ { // newer, delivered, fills the set
+		st.putAt(fmt.Sprintf("n%02d", i), host.Add(-100*time.Second+time.Duration(i)*time.Second))
+	}
+	all := map[string]int{}
+	for i := 0; i < 20; i++ {
+		for _, k := range sp.mustStep(host) {
+			all[k]++
+		}
+	}
+	// late-visible, older than every delivered one, 2 per second
+	for j := 0; j < 20; j++ {
+		st.putAt(fmt.Sprintf("L%02d", j), host.Add(-250*time.Second+time.Duration(j/2)*time.Second))
+	}
+	for i := 0; i < 60; i++ {
+		keys, err := sp.step(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range keys {
+			all[k]++
+		}
+	}
+	for j := 0; j < 20; j++ {
+		if all[fmt.Sprintf("L%02d", j)] == 0 {
+			t.Errorf("L%02d was listed and visible but never delivered (minFloor %v from host)", j, sp.it.minFloor.Sub(host))
+		}
+	}
+	// and it settles: nothing keeps being redelivered
+	if got := sp.mustStep(host); len(got) > 10 {
+		t.Errorf("still redelivering %d objects after settling", len(got))
+	}
+}
+
+// If future-stamped entries push the shortened window's start above the host
+// clock, the iterator stops with the clock hint instead of hiding new objects.
+func TestCDCIterator_ShrinkIntoTheFutureStopsInsteadOfHidingNewObjects(t *testing.T) {
+	is := is.New(t)
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	e := deliveredKey{key: "f00", versionID: "null", etag: `"e-f00"`}.bytes()
+	maxDeliveredBytes = 20 * e
+	maxCandidateBytes = 1000 * e
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
+	var buf bytes.Buffer
+	l := zerolog.New(&buf)
+	host := time.Now().Truncate(time.Second)
+	st := newSimStore(0)
+	sp := newStepper(t, st, time.Time{}, 5*time.Minute, &l)
+	for i := 0; i < 60; i++ {
+		st.putAt(fmt.Sprintf("f%02d", i), host.Add(time.Hour+time.Duration(i)*time.Second))
+	}
+	_, err := sp.step(host)
+	is.True(errors.Is(err, ErrDedupeWindowOverflow))
+	is.True(strings.Contains(err.Error(), "fix the clock"))
+	is.True(strings.Contains(buf.String(), "s3.source.host_clock_behind_store"))
+	is.True(strings.Contains(buf.String(), "would start in the future")) // WARN before the stop
+	is.True(sp.it.minFloor.IsZero())                                     // state untouched
+}
+
+// A resume position from an older release can lie in the future. It is clamped
+// to the host clock (with a WARN), so objects written after the restart are not
+// hidden by it.
+func TestCDCIterator_FuturePositionFromAnOlderReleaseIsClamped(t *testing.T) {
+	is := is.New(t)
+	var buf bytes.Buffer
+	l := zerolog.New(&buf)
+	host := time.Now()
+	st := newSimStore(0)
+	sp := newStepper(t, st, host.Add(2*time.Hour), 5*time.Minute, &l)
+	st.putAt("after-restart", host.Add(-time.Minute)) // within the lookback of the host clock
+	is.Equal(sp.mustStep(host), []string{"after-restart"})
+	is.True(strings.Contains(buf.String(), "resume position carries a timestamp in the future"))
+	is.True(!sp.it.maxSeen.After(host))
 }
