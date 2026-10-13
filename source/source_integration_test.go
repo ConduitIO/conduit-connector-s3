@@ -224,10 +224,12 @@ func TestSource_CDC_ReadRecordsInsert(t *testing.T) {
 	})
 	is.NoErr(err)
 
-	obj, err := readWithTimeout(ctx, underTest, time.Second*15)
+	// the insert should have been detected (redelivery of the snapshot's
+	// objects after the handoff is allowed, so skip over it)
+	obj, err := readUntil(ctx, underTest, time.Second*15, func(r opencdc.Record) bool {
+		return string(r.Key.Bytes()) == testFileName
+	})
 	is.NoErr(err)
-
-	// the insert should have been detected
 	is.Equal(string(obj.Key.Bytes()), testFileName)
 
 	_ = underTest.Teardown(ctx)
@@ -277,7 +279,9 @@ func TestSource_CDC_UpdateWithVersioning(t *testing.T) {
 	})
 	is.NoErr(err)
 
-	obj, err := readWithTimeout(ctx, underTest, time.Second*10)
+	obj, err := readUntil(ctx, underTest, time.Second*10, func(r opencdc.Record) bool {
+		return r.Operation == expectedOperation
+	})
 	is.NoErr(err)
 
 	// the update should be detected
@@ -330,7 +334,9 @@ func TestSource_CDC_DeleteWithVersioning(t *testing.T) {
 	})
 	is.NoErr(err)
 
-	obj, err := readWithTimeout(ctx, underTest, time.Second*10)
+	obj, err := readUntil(ctx, underTest, time.Second*10, func(r opencdc.Record) bool {
+		return r.Operation == expectedOperation
+	})
 	is.NoErr(err)
 
 	is.Equal(string(obj.Key.Bytes()), testFileName)
@@ -372,19 +378,21 @@ func TestSource_CDC_EmptyBucketWithDeletedObjects(t *testing.T) {
 	})
 	is.NoErr(err)
 
-	// we need the deleted file's modified date to be in the past
-	time.Sleep(time.Second)
-
-	// read and assert
+	// read and assert: the snapshot is empty, so the source moves to CDC
 	for _, file := range testFiles {
 		_, err := readAndAssert(ctx, t, underTest, file)
 		is.True(errors.Is(err, sdk.ErrBackoffRetry)) // unexpected error
 	}
 
-	// should have changed to CDC
-	// CDC should NOT read the deleted object
-	_, err = readWithTimeout(ctx, underTest, time.Second)
-	is.True(errors.Is(err, context.DeadlineExceeded)) // error should be DeadlineExceeded
+	// The delete happened after Open, so CDC must report it. (This test used
+	// to assert the opposite, which encoded #1032: anything written between
+	// Open and the switch to CDC was silently dropped.) The create is not
+	// reported because the object's only version is hidden behind the delete
+	// marker.
+	rec, err := readWithTimeout(ctx, underTest, 5*time.Second)
+	is.NoErr(err)
+	is.Equal(rec.Operation, opencdc.OperationDelete)
+	is.Equal(string(rec.Key.Bytes()), testFileName)
 
 	err = underTest.Teardown(ctx)
 	is.NoErr(err)
@@ -784,16 +792,19 @@ func clearTestBucket(t *testing.T, client *s3.Client, bucket string) {
 		nextKey = list.NextKeyMarker
 	}
 
-	if len(deleteObjects) > 0 {
+	// DeleteObjects accepts at most 1000 keys per request.
+	for len(deleteObjects) > 0 {
+		n := min(len(deleteObjects), 1000)
 		_, err := client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
 			Bucket: aws.String(bucket),
 			Delete: &types.Delete{
-				Objects: deleteObjects,
+				Objects: deleteObjects[:n],
 			},
 		})
 		if err != nil {
 			t.Fatalf("could not delete objects: %v", err)
 		}
+		deleteObjects = deleteObjects[n:]
 	}
 }
 
@@ -867,6 +878,23 @@ func readWithTimeout(ctx context.Context, source *source.Source, timeout time.Du
 			// try again
 		case <-timeoutTimer:
 			return opencdc.Record{}, context.DeadlineExceeded
+		}
+	}
+}
+
+// readUntil reads records until one satisfies want or the timeout is reached.
+// The snapshot-to-CDC handoff may redeliver recent objects (at-least-once), so
+// tests that look for a specific later change must not assume it is next.
+func readUntil(ctx context.Context, source *source.Source, timeout time.Duration, want func(opencdc.Record) bool) (opencdc.Record, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return opencdc.Record{}, context.DeadlineExceeded
+		}
+		rec, err := readWithTimeout(ctx, source, left)
+		if err != nil || want(rec) {
+			return rec, err
 		}
 	}
 }

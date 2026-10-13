@@ -35,6 +35,9 @@ type SnapshotIterator struct {
 	page            *s3.ListObjectsV2Output
 	index           int
 	maxLastModified time.Time
+	// startedAt is when the snapshot began listing. Objects written after
+	// this point may be missing from the snapshot, so CDC must cover them.
+	startedAt time.Time
 }
 
 // NewSnapshotIterator takes the s3 bucket, the client, and the position.
@@ -50,6 +53,7 @@ func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Po
 		client:          client,
 		paginator:       s3.NewListObjectsV2Paginator(client, input),
 		maxLastModified: p.Timestamp,
+		startedAt:       time.Now(),
 	}, nil
 }
 
