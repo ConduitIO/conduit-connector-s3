@@ -31,55 +31,82 @@ import (
 )
 
 // CDCIterator scans the bucket periodically and detects changes made to it.
+//
+// Selection rule (invariant 3, no skipped objects). S3 lists in key order, not
+// in modification order, reports LastModified with one-second resolution on
+// AWS, and stamps a multipart upload with the time it was initiated, not the
+// time it completed. None of that lets "newest LastModified seen so far" serve
+// as a watermark: an object can become visible later with an older timestamp
+// than one already delivered. The watermark is therefore derived from the
+// clock, not from the listing: every poll selects the versions with
+// LastModified at or after (start of the previous successful poll - lookback)
+// and drops the ones it has already delivered. An object is only missed if it
+// becomes visible more than lookback after its LastModified (an upload that
+// takes longer than the lookback), or if this process' clock runs ahead of
+// the store's by more than the lookback.
 type CDCIterator struct {
-	bucket       string
-	prefix       string
-	client       *s3.Client
-	buffer       chan opencdc.Record
-	ticker       *time.Ticker
-	lastModified time.Time
-	// emitted holds the versions already handed over whose LastModified falls
-	// in the watermark's second. S3 reports LastModified with one-second
-	// resolution, so objects written later in that same second are
-	// indistinguishable from it by time alone; the set lets the poll select
-	// "LastModified >= second(watermark)" without re-emitting what was already
-	// delivered. It only grows to the objects of one second and is rebuilt
-	// empty on restart (a restart can re-deliver that second, never skip it).
-	emitted map[emittedKey]struct{}
-	caches  chan []CacheEntry
-	tomb    *tomb.Tomb
+	bucket   string
+	prefix   string
+	client   *s3.Client
+	buffer   chan opencdc.Record
+	ticker   *time.Ticker
+	lookback time.Duration
+	// watermark is the lower bound of the next poll (see above). It only moves
+	// forward and is only touched by the startCDC goroutine.
+	watermark time.Time
+	// delivered holds the versions already handed over whose LastModified is
+	// not older than the watermark's second. It is what keeps the overlap
+	// between polls (the lookback window) from re-emitting objects. It is
+	// rebuilt empty on restart, so a restart redelivers the window; it never
+	// skips it. Its size is bounded by the objects modified within the window.
+	delivered map[deliveredKey]struct{}
+	caches    chan []CacheEntry
+	tomb      *tomb.Tomb
 }
 
-type emittedKey struct {
+// deliveredKey identifies one stored version of an object. The ETag is part of
+// it because in an unversioned bucket the version id is always "null" and
+// LastModified has one-second resolution, so an overwrite within the same
+// second differs from the earlier write only by its ETag.
+type deliveredKey struct {
 	key       string
 	versionID string
+	etag      string
 	modified  time.Time
 }
 
 type CacheEntry struct {
 	key          string
 	versionID    string
+	etag         string
 	operation    opencdc.Operation
 	lastModified time.Time
 }
 
-// NewCDCIterator returns a CDCIterator and starts the process of listening to changes every pollingPeriod.
+func (e CacheEntry) deliveredKey() deliveredKey {
+	return deliveredKey{e.key, e.versionID, e.etag, e.lastModified}
+}
+
+// NewCDCIterator returns a CDCIterator and starts the process of listening to
+// changes every pollingPeriod. It selects objects modified at or after
+// from - lookback.
 func NewCDCIterator(
 	bucket, prefix string,
-	pollingPeriod time.Duration,
+	pollingPeriod, lookback time.Duration,
 	client *s3.Client,
 	from time.Time,
 ) (*CDCIterator, error) {
 	cdc := CDCIterator{
-		bucket:       bucket,
-		prefix:       prefix,
-		client:       client,
-		buffer:       make(chan opencdc.Record, 1),
-		caches:       make(chan []CacheEntry),
-		ticker:       time.NewTicker(pollingPeriod),
-		tomb:         &tomb.Tomb{},
-		lastModified: from,
-		emitted:      make(map[emittedKey]struct{}),
+		bucket:    bucket,
+		prefix:    prefix,
+		client:    client,
+		buffer:    make(chan opencdc.Record, 1),
+		caches:    make(chan []CacheEntry),
+		ticker:    time.NewTicker(pollingPeriod),
+		tomb:      &tomb.Tomb{},
+		lookback:  lookback,
+		watermark: from.Add(-lookback),
+		delivered: make(map[deliveredKey]struct{}),
 	}
 
 	// start listening to changes
@@ -113,70 +140,68 @@ func (w *CDCIterator) Stop() {
 }
 
 // startCDC scans the S3 bucket every polling period for changes
-// only detects the changes made after the w.lastModified
+// made at or after the watermark.
 func (w *CDCIterator) startCDC() error {
 	defer close(w.caches)
 
-	// we initialize two caches that we reuse so we don't allocate a new one every time
-	cache := make([]CacheEntry, 0)
-	nextCache := make([]CacheEntry, 0)
 	for {
 		select {
 		case <-w.tomb.Dying():
 			return w.tomb.Err()
 		case <-w.ticker.C: // detect changes every polling period
-			err := w.populateCache(w.tomb.Context(nil), &cache, nil) //nolint:staticcheck // SA1012 tomb expects nil
+			// The clock reading is taken BEFORE listing: everything that
+			// becomes visible during or after the listing is at or after it.
+			pollStart := time.Now()
+
+			cache, err := w.poll(w.tomb.Context(nil)) //nolint:staticcheck // SA1012 tomb expects nil
 			if err != nil {
 				return err
 			}
-			if len(cache) == 0 {
-				continue
-			}
-			sort.Slice(cache, func(i, j int) bool {
-				return cache[i].lastModified.Before(cache[j].lastModified)
-			})
 
-			select {
-			case w.caches <- cache:
-				// worked fine
-				w.advanceWatermark(cache)
-				cache, nextCache = nextCache, cache // switch caches
-				cache = cache[:0]                   // empty cache
-			case <-w.tomb.Dying():
-				return w.tomb.Err()
+			if len(cache) > 0 {
+				sort.Slice(cache, func(i, j int) bool {
+					return cache[i].lastModified.Before(cache[j].lastModified)
+				})
+
+				select {
+				case w.caches <- cache:
+				case <-w.tomb.Dying():
+					return w.tomb.Err()
+				}
+				for _, e := range cache {
+					w.delivered[e.deliveredKey()] = struct{}{}
+				}
 			}
+
+			// Only after a complete listing (and handover) may the watermark
+			// move. An empty poll advances it too.
+			w.advanceWatermark(pollStart)
 		}
 	}
 }
 
-// advanceWatermark moves the watermark to the newest entry of a cache that was
-// just handed over and remembers which versions were delivered in the
-// watermark's second.
-//
-// Invariant 3: nothing at or after the watermark's second may be dropped. The
-// poll selects LastModified >= floor-to-second(watermark), so the only thing
-// standing between a later same-second object and being skipped is that it is
-// absent from emitted.
-func (w *CDCIterator) advanceWatermark(cache []CacheEntry) {
-	w.lastModified = cache[len(cache)-1].lastModified
-	floor := w.lastModified.Truncate(time.Second)
-	for _, e := range cache {
-		w.emitted[emittedKey{e.key, e.versionID, e.lastModified}] = struct{}{}
+// advanceWatermark moves the watermark to pollStart - lookback (never back) and
+// forgets delivered versions that fall below it.
+func (w *CDCIterator) advanceWatermark(pollStart time.Time) {
+	if next := pollStart.Add(-w.lookback); next.After(w.watermark) {
+		w.watermark = next
 	}
-	for k := range w.emitted {
+	floor := w.watermark.Truncate(time.Second)
+	for k := range w.delivered {
 		if k.modified.Before(floor) {
-			delete(w.emitted, k)
+			delete(w.delivered, k)
 		}
 	}
 }
 
-// isNew reports whether a version must be emitted: it was modified in or after
-// the watermark's second and has not been delivered yet.
-func (w *CDCIterator) isNew(key, versionID string, modified time.Time) bool {
-	if modified.Before(w.lastModified.Truncate(time.Second)) {
+// isNew reports whether a version must be emitted: it was modified at or after
+// the watermark's second (S3 timestamps may be second-truncated) and has not
+// been delivered yet.
+func (w *CDCIterator) isNew(key, versionID, etag string, modified time.Time) bool {
+	if modified.Before(w.watermark.Truncate(time.Second)) {
 		return false
 	}
-	_, done := w.emitted[emittedKey{key, versionID, modified}]
+	_, done := w.delivered[deliveredKey{key, versionID, etag, modified}]
 	return !done
 }
 
@@ -206,46 +231,64 @@ func (w *CDCIterator) flush() error {
 	}
 }
 
-// getLatestObjects gets all the latest version of objects in S3 bucket
-func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, keyMarker *string) error {
-	listObjectInput := &s3.ListObjectVersionsInput{ // default is 1000 keys max
-		Bucket:    aws.String(w.bucket),
-		Prefix:    aws.String(w.prefix),
-		KeyMarker: keyMarker,
-	}
-	objects, err := w.client.ListObjectVersions(ctx, listObjectInput)
-	if err != nil {
-		return fmt.Errorf("couldn't get latest objects: %w", err)
+// poll lists every version in the bucket (all pages) and returns the changes
+// that must be emitted. Whether a version is the latest one, and whether its key
+// has older versions (an update), is decided across pages: a key's versions can
+// straddle a page boundary.
+func (w *CDCIterator) poll(ctx context.Context) ([]CacheEntry, error) {
+	var (
+		cache   []CacheEntry
+		updated = make(map[string]bool)
+		input   = &s3.ListObjectVersionsInput{ // default is 1000 keys max
+			Bucket: aws.String(w.bucket),
+			Prefix: aws.String(w.prefix),
+		}
+	)
+
+	for {
+		objects, err := w.client.ListObjectVersions(ctx, input)
+		if err != nil {
+			return nil, fmt.Errorf("couldn't get latest objects: %w", err)
+		}
+
+		for _, v := range objects.Versions {
+			if aws.ToBool(v.IsLatest) {
+				if w.isNew(*v.Key, aws.ToString(v.VersionId), aws.ToString(v.ETag), *v.LastModified) {
+					cache = append(cache, CacheEntry{
+						key: *v.Key, versionID: aws.ToString(v.VersionId), etag: aws.ToString(v.ETag),
+						lastModified: *v.LastModified, operation: opencdc.OperationCreate,
+					})
+				}
+			} else {
+				// this is a version that is not the latest, this means this
+				// object was updated
+				updated[*v.Key] = true
+			}
+		}
+		for _, v := range objects.DeleteMarkers {
+			if aws.ToBool(v.IsLatest) && w.isNew(*v.Key, aws.ToString(v.VersionId), "", *v.LastModified) {
+				cache = append(cache, CacheEntry{
+					key: *v.Key, versionID: aws.ToString(v.VersionId),
+					lastModified: *v.LastModified, operation: opencdc.OperationDelete,
+				})
+			}
+		}
+
+		if !aws.ToBool(objects.IsTruncated) {
+			break
+		}
+		// Both markers: with only the key marker the rest of a key's versions
+		// would be skipped when a page ends in the middle of them.
+		input.KeyMarker = objects.NextKeyMarker
+		input.VersionIdMarker = objects.NextVersionIdMarker
 	}
 
-	updatedObjects := make(map[string]bool)
-
-	for _, v := range objects.Versions {
-		if *v.IsLatest && w.isNew(*v.Key, aws.ToString(v.VersionId), *v.LastModified) {
-			*cache = append(*cache, CacheEntry{key: *v.Key, versionID: aws.ToString(v.VersionId), lastModified: *v.LastModified, operation: opencdc.OperationCreate})
-		} else {
-			// this is a version that is not the latest, this means this object
-			// was updated
-			updatedObjects[*v.Key] = true
+	for i, e := range cache {
+		if e.operation == opencdc.OperationCreate && updated[e.key] {
+			cache[i].operation = opencdc.OperationUpdate
 		}
 	}
-	for i, entry := range *cache {
-		if updatedObjects[entry.key] {
-			entry.operation = opencdc.OperationUpdate
-			(*cache)[i] = entry
-		}
-	}
-
-	for _, v := range objects.DeleteMarkers {
-		if *v.IsLatest && w.isNew(*v.Key, aws.ToString(v.VersionId), *v.LastModified) {
-			*cache = append(*cache, CacheEntry{key: *v.Key, versionID: aws.ToString(v.VersionId), lastModified: *v.LastModified, operation: opencdc.OperationDelete})
-		}
-	}
-
-	if *objects.IsTruncated {
-		return w.populateCache(ctx, cache, objects.NextKeyMarker)
-	}
-	return nil
+	return cache, nil
 }
 
 func (w *CDCIterator) fetchS3Object(entry CacheEntry) (*s3.GetObjectOutput, []byte, error) {

@@ -16,6 +16,7 @@ package iterator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -38,6 +39,10 @@ type SnapshotIterator struct {
 	// startedAt is when the snapshot began listing. Objects written after
 	// this point may be missing from the snapshot, so CDC must cover them.
 	startedAt time.Time
+	// listErr is a failed page listing. It must reach the caller: treating it
+	// as the end of the snapshot would hand over to CDC and silently skip every
+	// object not yet listed.
+	listErr error
 }
 
 // NewSnapshotIterator takes the s3 bucket, the client, and the position.
@@ -84,10 +89,19 @@ func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
 }
 
 // HasNext returns a boolean that indicates whether the iterator has more objects to return or not.
+// A failed listing is not "no more objects": it returns true and Next reports
+// the error.
 func (w *SnapshotIterator) HasNext(ctx context.Context) bool {
+	if w.listErr != nil {
+		return true
+	}
 	if w.shouldRefreshPage() {
 		err := w.refreshPage(ctx)
 		if err != nil {
+			if !errors.Is(err, sdk.ErrBackoffRetry) {
+				w.listErr = err
+				return true
+			}
 			return false
 		}
 	}
@@ -97,6 +111,9 @@ func (w *SnapshotIterator) HasNext(ctx context.Context) bool {
 // Next returns the next record in the iterator.
 // returns an empty record and an error if anything wrong happened.
 func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
+	if w.listErr != nil {
+		return opencdc.Record{}, w.listErr
+	}
 	if w.shouldRefreshPage() {
 		err := w.refreshPage(ctx)
 		if err != nil {

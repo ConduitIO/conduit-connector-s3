@@ -16,6 +16,7 @@ package source_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -100,6 +102,16 @@ func putObject(ctx context.Context, t *testing.T, client *s3.Client, bucket, key
 	}
 }
 
+// startCDC drives an opened source over an empty bucket until it has switched
+// from the (empty) snapshot to CDC: without it, an object written right after
+// Open would be listed by the snapshot instead.
+func startCDC(ctx context.Context, t *testing.T, s *source.Source) {
+	t.Helper()
+	if _, err := s.Read(ctx); !errors.Is(err, sdk.ErrBackoffRetry) {
+		t.Fatalf("expected an empty snapshot (ErrBackoffRetry), got %v", err)
+	}
+}
+
 // drainKeys reads records until none arrives for quiet, returning the keys seen.
 func drainKeys(ctx context.Context, s *source.Source, quiet time.Duration) map[string]int {
 	seen := map[string]int{}
@@ -154,13 +166,21 @@ func TestSource_SnapshotHandoffDoesNotSkipObjects(t *testing.T) {
 	}
 }
 
-var lastModifiedRe = regexp.MustCompile(`(<LastModified>[^<.]*)\.\d+(Z</LastModified>)`)
+var lastModifiedRe = regexp.MustCompile(`<LastModified>[^<]*</LastModified>`)
 
-// secondPrecisionProxy forwards to endpoint, truncating every LastModified in
-// listing responses to whole seconds, which is what AWS S3 reports. MinIO
-// reports milliseconds, so without this the same-second collisions that AWS
-// users hit cannot be produced on demand.
-func secondPrecisionProxy(t *testing.T, endpoint string) string {
+// proxyOpts shapes a forwarding proxy in front of MinIO.
+type proxyOpts struct {
+	// lastModified, if set, replaces every LastModified in XML responses with
+	// the returned value (RFC 3339). MinIO reports milliseconds and AWS whole
+	// seconds; this makes the same-second cases reproducible on demand.
+	lastModified func(orig string) string
+	// before runs for every request before it is forwarded. Returning a
+	// non-zero status answers the request with that S3 error instead.
+	before func(r *http.Request) (status int)
+}
+
+// minioProxy forwards to endpoint, applying opts, and returns its URL.
+func minioProxy(t *testing.T, endpoint string, opts proxyOpts) string {
 	t.Helper()
 	target, err := url.Parse(endpoint)
 	if err != nil {
@@ -168,7 +188,7 @@ func secondPrecisionProxy(t *testing.T, endpoint string) string {
 	}
 	rp := httputil.NewSingleHostReverseProxy(target)
 	rp.ModifyResponse = func(resp *http.Response) error {
-		if !strings.Contains(resp.Header.Get("Content-Type"), "xml") {
+		if opts.lastModified == nil || !strings.Contains(resp.Header.Get("Content-Type"), "xml") {
 			return nil
 		}
 		body, err := io.ReadAll(resp.Body)
@@ -176,63 +196,202 @@ func secondPrecisionProxy(t *testing.T, endpoint string) string {
 			return err
 		}
 		_ = resp.Body.Close()
-		body = lastModifiedRe.ReplaceAll(body, []byte("$1.000$2"))
+		body = lastModifiedRe.ReplaceAllFunc(body, func(m []byte) []byte {
+			orig := strings.TrimSuffix(strings.TrimPrefix(string(m), "<LastModified>"), "</LastModified>")
+			return []byte("<LastModified>" + opts.lastModified(orig) + "</LastModified>")
+		})
 		resp.Body = io.NopCloser(strings.NewReader(string(body)))
 		resp.ContentLength = int64(len(body))
 		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
 		return nil
 	}
-	srv := httptest.NewServer(rp)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if opts.before != nil {
+			if status := opts.before(r); status != 0 {
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>injected</Message></Error>`)
+				return
+			}
+		}
+		rp.ServeHTTP(w, r)
+	}))
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+// fixedSecond makes every object look like it was modified at the same whole
+// second, which is the worst case of AWS's one-second resolution.
+func fixedSecond() func(string) string {
+	fixed := time.Now().UTC().Truncate(time.Second).Format("2006-01-02T15:04:05.000Z")
+	return func(string) string { return fixed }
 }
 
 // TestSource_CDCSameSecondObjectsNotSkipped: S3 reports LastModified with
 // one-second resolution, and the CDC watermark used to be a strict
 // "LastModified > watermark". An object that lands later in the same second as
-// the last one the poll delivered was then never emitted.
+// the last one the poll delivered was then never emitted. Here every listed
+// timestamp is the same second, so the case is deterministic.
 func TestSource_CDCSameSecondObjectsNotSkipped(t *testing.T) {
 	is := is.New(t)
 	ctx := context.Background()
-	proxy := secondPrecisionProxy(t, os.Getenv(envMinIOEndpoint))
+	proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{lastModified: fixedSecond()})
 	client, cfg := minioSourceEnv(t, proxy)
 	bucket := cfg[config.ConfigKeyAWSBucket]
 
-	// seed so the snapshot ends with a real watermark, then let the second pass
-	putObject(ctx, t, client, bucket, "seed")
-	time.Sleep(1100 * time.Millisecond)
-
 	s := openSource(ctx, t, cfg, nil)
+	startCDC(ctx, t, s)
+
+	putObject(ctx, t, client, bucket, "same-second-1")
 	rec, err := readWithTimeout(ctx, s, 10*time.Second)
 	is.NoErr(err)
-	is.Equal(string(rec.Key.Bytes()), "seed")
+	is.Equal(string(rec.Key.Bytes()), "same-second-1")
 
-	// start at the beginning of a wall-clock second so that both puts land in it
-	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second + 50*time.Millisecond)))
-	putObject(ctx, t, client, bucket, "same-second-1")
-	// A poll delivers it and advances the watermark. Redelivery of "seed" after
-	// the snapshot handoff is allowed (at-least-once), so skip over it.
-	for {
-		rec, err = readWithTimeout(ctx, s, 5*time.Second)
-		is.NoErr(err)
-		if string(rec.Key.Bytes()) == "same-second-1" {
-			break
-		}
-	}
 	putObject(ctx, t, client, bucket, "same-second-2")
-
-	h1, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String("same-second-1")})
-	is.NoErr(err)
-	h2, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: aws.String("same-second-2")})
-	is.NoErr(err)
-	if h1.LastModified.Unix() != h2.LastModified.Unix() {
-		t.Skip("puts straddled a second boundary; rerun")
-	}
-
 	seen := drainKeys(ctx, s, 3*time.Second)
 	if seen["same-second-2"] == 0 {
-		t.Fatalf("same-second-2 shares a one-second LastModified with an already delivered object and was never delivered: %v", seen)
+		t.Fatalf("same-second-2 shares its LastModified second with a delivered object and was never delivered: %v", seen)
 	}
+	is.Equal(seen["same-second-1"], 0) // and the delivered one is not delivered again
+}
+
+// TestSource_CDCSameSecondOverwriteDelivered: in an unversioned bucket the
+// version id is always "null", so an overwrite within the same second differs
+// from the earlier write only by its ETag.
+func TestSource_CDCSameSecondOverwriteDelivered(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{lastModified: fixedSecond()})
+	client, cfg := minioSourceEnv(t, proxy)
+	bucket := cfg[config.ConfigKeyAWSBucket]
+	s := openSource(ctx, t, cfg, nil)
+	startCDC(ctx, t, s)
+
+	put := func(body string) {
+		_, err := client.PutObject(ctx, &s3.PutObjectInput{Bucket: aws.String(bucket), Key: aws.String("k"), Body: strings.NewReader(body)})
+		is.NoErr(err)
+	}
+	put("v1")
+	rec, err := readWithTimeout(ctx, s, 10*time.Second)
+	is.NoErr(err)
+	is.Equal(string(rec.Payload.After.Bytes()), "v1")
+
+	put("v2")
+	rec, err = readWithTimeout(ctx, s, 10*time.Second)
+	if err != nil {
+		t.Fatalf("overwrite with a different ETag in the same second was dropped: %v", err)
+	}
+	is.Equal(string(rec.Payload.After.Bytes()), "v2")
+}
+
+// TestSource_CDCPollSpanningPagesDoesNotSkip: a poll that needs more than one
+// ListObjectVersions page. Between page 1 and page 2 two objects appear: "a-late"
+// sorts into the part of the key space page 1 already listed, "z-late" into
+// page 2. A watermark taken from the newest LastModified of the listing
+// (z-late) would move past a-late, which this poll never saw, and skip it for
+// good.
+func TestSource_CDCPollSpanningPagesDoesNotSkip(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+
+	var (
+		injected  atomic.Bool
+		client    *s3.Client
+		bucketRef atomic.Value
+	)
+	proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{before: func(r *http.Request) int {
+		q := r.URL.Query()
+		_, versions := q["versions"]
+		if versions && q.Get("key-marker") != "" && injected.CompareAndSwap(false, true) {
+			b := bucketRef.Load().(string)
+			putObject(ctx, t, client, b, "a-late")
+			time.Sleep(1100 * time.Millisecond)
+			putObject(ctx, t, client, b, "z-late")
+		}
+		return 0
+	}})
+	var cfg map[string]string
+	client, cfg = minioSourceEnv(t, proxy)
+	bucket := cfg[config.ConfigKeyAWSBucket]
+	bucketRef.Store(bucket)
+
+	for i := 0; i < 1001; i++ {
+		putObject(ctx, t, client, bucket, fmt.Sprintf("k%04d", i))
+	}
+	s := openSource(ctx, t, cfg, nil)
+
+	// snapshot, then CDC polls; keep reading until the injected objects show
+	// up or the budget runs out
+	seen := map[string]int{}
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) && (seen["a-late"] == 0 || seen["z-late"] == 0) {
+		rec, err := readWithTimeout(ctx, s, 5*time.Second)
+		if err == nil {
+			seen[string(rec.Key.Bytes())]++
+		}
+	}
+	is.True(injected.Load()) // the CDC poll did reach its second page
+	is.True(seen["z-late"] > 0)
+	if seen["a-late"] == 0 {
+		t.Fatalf("a-late appeared during a multi-page poll and was never delivered")
+	}
+}
+
+// TestSource_SnapshotListErrorIsNotEndOfSnapshot: a failed page listing used to
+// make the snapshot look finished, so the source handed over to CDC and the
+// objects it had not listed yet were never delivered.
+func TestSource_SnapshotListErrorIsNotEndOfSnapshot(t *testing.T) {
+	ctx := context.Background()
+	var failList atomic.Bool
+	proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{before: func(r *http.Request) int {
+		if failList.Load() && r.URL.Query().Get("list-type") == "2" {
+			return http.StatusForbidden // not retried by the SDK
+		}
+		return 0
+	}})
+	client, cfg := minioSourceEnv(t, proxy)
+	bucket := cfg[config.ConfigKeyAWSBucket]
+	for i := 0; i < 3; i++ {
+		putObject(ctx, t, client, bucket, fmt.Sprintf("obj-%d", i))
+	}
+
+	failList.Store(true)
+	s := openSource(ctx, t, cfg, nil)
+
+	rec, err := s.Read(ctx)
+	if err == nil {
+		t.Fatalf("expected the listing error, got record %q", rec.Key.Bytes())
+	}
+	if errors.Is(err, sdk.ErrBackoffRetry) {
+		t.Fatalf("listing error was swallowed as a retry/end of snapshot: %v", err)
+	}
+	if !strings.Contains(err.Error(), "AccessDenied") && !strings.Contains(err.Error(), "403") {
+		t.Fatalf("error does not carry the listing failure: %v", err)
+	}
+}
+
+// TestSource_HandoffRedeliveryIsBounded: the snapshot-to-CDC handoff covers
+// objects written while the snapshot ran by starting CDC at (snapshot start -
+// lookback). That redelivers objects, but only the ones modified within the
+// lookback; an older object is delivered exactly once.
+func TestSource_HandoffRedeliveryIsBounded(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	client, cfg := minioSourceEnv(t, "")
+	cfg[source.ConfigKeyLookbackPeriod] = "2s"
+	bucket := cfg[config.ConfigKeyAWSBucket]
+
+	putObject(ctx, t, client, bucket, "old")
+	time.Sleep(3500 * time.Millisecond) // older than the lookback by the time the snapshot starts
+	putObject(ctx, t, client, bucket, "recent")
+
+	s := openSource(ctx, t, cfg, nil)
+	seen := drainKeys(ctx, s, 4*time.Second)
+
+	is.Equal(seen["old"], 1)     // outside the window: never redelivered
+	is.True(seen["recent"] >= 1) // delivered by the snapshot
+	is.True(seen["recent"] <= 2) // at most one redelivery by CDC
+	is.Equal(len(seen), 2)       // nothing else appears
 }
 
 // TestSource_ObjectsCreatedRightAfterOpenAreDelivered is the regression test
