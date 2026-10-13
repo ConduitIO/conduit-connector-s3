@@ -628,3 +628,39 @@ func setLookback(cfg map[string]string, v string) {
 		cfg["lookbackPeriod"] = v
 	}
 }
+
+// TestSource_SnapshotLongerThanLookbackDoesNotSkip: the snapshot takes longer
+// than lookbackPeriod. An object written early in the snapshot, under a key
+// range that was already listed, must still be delivered, although objects
+// written much later are read by the snapshot's second page. The handoff is
+// anchored to the objects that existed when the snapshot started, not to the
+// newest object the snapshot happens to read (#1032).
+func TestSource_SnapshotLongerThanLookbackDoesNotSkip(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	client, cfg := minioSourceEnv(t, "")
+	setLookback(cfg, "2s")
+	bucket := cfg[config.ConfigKeyAWSBucket]
+
+	for i := 0; i < 1001; i++ { // two ListObjectsV2 pages
+		putObject(ctx, t, client, bucket, fmt.Sprintf("k%04d", i))
+	}
+	s := openSource(ctx, t, cfg, nil)
+
+	seen := map[string]int{}
+	rec, err := readWithTimeout(ctx, s, 20*time.Second) // anchor pass + page 1
+	is.NoErr(err)
+	seen[string(rec.Key.Bytes())]++
+
+	putObject(ctx, t, client, bucket, "a-late") // sorts into the page that was already listed
+	time.Sleep(3100 * time.Millisecond)         // the snapshot has now run for longer than the lookback
+	putObject(ctx, t, client, bucket, "z-late") // read by page 2, 3s newer than a-late
+
+	for k, n := range drainKeys(ctx, s, 3*time.Second) {
+		seen[k] += n
+	}
+	is.True(seen["z-late"] > 0)
+	if seen["a-late"] == 0 {
+		t.Fatalf("a-late was written early in a snapshot that outlasted the lookback and was never delivered (%d distinct keys)", len(seen))
+	}
+}

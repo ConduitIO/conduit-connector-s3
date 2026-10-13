@@ -45,6 +45,20 @@ type SnapshotIterator struct {
 	listErr error
 	// lastToken is the continuation token the last page was requested with.
 	lastToken string
+
+	// anchor is the newest LastModified among the objects that existed when
+	// the snapshot started, found by one listing pass before the first page
+	// is read. The snapshot-to-CDC handoff is anchored to it, NOT to the
+	// newest LastModified the snapshot happens to read: later pages can hold
+	// objects written long after the snapshot began, and handing over from
+	// those would leave an object written early in the snapshot, under an
+	// already listed key range, below the CDC floor whenever the snapshot
+	// took longer than lookbackPeriod (#1032). Cost: one extra full listing of
+	// the prefix (one ListObjectsV2 request per 1000 keys) per snapshot. Zero
+	// for an empty bucket, which makes CDC select everything.
+	prefix   string
+	anchor   time.Time
+	anchored bool
 }
 
 // NewSnapshotIterator takes the s3 bucket, the client, and the position.
@@ -60,6 +74,7 @@ func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Po
 	}
 
 	return &SnapshotIterator{
+		prefix:          prefix,
 		bucket:          bucket,
 		client:          client,
 		paginator:       s3.NewListObjectsV2Paginator(client, input),
@@ -78,6 +93,11 @@ func (w *SnapshotIterator) shouldRefreshPage() bool {
 // page is an error. Nothing about the iterator's position changes unless a page
 // was fetched successfully, so a failed call can be retried without skipping.
 func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
+	if !w.anchored {
+		if err := w.findAnchor(ctx); err != nil {
+			return fmt.Errorf("could not list the bucket to anchor the snapshot: %w", err)
+		}
+	}
 	for w.paginator.HasMorePages() {
 		nextPage, err := w.paginator.NextPage(ctx)
 		if err != nil {
@@ -99,6 +119,37 @@ func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
 	}
 	w.page, w.index = nil, 0
 	return sdk.ErrBackoffRetry
+}
+
+// findAnchor lists the whole prefix once and records the newest LastModified.
+// It runs before the first page of the snapshot proper, so everything the
+// snapshot lists afterwards that is newer than the anchor was written after the
+// snapshot started.
+func (w *SnapshotIterator) findAnchor(ctx context.Context) error {
+	pg := s3.NewListObjectsV2Paginator(w.client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(w.bucket),
+		Prefix: aws.String(w.prefix),
+	})
+	var newest time.Time
+	var last string
+	for pg.HasMorePages() {
+		page, err := pg.NextPage(ctx)
+		if err != nil {
+			return err
+		}
+		for _, o := range page.Contents {
+			if o.LastModified != nil && o.LastModified.After(newest) {
+				newest = *o.LastModified
+			}
+		}
+		next := aws.ToString(page.NextContinuationToken)
+		if aws.ToBool(page.IsTruncated) && (next == "" || next == last) {
+			return errors.New("the listing is truncated but has no new continuation token")
+		}
+		last = next
+	}
+	w.anchor, w.anchored = newest, true
+	return nil
 }
 
 // fail records a listing or read error. It is sticky: once the snapshot has
