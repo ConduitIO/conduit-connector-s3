@@ -72,6 +72,7 @@ pipelines:
     connectors:
       - id: example
         plugin: "s3"
+        type: source
         settings:
           # AWS access key id.
           # Type: string
@@ -179,6 +180,7 @@ pipelines:
     connectors:
       - id: example
         plugin: "s3"
+        type: destination
         settings:
           # AWS access key id.
           # Type: string
