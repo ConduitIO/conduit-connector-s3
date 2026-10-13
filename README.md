@@ -65,12 +65,22 @@ The connector goes through two modes.
   keys, at the start of the snapshot), minus `lookbackPeriod`, so CDC
   redelivers the objects written while the snapshot ran, however long it
   took, plus those within `lookbackPeriod` before it started. On a bucket
-  that was bulk loaded recently this can be every object of the load. The set
-  of versions remembered for deduplication is limited to about 256 MiB; if
-  the objects inside the window need more, the source stops with the error
-  `s3.source.dedupe_window_overflow` instead of forgetting any; lower
-  `lookbackPeriod` then (or fix the clock if the message says so). A catch-up
-  after downtime is delivered in bounded batches, oldest first.
+  that was bulk loaded recently this can be every object of the load.
+
+  The versions remembered for deduplication are limited to about 256 MiB
+  (peak memory of a poll is about 1.5 times that, candidates included). If
+  the objects inside the window need more, the window is **shortened**
+  instead of stopping the source: the oldest remembered entries are
+  forgotten by whole seconds and the window starts just above them. The
+  source logs a warning with the code `s3.source.dedupe_window_shrunk`
+  naming the effective lookback and the number of forgotten entries. While
+  the window is shortened, an object that becomes visible late by more than
+  the effective lookback can be missed, so the tolerance for late-visible
+  objects is lower than `lookbackPeriod`; lower `lookbackPeriod` to avoid
+  the shrinking. The source stops, with the error
+  `s3.source.dedupe_window_overflow` (after a warning), only if the versions
+  sharing a single second of `LastModified` do not fit. A catch-up after
+  downtime is delivered in bounded batches, oldest first.
 
   Known limits (listing cannot see these, or sees them too late):
   * an upload that takes longer than `lookbackPeriod` to complete is missed
@@ -175,16 +185,13 @@ pipelines:
           # later than this value after newer objects were seen can still be
           # missed (see the connector description for the full list of known
           # limits). Cost: memory for the objects modified within the window
-          # (limit about 256 MiB, the source stops with
-          # s3.source.dedupe_window_overflow beyond it, lower this value then),
-          # and redelivery (at-least-once) of the objects modified within the
-          # window after a restart and when the snapshot hands over to CDC.
-          # Listing cost does not depend on it. Values above 1h log a warning,
-          # above 24h are rejected, and 0 disables the lookback. Known limits of
-          # the deduplication: an identical re-put of an object within the same
-          # second is not seen as a change, an overwrite in an unversioned
-          # bucket is reported as a create, and intermediate versions that
-          # appear and are superseded within one poll are not emitted.
+          # (limit about 256 MiB; beyond it the window is shortened with a
+          # warning s3.source.dedupe_window_shrunk, which lowers the tolerance
+          # for late-visible objects, so lower this value instead), and
+          # redelivery (at-least-once) of the objects modified within the window
+          # after a restart and when the snapshot hands over to CDC. Listing
+          # cost does not depend on it. Values above 1h log a warning, above 24h
+          # are rejected, and 0 disables the lookback.
           # Type: duration
           # Required: no
           lookbackPeriod: "5m"

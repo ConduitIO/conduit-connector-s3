@@ -30,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/matryer/is"
@@ -692,10 +693,11 @@ func TestCDCIterator_CatchUpOverOldObjectsIsBoundedAndComplete(t *testing.T) {
 	is.True(len(sp.it.delivered) <= 2) // only the newest object's window is tracked
 }
 
-// A window that genuinely holds more than the limit stops the iterator loudly
-// before delivering a batch it could not deduplicate. Lowering the lookback is
-// the way out, unless the cause is a host clock behind the store's.
-func TestCDCIterator_WindowOverLimitStopsLoudly(t *testing.T) {
+// A window that holds more than the limit is shortened, not stopped: the
+// oldest tracked entries are forgotten by whole seconds and the floor is raised
+// above them. Everything is still delivered, nothing is delivered twice, and a
+// WARN says the late-visibility tolerance is lower.
+func TestCDCIterator_WindowOverLimitShrinksInsteadOfStopping(t *testing.T) {
 	is := is.New(t)
 	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
 	entry := deliveredKey{key: "o-000", versionID: "null", etag: `"e-o-000"`}.bytes()
@@ -703,27 +705,63 @@ func TestCDCIterator_WindowOverLimitStopsLoudly(t *testing.T) {
 	maxCandidateBytes = 10 * maxDeliveredBytes // so the window check, not the batch bound, is what trips
 	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
 
+	var buf bytes.Buffer
+	l := zerolog.New(&buf)
+	host := time.Now()
+	st := newSimStore(0)
+	for i := 0; i < 300; i++ {
+		st.putAt(fmt.Sprintf("o-%03d", i), host.Add(-time.Duration(300-i)*time.Second)) // 1s apart, 5m window
+	}
+	sp := newStepper(t, st, time.Time{}, 5*time.Minute, &l)
+
+	got := sp.mustStep(host)
+	is.Equal(len(got), 300) // everything delivered
+	is.True(len(sp.it.delivered) <= 100)
+	is.True(strings.Contains(buf.String(), "s3.source.dedupe_window_shrunk"))
+	is.True(strings.Contains(buf.String(), "effective_lookback"))
+	is.Equal(len(sp.mustStep(host)), 0)                // not delivered twice
+	is.Equal(len(sp.mustStep(host.Add(time.Hour))), 0) // nor later
+
+	// a new object is delivered; a late-visible one inside the shrunk window is
+	// still caught, one in the forgotten part is not (the documented reduced
+	// tolerance while shrunk)
+	st.putAt("new", host.Add(time.Second))
+	st.putAt("late-recent", host.Add(-30*time.Second))
+	st.putAt("late-forgotten", host.Add(-250*time.Second))
+	got = sp.mustStep(host.Add(2 * time.Second))
+	is.True(strings.Contains(strings.Join(got, ","), "new"))
+	is.True(strings.Contains(strings.Join(got, ","), "late-recent"))
+	is.True(!strings.Contains(strings.Join(got, ","), "late-forgotten"))
+}
+
+// The hard stop remains for a window that cannot be shortened below one second:
+// more versions share one second than the memory limit holds.
+func TestCDCIterator_OneSecondOverLimitStopsLoudly(t *testing.T) {
+	is := is.New(t)
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	entry := deliveredKey{key: "o-000", versionID: "null", etag: `"e-o-000"`}.bytes()
+	maxDeliveredBytes = 100 * entry
+	maxCandidateBytes = 10 * maxDeliveredBytes
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
+
 	host := time.Now()
 	newStore := func(offset time.Duration) *simStore {
 		st := newSimStore(0)
 		for i := 0; i < 300; i++ {
-			st.putAt(fmt.Sprintf("o-%03d", i), host.Add(offset).Add(-time.Duration(300-i)*time.Second)) // 1s apart
+			st.putAt(fmt.Sprintf("o-%03d", i), host.Add(offset).Add(-time.Minute)) // all the same second
 		}
 		return st
 	}
 
-	t.Run("lookback 5m: 300 objects inside the window", func(t *testing.T) {
-		sp := newStepper(t, newStore(0), time.Time{}, 5*time.Minute, nil)
+	t.Run("same second", func(t *testing.T) {
+		var buf bytes.Buffer
+		l := zerolog.New(&buf)
+		sp := newStepper(t, newStore(0), time.Time{}, 5*time.Minute, &l)
 		_, err := sp.step(host)
 		is.True(errors.Is(err, ErrDedupeWindowOverflow))
 		is.True(strings.Contains(err.Error(), "s3.source.dedupe_window_overflow"))
-		is.True(strings.Contains(err.Error(), "lower lookbackPeriod"))
-		is.Equal(len(sp.it.delivered), 0) // nothing was handed over or tracked
-	})
-	t.Run("lookback 10s: the window is small, everything is delivered", func(t *testing.T) {
-		sp := newStepper(t, newStore(0), time.Time{}, 10*time.Second, nil)
-		got := sp.mustStep(host)
-		is.Equal(len(got), 300)
+		is.True(strings.Contains(buf.String(), "stopping the CDC iterator")) // WARN before the stop
+		is.Equal(len(sp.it.delivered), 0)
 	})
 	t.Run("host clock behind the store: the message says to fix the clock", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -732,10 +770,152 @@ func TestCDCIterator_WindowOverLimitStopsLoudly(t *testing.T) {
 		_, err := sp.step(host)
 		is.True(errors.Is(err, ErrDedupeWindowOverflow))
 		is.True(strings.Contains(err.Error(), "fix the clock"))
-		is.True(!strings.Contains(err.Error(), "lower lookbackPeriod (config"))
 		is.True(strings.Contains(buf.String(), "s3.source.host_clock_behind_store"))
 		is.Equal(strings.Count(buf.String(), "s3.source.host_clock_behind_store"), 1) // once
 	})
+}
+
+// A bulk-loaded bucket that then goes idle used to overflow on every restart,
+// for days, because the window is relative to the newest object. Now every
+// restart shrinks the window once, delivers the load again (at-least-once), and
+// carries on.
+func TestCDCIterator_BulkLoadThenIdleRecovers(t *testing.T) {
+	is := is.New(t)
+	oldD, oldC := maxDeliveredBytes, maxCandidateBytes
+	entry := deliveredKey{key: "o-000", versionID: "null", etag: `"e-o-000"`}.bytes()
+	maxDeliveredBytes = 100 * entry
+	maxCandidateBytes = 1000 * entry
+	defer func() { maxDeliveredBytes, maxCandidateBytes = oldD, oldC }()
+
+	host := time.Now()
+	st := newSimStore(0)
+	for i := 0; i < 300; i++ {
+		st.putAt(fmt.Sprintf("o-%03d", i), host.Add(-time.Duration(300-i)*time.Second)) // 300 objects in 5m
+	}
+	for _, later := range []time.Duration{0, time.Hour, 72 * time.Hour} {
+		sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil) // a restart
+		got, err := sp.step(host.Add(later))
+		is.NoErr(err)
+		is.Equal(len(got), 300)
+		is.Equal(len(sp.mustStep(host.Add(later+time.Minute))), 0)
+	}
+}
+
+// F1: the candidate budget must never drop an older object while keeping a
+// newer one. Keys of different lengths let a newer, shorter candidate fit into
+// the slack that a longer, older one left; the new floor then passed the older
+// one for good.
+func TestCDCIterator_CandidateBudgetNeverDropsOlderKeepsNewer(t *testing.T) {
+	host := time.Now()
+	type obj struct {
+		key string
+		at  time.Time
+	}
+	objs := []obj{ // key order == S3 listing order
+		{"a", host.Add(-3 * time.Hour)},
+		{"b" + strings.Repeat("x", 500), host.Add(-2 * time.Hour)},
+		{"c", host.Add(-3 * time.Hour)},
+		{"e", host.Add(-1 * time.Hour)},
+	}
+	var b strings.Builder
+	b.WriteString(`<?xml version="1.0"?><ListVersionsResult><IsTruncated>false</IsTruncated>`)
+	for _, o := range objs {
+		fmt.Fprintf(&b, `<Version><Key>%s</Key><VersionId>null</VersionId><IsLatest>true</IsLatest><LastModified>%s</LastModified><ETag>"e"</ETag></Version>`,
+			o.key, o.at.UTC().Format("2006-01-02T15:04:05.000Z"))
+	}
+	b.WriteString(`</ListVersionsResult>`)
+	st := &fakeStore{handler: func(r *http.Request) *http.Response {
+		if r.URL.Query().Has("versions") {
+			return xmlResp(200, b.String())
+		}
+		return objectResp(keyOf(r))
+	}}
+	by := func(k string) int64 { return deliveredKey{key: k, versionID: "null", etag: `"e"`}.bytes() }
+	old := maxCandidateBytes
+	maxCandidateBytes = by("a") + by(objs[1].key) + by("c") - 1
+	defer func() { maxCandidateBytes = old }()
+
+	it := newCDCIterator("b", "", 5*time.Minute, st.client(), time.Time{}, nil)
+	got := map[string]int{}
+	for i := 0; i < 10; i++ {
+		if err := it.step(context.Background(), host, func(c []CacheEntry) error {
+			for _, e := range c {
+				got[e.key]++
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, o := range objs {
+		if got[o.key] != 1 {
+			t.Errorf("%.3s delivered %d times, want exactly once (lm %s ago)", o.key, got[o.key], time.Since(o.at).Round(time.Minute))
+		}
+	}
+}
+
+// F2: a future-stamped object must not leave a position in the future. An
+// acked future-stamped record R, then a normal object U delivered after it but
+// not acked when the process dies: a restart from R's position must redeliver
+// U, however much later it happens.
+func TestCDCIterator_FutureStampedAckedRecordDoesNotPoisonRestart(t *testing.T) {
+	is := is.New(t)
+	host := time.Now()
+	st := newSimStore(0)
+	st.putAt("R", host.Add(2*time.Hour))
+	sp := newStepper(t, st, time.Time{}, 5*time.Minute, nil)
+	var rPos time.Time
+	err := sp.it.step(context.Background(), host, func(c []CacheEntry) error {
+		rec, err := sp.it.buildRecord(c[0])
+		is.NoErr(err)
+		p, err := position.ParseRecordPosition(rec.Position)
+		is.NoErr(err)
+		rPos = p.Timestamp
+		return nil
+	})
+	is.NoErr(err)
+	is.True(!rPos.After(host.Add(time.Second))) // position capped at the poll's host clock
+
+	st.putAt("U", host.Add(5*time.Second))
+	is.Equal(sp.mustStep(host.Add(6*time.Second)), []string{"U"}) // delivered, but the process dies before U is acked
+
+	// restart from R's position, ten minutes later
+	st2 := newStepper(t, st, rPos, 5*time.Minute, nil)
+	got := st2.mustStep(host.Add(10 * time.Minute))
+	is.True(strings.Contains(strings.Join(got, ","), "U")) // redelivered, not lost
+}
+
+// F2: an update classified across the page boundary of a key's versions.
+func TestCDCIterator_UpdateClassificationAcrossPagesAndKeys(t *testing.T) {
+	is := is.New(t)
+	host := time.Now()
+	lmv := host.Add(-time.Minute).UTC().Format("2006-01-02T15:04:05.000Z")
+	ver := func(k, id string, latest bool) string {
+		return fmt.Sprintf(`<Version><Key>%s</Key><VersionId>%s</VersionId><IsLatest>%v</IsLatest><LastModified>%s</LastModified><ETag>"e%s"</ETag></Version>`, k, id, latest, lmv, id)
+	}
+	pages := map[string]string{
+		"": `<?xml version="1.0"?><ListVersionsResult><IsTruncated>true</IsTruncated><NextKeyMarker>b</NextKeyMarker><NextVersionIdMarker>v2</NextVersionIdMarker>` +
+			ver("a", "a1", true) + ver("b", "b2", true) + `</ListVersionsResult>`,
+		"b": `<?xml version="1.0"?><ListVersionsResult><IsTruncated>false</IsTruncated>` +
+			ver("b", "b1", false) + ver("c", "c1", true) + `</ListVersionsResult>`,
+	}
+	st := &fakeStore{handler: func(r *http.Request) *http.Response {
+		if r.URL.Query().Has("versions") {
+			return xmlResp(200, pages[r.URL.Query().Get("key-marker")])
+		}
+		return objectResp(keyOf(r))
+	}}
+	it := newCDCIterator("b", "", 5*time.Minute, st.client(), time.Time{}, nil)
+	ops := map[string]opencdc.Operation{}
+	is.NoErr(it.step(context.Background(), host, func(c []CacheEntry) error {
+		for _, e := range c {
+			ops[e.key] = e.operation
+		}
+		return nil
+	}))
+	is.Equal(ops["a"], opencdc.OperationCreate)
+	is.Equal(ops["b"], opencdc.OperationUpdate) // its older version is on the next page
+	is.Equal(ops["c"], opencdc.OperationCreate)
 }
 
 // Memory stays bounded during heavy churn with a small window.
@@ -792,4 +972,27 @@ func TestCDCIterator_ObjectDeletedAfterListingIsSkipped(t *testing.T) {
 	st.mu2.Unlock()
 	mustDeliver(t, it, "a")
 	mustDeliver(t, it, "c") // "gone" was skipped, the iterator did not stop
+}
+
+// F2: a future-stamped object in the bucket must not put the snapshot's
+// handoff anchor above the host clock; the anchor is capped at the host clock
+// of the anchor listing (it only lowers the CDC floor).
+func TestSnapshotIterator_AnchorIsCappedAtHostClock(t *testing.T) {
+	is := is.New(t)
+	future := time.Now().Add(2 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+	past := time.Now().Add(-10 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z")
+	body := fmt.Sprintf(`<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>
+<Contents><Key>old</Key><LastModified>%s</LastModified><ETag>"e"</ETag><Size>1</Size></Contents>
+<Contents><Key>bogus</Key><LastModified>%s</LastModified><ETag>"e"</ETag><Size>1</Size></Contents></ListBucketResult>`, past, future)
+	st := &fakeStore{handler: func(r *http.Request) *http.Response {
+		if isList(r) {
+			return xmlResp(200, body)
+		}
+		return objectResp(keyOf(r))
+	}}
+	it := newSnap(t, st.client())
+	before := time.Now()
+	is.True(it.HasNext(context.Background()))
+	is.True(!it.anchor.After(time.Now()))
+	is.True(!it.anchor.Before(before.Add(-time.Second))) // capped at "now", not at the 10 minute old object
 }
