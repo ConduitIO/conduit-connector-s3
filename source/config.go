@@ -49,7 +49,8 @@ type Config struct {
 	// object can show up in a listing after newer objects were already
 	// delivered. Each poll therefore selects objects modified since
 	// (start of the previous poll - lookbackPeriod), on the store's clock
-	// (the Date header of the listing response). An upload that takes longer
+	// (the Date header of the listing response, validated and combined with
+	// the host clock as described in the connector description). An upload that takes longer
 	// than this value can still be missed. Cost: memory for the objects
 	// modified within the window, and redelivery (at-least-once) of the
 	// objects modified within the window after a restart, and, when the

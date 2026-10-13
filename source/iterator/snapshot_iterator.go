@@ -23,9 +23,11 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
+	"github.com/rs/zerolog"
 )
 
 // SnapshotIterator to iterate through S3 objects in a specific bucket.
@@ -42,6 +44,8 @@ type SnapshotIterator struct {
 	// startedAtFromStore is set once startedAt was replaced by the store's
 	// clock (Date header of the first page), the one LastModified is on.
 	startedAtFromStore bool
+	warnedNoDate       bool
+	log                *zerolog.Logger
 	// listErr is a failed page listing. It must reach the caller: treating it
 	// as the end of the snapshot would hand over to CDC and silently skip every
 	// object not yet listed.
@@ -52,7 +56,11 @@ type SnapshotIterator struct {
 
 // NewSnapshotIterator takes the s3 bucket, the client, and the position.
 // it returns a snapshotIterator starting from the position provided.
-func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Position) (*SnapshotIterator, error) {
+func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Position, log *zerolog.Logger) (*SnapshotIterator, error) {
+	if log == nil {
+		nop := zerolog.Nop()
+		log = &nop
+	}
 	input := &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
 		Prefix: aws.String(prefix),
@@ -64,6 +72,7 @@ func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Po
 		paginator:       s3.NewListObjectsV2Paginator(client, input),
 		maxLastModified: p.Timestamp,
 		startedAt:       time.Now(),
+		log:             log,
 	}, nil
 }
 
@@ -93,9 +102,24 @@ func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
 		}
 		w.lastToken = next
 		if !w.startedAtFromStore {
-			if t, ok := resolveStoreTime(w.startedAt, date); ok {
+			switch d, st := classifyStoreDate(w.startedAt, date); st {
+			case headerOK:
 				// min(host start, store time): never later than the real start.
-				w.startedAt, w.startedAtFromStore = t, true
+				w.startedAtFromStore = true
+				if d.Before(w.startedAt) {
+					w.startedAt = d
+				}
+			case headerOutOfRange:
+				// Either clock is badly wrong; a handoff point derived from
+				// either would be a guess that can skip objects.
+				return &StoreClockOutOfRangeError{Host: w.startedAt, Store: d, Polls: 1}
+			default:
+				// No Date header: the host clock is all there is. Only safe if
+				// it agrees with the store's to within lookbackPeriod.
+				if !w.warnedNoDate {
+					w.warnedNoDate = true
+					w.log.Warn().Msg("the object store sent no usable Date header; the snapshot-to-CDC handoff point comes from this host's clock, which is only safe if it agrees with the store's clock to within lookbackPeriod")
+				}
 			}
 		}
 		w.page, w.index = nextPage, 0
@@ -139,32 +163,47 @@ func (w *SnapshotIterator) HasNext(ctx context.Context) bool {
 // Next returns the next record in the iterator.
 // returns an empty record and an error if anything wrong happened. The position
 // (page index, max LastModified) only advances once the record is fully built,
-// and an error is sticky.
+// and an error is sticky. An object that was deleted between being listed and
+// being read is skipped: it is gone, so there is nothing to deliver, and the
+// CDC phase reports the deletion.
 func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
-	if w.listErr != nil {
-		return opencdc.Record{}, w.listErr
-	}
-	if w.shouldRefreshPage() {
-		err := w.refreshPage(ctx)
-		if err != nil {
-			if errors.Is(err, sdk.ErrBackoffRetry) {
-				return opencdc.Record{}, err
-			}
-			return opencdc.Record{}, w.fail(err)
+	for {
+		if w.listErr != nil {
+			return opencdc.Record{}, w.listErr
 		}
-	}
+		if w.shouldRefreshPage() {
+			err := w.refreshPage(ctx)
+			if err != nil {
+				if errors.Is(err, sdk.ErrBackoffRetry) {
+					return opencdc.Record{}, err
+				}
+				return opencdc.Record{}, w.fail(err)
+			}
+		}
 
-	// after making sure the object is available, get the object's key
-	key := w.page.Contents[w.index].Key
+		// after making sure the object is available, get the object's key
+		key := w.page.Contents[w.index].Key
 
-	// read object
-	object, err := w.client.GetObject(ctx, &s3.GetObjectInput{
-		Bucket: aws.String(w.bucket),
-		Key:    key,
-	})
-	if err != nil {
-		return opencdc.Record{}, w.fail(fmt.Errorf("could not fetch the next object: %w", err))
+		// read object
+		object, err := w.client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(w.bucket),
+			Key:    key,
+		})
+		if err != nil {
+			var noSuchKey *types.NoSuchKey
+			if errors.As(err, &noSuchKey) {
+				w.log.Debug().Str("key", *key).Msg("object was deleted after it was listed, skipping it")
+				w.index++
+				continue
+			}
+			return opencdc.Record{}, w.fail(fmt.Errorf("could not fetch the next object: %w", err))
+		}
+
+		return w.buildRecord(key, object)
 	}
+}
+
+func (w *SnapshotIterator) buildRecord(key *string, object *s3.GetObjectOutput) (opencdc.Record, error) {
 	defer object.Body.Close()
 
 	rawBody, err := io.ReadAll(object.Body)
