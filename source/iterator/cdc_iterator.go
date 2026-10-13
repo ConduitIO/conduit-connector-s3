@@ -132,7 +132,14 @@ func (w *CDCIterator) HasNext(_ context.Context) bool {
 // Next returns the next record from the buffer.
 func (w *CDCIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	select {
-	case r := <-w.buffer:
+	case r, ok := <-w.buffer:
+		if !ok {
+			// The buffer is closed when the iterator stops. Receiving from it
+			// then yields a zero record with no error, which would be emitted
+			// as a record; report why the iterator stopped instead.
+			<-w.tomb.Dead()
+			return opencdc.Record{}, w.tomb.Err()
+		}
 		return r, nil
 	case <-w.tomb.Dead():
 		return opencdc.Record{}, w.tomb.Err()
@@ -291,6 +298,12 @@ func (w *CDCIterator) poll(ctx context.Context) ([]CacheEntry, string, error) {
 		}
 		// Both markers: with only the key marker the rest of a key's versions
 		// would be skipped when a page ends in the middle of them.
+		if aws.ToString(objects.NextKeyMarker) == "" && aws.ToString(objects.NextVersionIdMarker) == "" {
+			// A truncated listing that cannot be continued is a broken
+			// response, not the end: ending here would hide every key after it,
+			// and retrying from the start would loop forever.
+			return nil, "", errors.New("couldn't get latest objects: the listing is truncated but has no next marker")
+		}
 		input.KeyMarker = objects.NextKeyMarker
 		input.VersionIdMarker = objects.NextVersionIdMarker
 	}

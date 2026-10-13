@@ -61,3 +61,34 @@ func TestClockGuard_StoreNow(t *testing.T) {
 		}
 	})
 }
+
+// TestResolveStoreTime: the Date header comes from whatever endpoint is
+// configured, so it is validated, and it can only ever lower the watermark.
+func TestResolveStoreTime(t *testing.T) {
+	host := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	hdr := func(d time.Duration) string { return host.Add(d).Format(http.TimeFormat) }
+
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   time.Time
+		wantOK bool
+	}{
+		{"store behind the host is used", hdr(-time.Hour), host.Add(-time.Hour), true},
+		{"store slightly ahead is capped at the host", hdr(2 * time.Second), host, true},
+		{"store 2h ahead is capped at the host", hdr(2 * time.Hour), host, true},
+		{"far future is ignored", hdr(30 * 24 * time.Hour), host, false},
+		{"far past is ignored", hdr(-30 * 24 * time.Hour), host, false},
+		{"just beyond the bound is ignored", hdr(maxStoreClockDrift + time.Minute), host, false},
+		{"garbage is ignored", "soon", host, false},
+		{"missing is ignored", "", host, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			got, ok := resolveStoreTime(host, tc.header)
+			is.Equal(got, tc.want)
+			is.Equal(ok, tc.wantOK)
+			is.True(!got.After(host)) // never above the host clock: cannot skip objects
+		})
+	}
+}
