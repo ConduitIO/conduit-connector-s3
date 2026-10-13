@@ -108,15 +108,22 @@ func (c *CombinedIterator) Next(ctx context.Context) (opencdc.Record, error) {
 		}
 		if !c.snapshotIterator.HasNext(ctx) {
 			// switch to cdc iterator
+			handoff := c.handoffTimestamp()
 			err := c.switchToCDCIterator()
 			if err != nil {
 				return opencdc.Record{}, err
 			}
 			// change the last record's position to CDC
-			r.Position, err = position.ConvertToCDCPosition(r.Position)
+			// The CDC position must carry the handoff watermark, not the
+			// snapshot's max LastModified, or a restart right after the
+			// handoff would skip what the snapshot missed.
+			cdcPos, err := position.ParseRecordPosition(r.Position)
 			if err != nil {
 				return opencdc.Record{}, err
 			}
+			cdcPos.Type = position.TypeCDC
+			cdcPos.Timestamp = handoff
+			r.Position = cdcPos.ToRecordPosition()
 		}
 		return r, nil
 
@@ -133,13 +140,31 @@ func (c *CombinedIterator) Stop() {
 	}
 }
 
+// snapshotHandoffMargin is subtracted from the snapshot's start time to absorb
+// clock skew between this process and the object store.
+const snapshotHandoffMargin = 10 * time.Second
+
+// handoffTimestamp is the CDC watermark that follows a snapshot.
+//
+// Invariant 3: the snapshot lists in key order and tracks the newest
+// LastModified it has read, but an object created during the snapshot under a
+// page that was already listed is not in the snapshot, and can carry a
+// LastModified older than that maximum. Starting CDC at the maximum would skip
+// it for good. CDC therefore starts no later than the snapshot's own start
+// (minus a skew margin); objects modified since are re-delivered, which
+// at-least-once allows, and skipped ones are not.
+func (c *CombinedIterator) handoffTimestamp() time.Time {
+	floor := c.snapshotIterator.startedAt.Add(-snapshotHandoffMargin)
+	ts := c.snapshotIterator.maxLastModified
+	if ts.IsZero() || ts.After(floor) {
+		ts = floor
+	}
+	return ts
+}
+
 func (c *CombinedIterator) switchToCDCIterator() error {
 	var err error
-	timestamp := c.snapshotIterator.maxLastModified
-	// zero timestamp means nil position (empty bucket), so start detecting actions from now
-	if timestamp.IsZero() {
-		timestamp = time.Now()
-	}
+	timestamp := c.handoffTimestamp()
 	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.client, timestamp)
 	if err != nil {
 		return fmt.Errorf("could not create cdc iterator: %w", err)

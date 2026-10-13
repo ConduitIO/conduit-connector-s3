@@ -38,12 +38,27 @@ type CDCIterator struct {
 	buffer       chan opencdc.Record
 	ticker       *time.Ticker
 	lastModified time.Time
-	caches       chan []CacheEntry
-	tomb         *tomb.Tomb
+	// emitted holds the versions already handed over whose LastModified falls
+	// in the watermark's second. S3 reports LastModified with one-second
+	// resolution, so objects written later in that same second are
+	// indistinguishable from it by time alone; the set lets the poll select
+	// "LastModified >= second(watermark)" without re-emitting what was already
+	// delivered. It only grows to the objects of one second and is rebuilt
+	// empty on restart (a restart can re-deliver that second, never skip it).
+	emitted map[emittedKey]struct{}
+	caches  chan []CacheEntry
+	tomb    *tomb.Tomb
+}
+
+type emittedKey struct {
+	key       string
+	versionID string
+	modified  time.Time
 }
 
 type CacheEntry struct {
 	key          string
+	versionID    string
 	operation    opencdc.Operation
 	lastModified time.Time
 }
@@ -64,6 +79,7 @@ func NewCDCIterator(
 		ticker:       time.NewTicker(pollingPeriod),
 		tomb:         &tomb.Tomb{},
 		lastModified: from,
+		emitted:      make(map[emittedKey]struct{}),
 	}
 
 	// start listening to changes
@@ -123,7 +139,7 @@ func (w *CDCIterator) startCDC() error {
 			select {
 			case w.caches <- cache:
 				// worked fine
-				w.lastModified = cache[len(cache)-1].lastModified
+				w.advanceWatermark(cache)
 				cache, nextCache = nextCache, cache // switch caches
 				cache = cache[:0]                   // empty cache
 			case <-w.tomb.Dying():
@@ -131,6 +147,37 @@ func (w *CDCIterator) startCDC() error {
 			}
 		}
 	}
+}
+
+// advanceWatermark moves the watermark to the newest entry of a cache that was
+// just handed over and remembers which versions were delivered in the
+// watermark's second.
+//
+// Invariant 3: nothing at or after the watermark's second may be dropped. The
+// poll selects LastModified >= floor-to-second(watermark), so the only thing
+// standing between a later same-second object and being skipped is that it is
+// absent from emitted.
+func (w *CDCIterator) advanceWatermark(cache []CacheEntry) {
+	w.lastModified = cache[len(cache)-1].lastModified
+	floor := w.lastModified.Truncate(time.Second)
+	for _, e := range cache {
+		w.emitted[emittedKey{e.key, e.versionID, e.lastModified}] = struct{}{}
+	}
+	for k := range w.emitted {
+		if k.modified.Before(floor) {
+			delete(w.emitted, k)
+		}
+	}
+}
+
+// isNew reports whether a version must be emitted: it was modified in or after
+// the watermark's second and has not been delivered yet.
+func (w *CDCIterator) isNew(key, versionID string, modified time.Time) bool {
+	if modified.Before(w.lastModified.Truncate(time.Second)) {
+		return false
+	}
+	_, done := w.emitted[emittedKey{key, versionID, modified}]
+	return !done
 }
 
 // flush: go routine that will get the objects from the bucket and flush the detected changes into the buffer.
@@ -174,8 +221,8 @@ func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, ke
 	updatedObjects := make(map[string]bool)
 
 	for _, v := range objects.Versions {
-		if *v.IsLatest && v.LastModified.After(w.lastModified) {
-			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: opencdc.OperationCreate})
+		if *v.IsLatest && w.isNew(*v.Key, aws.ToString(v.VersionId), *v.LastModified) {
+			*cache = append(*cache, CacheEntry{key: *v.Key, versionID: aws.ToString(v.VersionId), lastModified: *v.LastModified, operation: opencdc.OperationCreate})
 		} else {
 			// this is a version that is not the latest, this means this object
 			// was updated
@@ -190,8 +237,8 @@ func (w *CDCIterator) populateCache(ctx context.Context, cache *[]CacheEntry, ke
 	}
 
 	for _, v := range objects.DeleteMarkers {
-		if *v.IsLatest && v.LastModified.After(w.lastModified) {
-			*cache = append(*cache, CacheEntry{key: *v.Key, lastModified: *v.LastModified, operation: opencdc.OperationDelete})
+		if *v.IsLatest && w.isNew(*v.Key, aws.ToString(v.VersionId), *v.LastModified) {
+			*cache = append(*cache, CacheEntry{key: *v.Key, versionID: aws.ToString(v.VersionId), lastModified: *v.LastModified, operation: opencdc.OperationDelete})
 		}
 	}
 
