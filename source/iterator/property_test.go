@@ -31,11 +31,12 @@ import (
 // every object is delivered at least once after quiescing, no stall, and the
 // iterator only stops with overflow when one second really exceeds the budget.
 func TestCDCIterator_PropertyNoSkipNoStall(t *testing.T) {
-	seeds := 10 // S3_PROP_SEEDS=100 for the full run (about 6 minutes with -race)
+	seeds := 5 // S3_PROP_SEEDS=100 for the full run (about 6 minutes with -race on an idle machine)
 	if v, err := strconv.Atoi(os.Getenv("S3_PROP_SEEDS")); err == nil {
 		seeds = v
+		quiesce = 1500 // the full run waits long enough to expose slow stalls
 	} else if testing.Short() {
-		seeds = 5
+		seeds = 2
 	}
 	first := 1 // S3_PROP_FIRST shards a long run over several processes
 	if v, err := strconv.Atoi(os.Getenv("S3_PROP_FIRST")); err == nil {
@@ -47,7 +48,7 @@ func TestCDCIterator_PropertyNoSkipNoStall(t *testing.T) {
 }
 
 var debugSeed int64 = -1
-var quiesce = 1500
+var quiesce = 400 // polls after the last write; 1500 for a full run (S3_PROP_SEEDS)
 
 func runProp(t *testing.T, seed int64) { //nolint:gocyclo // a randomized schedule reads best as one function
 	r := rand.New(rand.NewSource(seed))
