@@ -65,6 +65,11 @@ func (f *fakeStore) client() *s3.Client {
 			if resp.Header == nil {
 				resp.Header = http.Header{}
 			}
+			// a real store always sends Date; a test that wants it missing or
+			// wrong sets it explicitly (even to "")
+			if _, ok := resp.Header["Date"]; !ok {
+				resp.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
+			}
 			return resp
 		}),
 	})
@@ -134,7 +139,7 @@ func keyOf(r *http.Request) string { return strings.TrimPrefix(r.URL.Path, "/b/"
 func token(r *http.Request) string { return r.URL.Query().Get("continuation-token") }
 func newSnap(t *testing.T, c *s3.Client) *SnapshotIterator {
 	t.Helper()
-	it, err := NewSnapshotIterator("b", "", c, position.Position{}, nil)
+	it, err := NewSnapshotIterator("b", "", c, position.Position{}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,17 +282,21 @@ func TestSnapshotIterator_BrokenContinuationIsNotTheEnd(t *testing.T) {
 	}
 }
 
-func TestSnapshotIterator_StartedAtIsNeverBeyondHost(t *testing.T) {
+func TestSnapshotIterator_StartedAt(t *testing.T) {
+	near := func(a, b time.Time) bool { d := a.Sub(b); return d < 5*time.Second && d > -5*time.Second }
 	for name, tc := range map[string]struct {
-		date string
-		want func(started, host time.Time) bool
+		date    string
+		trust   bool
+		wantErr error
+		want    func(started, host time.Time) bool
 	}{
-		"far future ignored":         {time.Now().Add(30 * 24 * time.Hour).UTC().Format(http.TimeFormat), func(s, h time.Time) bool { return s.Sub(h) < 5*time.Second && h.Sub(s) < 5*time.Second }},
-		"far past ignored":           {time.Now().Add(-30 * 24 * time.Hour).UTC().Format(http.TimeFormat), func(s, h time.Time) bool { return h.Sub(s) < 5*time.Second }},
-		"garbage ignored":            {"yesterday-ish", func(s, h time.Time) bool { return h.Sub(s) < 5*time.Second }},
-		"missing ignored":            {"", func(s, h time.Time) bool { return h.Sub(s) < 5*time.Second }},
-		"near future capped at host": {time.Now().Add(2 * time.Hour).UTC().Format(http.TimeFormat), func(s, h time.Time) bool { return !s.After(h) && h.Sub(s) < 5*time.Second }},
-		"store behind host is used":  {time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat), func(s, h time.Time) bool { d := h.Sub(s); return d > 59*time.Minute && d < 61*time.Minute }},
+		"near future capped at host":  {date: time.Now().Add(2 * time.Hour).UTC().Format(http.TimeFormat), want: func(s, h time.Time) bool { return !s.After(h) && near(s, h) }},
+		"store behind host is used":   {date: time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat), want: func(s, h time.Time) bool { d := h.Sub(s); return d > 59*time.Minute && d < 61*time.Minute }},
+		"far future refused":          {date: time.Now().Add(30 * 24 * time.Hour).UTC().Format(http.TimeFormat), wantErr: ErrStoreClockOutOfRange},
+		"far past refused":            {date: time.Now().Add(-30 * 24 * time.Hour).UTC().Format(http.TimeFormat), wantErr: ErrStoreClockOutOfRange},
+		"garbage refused":             {date: "yesterday-ish", wantErr: ErrStoreClockUnavailable},
+		"missing refused":             {date: "", wantErr: ErrStoreClockUnavailable},
+		"missing with trustHostClock": {date: "", trust: true, want: func(s, h time.Time) bool { return near(s, h) }},
 	} {
 		t.Run(name, func(t *testing.T) {
 			is := is.New(t)
@@ -297,8 +306,15 @@ func TestSnapshotIterator_StartedAtIsNeverBeyondHost(t *testing.T) {
 				}
 				return objectResp(keyOf(r))
 			}}
-			it := newSnap(t, st.client())
+			it, err := NewSnapshotIterator("b", "", st.client(), position.Position{}, nil, tc.trust)
+			is.NoErr(err)
 			is.True(it.HasNext(context.Background()))
+			if tc.wantErr != nil {
+				_, err := it.Next(context.Background())
+				is.True(errors.Is(err, tc.wantErr))
+				assertSticky(t, it)
+				return
+			}
 			is.True(tc.want(it.startedAt, time.Now()))
 		})
 	}
@@ -313,7 +329,7 @@ func TestCombinedIterator_ListErrorNeverHandsOverToCDC(t *testing.T) {
 		return nil
 	})}
 	ctx := context.Background()
-	c, err := NewCombinedIterator(ctx, "b", "", time.Hour, time.Minute, st.client(), position.Position{})
+	c, err := NewCombinedIterator(ctx, "b", "", time.Hour, time.Minute, false, st.client(), position.Position{})
 	is.NoErr(err)
 
 	var keys []string
@@ -375,7 +391,7 @@ func TestCDCIterator_PollFailureDoesNotMoveState(t *testing.T) {
 
 	t.Run("iterator dies instead of skipping", func(*testing.T) {
 		st := &fakeStore{handler: func(_ *http.Request) *http.Response { return errResp(403) }}
-		it, err := NewCDCIterator("b", "", 10*time.Millisecond, time.Minute, st.client(), wm, nil)
+		it, err := NewCDCIterator("b", "", 10*time.Millisecond, time.Minute, false, st.client(), wm, nil)
 		is.NoErr(err)
 		defer it.Stop()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -426,9 +442,7 @@ func newSimStore(skew time.Duration, dateFn func(time.Time) string) *simStore {
 		}
 		b.WriteString(`</ListVersionsResult>`)
 		resp := xmlResp(200, b.String())
-		if date != "" {
-			resp.Header.Set("Date", date)
-		}
+		resp.Header.Set("Date", date) // possibly "": explicitly missing
 		return resp
 	}
 	return st
@@ -448,9 +462,9 @@ func (s *simStore) waitPolls(n int64) {
 	}
 }
 
-func startSim(t *testing.T, st *simStore, from time.Time) *CDCIterator {
+func startSim(t *testing.T, st *simStore, from time.Time, trustHost ...bool) *CDCIterator {
 	t.Helper()
-	it, err := NewCDCIterator("b", "", 5*time.Millisecond, 5*time.Minute, st.client(), from, nil)
+	it, err := NewCDCIterator("b", "", 5*time.Millisecond, 5*time.Minute, len(trustHost) > 0 && trustHost[0], st.client(), from, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -521,20 +535,130 @@ func TestCDCIterator_IntermittentDateHeader(t *testing.T) {
 	}
 }
 
-// A store that never sends Date: nothing can be corrected, but nothing may be
-// skipped either. The watermark is held for a while, then the host clock (the
-// only one there is) takes over, with one WARN.
+// A store that never sends Date. The host clock must not silently take over:
+// the watermark is held (objects are still delivered), then the iterator stops
+// with a stable code. With the explicit opt-in the host clock is used.
 func TestCDCIterator_StoreThatNeverSendsDate(t *testing.T) {
-	st := newSimStore(0, func(time.Time) string { return "" })
+	t.Run("default: held, delivered, then fails loudly", func(t *testing.T) {
+		is := is.New(t)
+		// the host is 10 minutes ahead; with the host clock the watermark would
+		// jump past objects stamped on the store's clock
+		st := newSimStore(-10*time.Minute, func(time.Time) string { return "" })
+		from := time.Now().Add(-10 * time.Minute)
+		it := startSim(t, st, from)
+
+		st.waitPolls(2)
+		st.put("early")
+		mustDeliver(t, it, "early")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, err := it.Next(ctx)
+		is.True(errors.Is(err, ErrStoreClockUnavailable))
+		is.Equal(it.watermark, from.Add(-5*time.Minute)) // never advanced on the host clock
+	})
+	t.Run("trustHostClock: opt-in, host clock in sync", func(t *testing.T) {
+		st := newSimStore(0, func(time.Time) string { return "" })
+		it := startSim(t, st, time.Now(), true)
+		st.waitPolls(maxBadDatePolls + 5)
+		st.put("later")
+		mustDeliver(t, it, "later")
+	})
+}
+
+// Alternating good (in-bound) and out-of-range headers must not stay under the
+// breaker.
+func TestCDCIterator_AlternatingGoodAndBadHeadersTrip(t *testing.T) {
+	is := is.New(t)
+	var n atomic.Int64
+	st := newSimStore(-10*time.Minute, func(now time.Time) string {
+		if n.Add(1)%2 == 0 {
+			return now.Add(-30 * time.Hour).Format(http.TimeFormat)
+		}
+		return now.Format(http.TimeFormat)
+	})
+	it := startSim(t, st, time.Now().Add(-10*time.Minute))
+	st.waitPolls(3)
+	st.put("obj")
+	mustDeliver(t, it, "obj")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := it.Next(ctx)
+	is.True(errors.Is(err, ErrStoreClockOutOfRange))
+}
+
+// One in-bound header that claims the store's clock equals the host's, while
+// the real offset is 10 minutes: it must not push the watermark.
+func TestCDCIterator_InBoundOutlierHeaderCannotPushWatermark(t *testing.T) {
+	var outlier atomic.Bool
+	st := newSimStore(-10*time.Minute, func(now time.Time) string {
+		if outlier.CompareAndSwap(true, false) {
+			return time.Now().UTC().Format(http.TimeFormat) // claims store == host
+		}
+		return now.Format(http.TimeFormat)
+	})
+	it := startSim(t, st, time.Now().Add(-10*time.Minute))
+	st.waitPolls(5)
+	outlier.Store(true)
+	st.waitPolls(3)
+	st.put("late") // LastModified is host - 10m
+	mustDeliver(t, it, "late")
+}
+
+// Heavy churn while the watermark is held: memory stays bounded and nothing is
+// lost before the iterator stops loudly.
+func TestCDCIterator_HeldWatermarkWithChurnIsBounded(t *testing.T) {
+	is := is.New(t)
+	old := maxDeliveredEntries
+	maxDeliveredEntries = 200
+	defer func() { maxDeliveredEntries = old }()
+
+	st := newSimStore(0, func(time.Time) string { return "" }) // no Date: watermark held
 	it := startSim(t, st, time.Now())
 
-	st.waitPolls(2)
-	st.put("early") // while the watermark is held
-	mustDeliver(t, it, "early")
+	delivered := map[string]bool{}
+	var stopErr error
+	deadline := time.Now().Add(10 * time.Second)
+	for i := 0; stopErr == nil && time.Now().Before(deadline); i++ {
+		for j := 0; j < 40; j++ {
+			st.put(fmt.Sprintf("o-%d-%d", i, j))
+		}
+		for k := 0; k < 40 && stopErr == nil; k++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			rec, err := it.Next(ctx)
+			cancel()
+			switch {
+			case err == nil:
+				delivered[string(rec.Key.Bytes())] = true
+			case errors.Is(err, context.DeadlineExceeded):
+				k = 40
+			default:
+				stopErr = err
+			}
+		}
+	}
+	is.True(errors.Is(stopErr, ErrDedupeWindowOverflow) || errors.Is(stopErr, ErrStoreClockUnavailable))
+	is.True(len(it.delivered) <= maxDeliveredEntries) // bounded
+	is.True(len(delivered) > 0)                       // objects were delivered while held
+}
 
-	st.waitPolls(maxUnusableDatePolls + 5) // host-only advancement has started
-	st.put("later")
-	mustDeliver(t, it, "later")
+func TestCDCIterator_DedupeOverflowFailsBeforeDelivering(t *testing.T) {
+	is := is.New(t)
+	old := maxDeliveredEntries
+	maxDeliveredEntries = 100
+	defer func() { maxDeliveredEntries = old }()
+
+	st := newSimStore(0, nil)
+	for i := 0; i < 300; i++ {
+		st.put(fmt.Sprintf("o-%d", i))
+	}
+	it := startSim(t, st, time.Now().Add(-time.Hour))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := it.Next(ctx)
+	is.True(errors.Is(err, ErrDedupeWindowOverflow))
+	is.True(strings.Contains(err.Error(), "s3.source.dedupe_window_overflow"))
 }
 
 // The HOST is the liar: its clock is 30h ahead of the store's, and both the

@@ -48,19 +48,27 @@ specification:
       "Now" is read from the object store, not only from the host: the `Date`
       header of the listing response, which is on the same clock as
       `LastModified`. The header comes from whatever endpoint is configured, so it
-      is checked. The watermark uses the earlier of the host clock and the header,
-      which means a store that lies about the time can only cause extra
-      redelivery. A header more than 24h away from the host clock is not believed:
-      the watermark is held (objects are still delivered) and after 10 such polls
-      in a row the source stops with the error
-      `s3.source.store_clock_out_of_range`, naming both clocks. When the header is
-      missing for a poll, the offset between host and store learned from the last
-      good header is applied; a store that never sends one holds the watermark for
-      10 polls, after which the host clock is used with a warning (only safe if
-      it agrees with the store's to within `lookbackPeriod`). Because the earlier
-      clock wins, redelivery after a restart or a handoff is bounded by
-      `lookbackPeriod` plus the snapshot duration, plus up to the clock
-      difference when the `Date` header lags the host clock (at most 24h).
+      is checked and the watermark never moves on a reading that could be too
+      high. The source remembers the largest offset between the host clock and
+      the header seen in the last hour and uses the host clock minus that offset
+      as "now", so a store that lies about the time (or one odd header) can only
+      cause extra redelivery, never raise the watermark. A header more than 24h
+      away from the host clock is not believed: the watermark is held (objects
+      are still delivered) and when 10 of the last 60 polls were like that, the
+      source stops with the error `s3.source.store_clock_out_of_range`, naming
+      both clocks. When the header is missing for a poll, the remembered offset
+      is applied. A store that has never sent a usable `Date` header holds the
+      watermark and, after 10 polls, stops the source with
+      `s3.source.store_clock_unavailable`; the host clock alone is used only if
+      `trustHostClock` is set, which loses objects without any error if the host
+      clock is ahead of the store's by more than `lookbackPeriod`. Redelivery
+      after a restart or a handoff is bounded by `lookbackPeriod` plus the
+      snapshot duration, plus the difference between the host clock and a lagging
+      `Date` header (at most 24h). The set of already delivered versions is
+      limited to 1,000,000 entries; beyond that the source stops with
+      `s3.source.dedupe_window_overflow` instead of dropping entries. A header
+      that is consistently wrong but in bounds for more than an hour cannot be
+      detected.
 
       Delivery is at-least-once. After a restart the objects modified within
       `lookbackPeriod` are delivered again. When the snapshot hands over to CDC, the
@@ -188,6 +196,18 @@ specification:
         description: the S3 key prefix.
         type: string
         default: ""
+        validations: []
+      - name: trustHostClock
+        description: |-
+          Use this host's clock when the object store sends no usable Date header.
+          Off by default and UNSAFE under clock skew: if the clock of the host
+          running Conduit is ahead of the store's by more than lookbackPeriod,
+          objects are skipped without any error. Without it, a store that sends no
+          Date header makes the source stop with s3.source.store_clock_unavailable
+          instead of guessing. Set it only for a store that cannot send Date and
+          whose clock is known to agree with this host's.
+        type: bool
+        default: "false"
         validations: []
       - name: sdk.batch.delay
         description: Maximum delay before an incomplete batch is read from the source.

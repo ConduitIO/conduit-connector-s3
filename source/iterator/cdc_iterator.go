@@ -95,6 +95,7 @@ func (e CacheEntry) deliveredKey() deliveredKey {
 func NewCDCIterator(
 	bucket, prefix string,
 	pollingPeriod, lookback time.Duration,
+	trustHostClock bool,
 	client *s3.Client,
 	from time.Time,
 	log *zerolog.Logger,
@@ -112,7 +113,7 @@ func NewCDCIterator(
 		ticker:    time.NewTicker(pollingPeriod),
 		tomb:      &tomb.Tomb{},
 		lookback:  lookback,
-		clock:     &clockGuard{log: log, lookback: lookback},
+		clock:     &clockGuard{log: log, lookback: lookback, trustHost: trustHostClock},
 		watermark: from.Add(-lookback),
 		delivered: make(map[deliveredKey]struct{}),
 	}
@@ -177,6 +178,12 @@ func (w *CDCIterator) startCDC() error {
 			pollStart, advance, err := w.clock.storeNow(hostStart, dateHeader)
 			if err != nil {
 				return err
+			}
+
+			// Bound the memory of the dedupe set. Evicting would turn into
+			// duplicates or skips, so overflow stops the iterator.
+			if n := len(w.delivered) + len(cache); n > maxDeliveredEntries {
+				return &DedupeWindowOverflowError{Entries: n}
 			}
 
 			if len(cache) > 0 {

@@ -33,6 +33,8 @@ const (
 	ConfigKeyPollingPeriod = "pollingPeriod"
 	// ConfigKeyLookbackPeriod is the config name for the CDC lookback window
 	ConfigKeyLookbackPeriod = "lookbackPeriod"
+	// ConfigKeyTrustHostClock is the config name for the host-clock opt-in
+	ConfigKeyTrustHostClock = "trustHostClock"
 )
 
 // Config represents source configuration with S3 configurations
@@ -64,6 +66,15 @@ type Config struct {
 	// and intermediate versions that appear and are superseded within one
 	// poll are not emitted.
 	LookbackPeriod time.Duration `json:"lookbackPeriod" default:"5m"`
+
+	// Use this host's clock when the object store sends no usable Date header.
+	// Off by default and UNSAFE under clock skew: if the clock of the host
+	// running Conduit is ahead of the store's by more than lookbackPeriod,
+	// objects are skipped without any error. Without it, a store that sends no
+	// Date header makes the source stop with s3.source.store_clock_unavailable
+	// instead of guessing. Set it only for a store that cannot send Date and
+	// whose clock is known to agree with this host's.
+	TrustHostClock bool `json:"trustHostClock" default:"false"`
 }
 
 // Validate implements sdk.Validatable: the SDK calls it automatically after
