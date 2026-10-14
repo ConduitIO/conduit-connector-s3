@@ -16,6 +16,7 @@ package source
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/conduitio/conduit-connector-s3/config"
@@ -23,8 +24,15 @@ import (
 )
 
 const (
+	// MaxLookbackPeriod is the largest accepted lookbackPeriod.
+	MaxLookbackPeriod = 24 * time.Hour
+	// WarnLookbackPeriod is the lookbackPeriod above which Open warns.
+	WarnLookbackPeriod = time.Hour
+
 	// ConfigKeyPollingPeriod is the config name for the S3 CDC polling period
 	ConfigKeyPollingPeriod = "pollingPeriod"
+	// ConfigKeyLookbackPeriod is the config name for the CDC lookback window
+	ConfigKeyLookbackPeriod = "lookbackPeriod"
 )
 
 // Config represents source configuration with S3 configurations
@@ -34,6 +42,25 @@ type Config struct {
 
 	// polling period for the CDC mode, formatted as a time.Duration string.
 	PollingPeriod time.Duration `json:"pollingPeriod" default:"1s"`
+
+	// How far back, from the newest object seen, every CDC poll looks for
+	// objects that became visible late. S3 stamps an object with the time its
+	// upload began (a multipart upload with the time it was initiated), not
+	// the time it completed, and lists in key order, so an object can show up
+	// after newer ones were already delivered. Each poll selects the objects
+	// modified since (newest LastModified seen - lookbackPeriod) that were not
+	// delivered yet. Listing based CDC is best effort and bounded by this
+	// value: an upload that completes later than this value after newer
+	// objects were seen can still be missed (see the connector description for
+	// the full list of known limits). Cost: memory for the objects modified
+	// within the window (limit about 256 MiB; beyond it the window is
+	// shortened with a warning s3.source.dedupe_window_shrunk, which lowers
+	// the tolerance for late-visible objects, so lower this value instead),
+	// and redelivery (at-least-once) of the objects modified within the window
+	// after a restart and when the snapshot hands over to CDC. Listing cost
+	// does not depend on it. Values above 1h log a warning, above 24h are
+	// rejected, and 0 disables the lookback.
+	LookbackPeriod time.Duration `json:"lookbackPeriod" default:"5m"`
 }
 
 // Validate implements sdk.Validatable: the SDK calls it automatically after
@@ -42,6 +69,12 @@ type Config struct {
 func (c *Config) Validate(ctx context.Context) error {
 	if err := c.DefaultSourceMiddleware.Validate(ctx); err != nil {
 		return err
+	}
+	if c.LookbackPeriod < 0 {
+		return fmt.Errorf("%s: must not be negative, got %v (use 0 to disable the lookback)", ConfigKeyLookbackPeriod, c.LookbackPeriod)
+	}
+	if c.LookbackPeriod > MaxLookbackPeriod {
+		return fmt.Errorf("%s: %v is above the maximum of %v (every restart would redeliver that much history); use a smaller value", ConfigKeyLookbackPeriod, c.LookbackPeriod, MaxLookbackPeriod)
 	}
 	return config.ValidateEndpoint(c.AWSEndpoint)
 }

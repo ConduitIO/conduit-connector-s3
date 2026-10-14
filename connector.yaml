@@ -40,9 +40,87 @@ specification:
       captures new actions made on the bucket. the _Position_ during this mode is
       the object key attached to an underscore, a "c" for CDC, and the object's
       _lastModifiedDate_ in seconds. As an example: "thisIsAKey_c1634049397". This
-      position is used to return only the actions with a _lastModifiedDate_ higher
-      than the last record returned, which will ensure that no duplications are in
-      place.
+      position is used to resume from the last record returned.
+
+      **CDC mode is listing based and best effort, bounded by `lookbackPeriod`.**
+      It detects changes by listing the bucket, which cannot be lossless: an
+      object that becomes visible in a listing late can be missed. Lossless S3
+      change capture needs bucket event notifications, which this connector does
+      not use. Every poll selects the objects modified since `lookbackPeriod`
+      (default 5m) before the newest object seen so far, and skips versions it
+      already delivered, so objects that become visible late, within that
+      window, are picked up: S3 stamps an object with the time its upload began,
+      a multipart upload with the time it was initiated, and lists in key order.
+      The object store's own timestamps decide, so the clock of the machine
+      running Conduit does not matter, with one exception: the newest timestamp
+      is capped at this machine's clock, so one bogus timestamp from the future
+      (a store clock that stepped forward, or a misbehaving endpoint) cannot hide
+      the objects written after it. The cap lowers the window's start, which
+      causes redelivery. If this machine's clock is behind the store's by more
+      than `lookbackPeriod` the source logs a warning with the code
+      `s3.source.host_clock_behind_store`: the window is stretched by the skew.
+
+      Delivery is at-least-once. After a restart the objects modified within
+      `lookbackPeriod` of the newest object are delivered again. The snapshot
+      hands over to CDC from the newest object that existed when the snapshot
+      started (found by one extra listing of the prefix, one request per 1000
+      keys, at the start of the snapshot), minus `lookbackPeriod`, so CDC
+      redelivers the objects written while the snapshot ran, however long it
+      took, plus those within `lookbackPeriod` before it started. On a bucket
+      that was bulk loaded recently this can be every object of the load.
+
+      The versions remembered for deduplication are limited to about 256 MiB
+      (peak memory of a poll is about 1.5 times that, candidates included). If
+      the objects inside the window need more, the window is **shortened**
+      instead of stopping the source: the oldest remembered entries are
+      forgotten by whole seconds and the window starts just above them. The
+      source logs a warning with the code `s3.source.dedupe_window_shrunk`
+      naming the effective lookback and the number of forgotten entries. While
+      the window is shortened, an object that becomes visible late by more than
+      the effective lookback can be missed, so the tolerance for late-visible
+      objects is lower than `lookbackPeriod`; lower `lookbackPeriod` to avoid
+      the shrinking. The source stops, with the error
+      `s3.source.dedupe_window_overflow` (after a warning), only if the versions
+      sharing a single second of `LastModified` do not fit, or when entries
+      stamped at or after this machine's present second (a store clock that is
+      ahead, or bogus timestamps from the future) take the budget: a shortened
+      window never starts later than the present second, because that would hide
+      the objects written from now on, so the source stops instead (the message
+      names the clock skew and says to fix the clock). A store clock that is ahead
+      by less than `lookbackPeriod` is normal and does not stop the source as long
+      as the entries stamped in the present and the future fit the budget. A
+      future-stamped object can therefore raise the start of the window at most
+      up to the present second, never past it. The shortened window is not
+      remembered across restarts: after a restart the window is rebuilt from the
+      position and shortened again, so a restart delivers the window's objects
+      again (duplicates, never a skip). When more objects share a second than
+      one poll can hand over, they are delivered over several polls, oldest
+      first, and the newest tracked entries may be dropped from tracking to make
+      room; those are delivered again later (duplicates). A catch-up after
+      downtime is delivered in bounded batches, oldest first. A resume position
+      with a timestamp in the future, which only an older release could have
+      written, is clamped to this machine's clock with a warning.
+
+      Known limits (listing cannot see these, or sees them too late):
+      * an upload that takes longer than `lookbackPeriod` to complete is missed
+        when newer objects were seen in the meantime (multipart uploads carry
+        their initiation time);
+      * replica buckets whose replication lag exceeds `lookbackPeriod`;
+      * an identical re-put of an object within the same second is not seen as a
+        change;
+      * in an unversioned bucket an overwrite is reported as a create (there is
+        no older version to compare with) and a delete is not reported;
+      * in a versioned bucket intermediate versions that appear and are
+        superseded within one poll are not emitted, only the latest; removing a
+        delete marker (undelete) and permanently deleting the latest version are
+        not emitted;
+      * a GetObject that fails for another reason than the object having been
+        deleted, for example an object archived to Glacier or Deep Archive,
+        stops the source with that error.
+
+      Objects deleted between being listed and being read are skipped, in the
+      snapshot and in CDC. Values of `lookbackPeriod` above 1h log a warning and
+      above 24h are rejected.
 
     ### Record Keys
 
@@ -119,6 +197,28 @@ specification:
           MinIO answers with a 400 MalformedXML. Leave false for AWS S3.
         type: bool
         default: "false"
+        validations: []
+      - name: lookbackPeriod
+        description: |-
+          How far back, from the newest object seen, every CDC poll looks for
+          objects that became visible late. S3 stamps an object with the time its
+          upload began (a multipart upload with the time it was initiated), not
+          the time it completed, and lists in key order, so an object can show up
+          after newer ones were already delivered. Each poll selects the objects
+          modified since (newest LastModified seen - lookbackPeriod) that were not
+          delivered yet. Listing based CDC is best effort and bounded by this
+          value: an upload that completes later than this value after newer
+          objects were seen can still be missed (see the connector description for
+          the full list of known limits). Cost: memory for the objects modified
+          within the window (limit about 256 MiB; beyond it the window is
+          shortened with a warning s3.source.dedupe_window_shrunk, which lowers
+          the tolerance for late-visible objects, so lower this value instead),
+          and redelivery (at-least-once) of the objects modified within the window
+          after a restart and when the snapshot hands over to CDC. Listing cost
+          does not depend on it. Values above 1h log a warning, above 24h are
+          rejected, and 0 disables the lookback.
+        type: duration
+        default: 5m
         validations: []
       - name: pollingPeriod
         description: polling period for the CDC mode, formatted as a time.Duration string.
