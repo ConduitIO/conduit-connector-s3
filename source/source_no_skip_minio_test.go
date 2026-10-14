@@ -364,6 +364,24 @@ func TestMinIO_CDCPollSpanningPagesDoesNotSkip(t *testing.T) {
 	client, cfg = minioSourceEnv(t, proxy)
 	bucket := cfg[config.ConfigKeyAWSBucket]
 	bucketRef.Store(bucket)
+	// lookbackPeriod decides how much of the snapshot the handoff redelivers:
+	// CDC starts at the newest snapshot object's LastModified minus the
+	// lookback, truncated to the second. With the default of 5m that is all
+	// 1001 objects written below, and the injected objects only arrive behind
+	// them: on an idle machine the test used 55s of its 60s budget, and it
+	// timed out at a high load average. 100ms redelivers about one second of
+	// writes instead. The test still needs the 1001 objects (the poll must span
+	// two ListObjectVersions pages), but not their redelivery.
+	//
+	// What the test proves is unchanged, and it gets stricter: a-late is
+	// written during the poll that listed page 1, so the next floor must be
+	// built from that poll's start on the host clock, not from the newer
+	// LastModified of z-late. With a 5m lookback, a floor of "newest
+	// LastModified minus 5m" would still reach a-late and hide that bug; with
+	// 100ms it does not. The price: the store's clock must not lag the host's
+	// by more than the gap between a-late and z-late (1.1s), which holds for a
+	// MinIO on the same kernel as the test.
+	cfg[source.ConfigKeyLookbackPeriod] = "100ms"
 
 	for i := 0; i < 1001; i++ {
 		putObject(ctx, t, client, bucket, fmt.Sprintf("k%04d", i))
@@ -371,15 +389,21 @@ func TestMinIO_CDCPollSpanningPagesDoesNotSkip(t *testing.T) {
 	s := openSource(ctx, t, cfg, nil)
 
 	// snapshot, then CDC polls; keep reading until the injected objects show
-	// up or the budget runs out
+	// up or the budget runs out. The budget is only spent when the test fails.
+	// It is generous because CI runners and loaded laptops are slow: with the
+	// short lookback the test needs 15-31s at a load average of 350-600 on 16
+	// cores (about 10s idle).
 	seen := map[string]int{}
-	deadline := time.Now().Add(60 * time.Second)
+	total := 0
+	deadline := time.Now().Add(120 * time.Second)
 	for time.Now().Before(deadline) && (seen["a-late"] == 0 || seen["z-late"] == 0) {
 		rec, err := readWithTimeout(ctx, s, 5*time.Second)
 		if err == nil {
 			seen[string(rec.Key.Bytes())]++
+			total++
 		}
 	}
+	t.Logf("read %d records (%d distinct keys) before a-late and z-late were both seen or the budget ran out", total, len(seen))
 	is.True(injected.Load()) // the CDC poll did reach its second page
 	is.True(seen["z-late"] > 0)
 	if seen["a-late"] == 0 {
