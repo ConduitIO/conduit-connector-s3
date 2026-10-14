@@ -134,6 +134,34 @@ func drainKeys(ctx context.Context, s *source.Source, quiet time.Duration) map[s
 	}
 }
 
+// waitBudget bounds how long a test waits for a record it expects (the first
+// one of a snapshot, or an object delivered late via CDC). It is only spent
+// when the test fails: a delivered record ends the wait at once.
+const waitBudget = 120 * time.Second
+
+// drainUntil reads records into seen until done(seen) holds or budget runs
+// out. Use it instead of drainKeys when the test waits for a specific object.
+// drainKeys ends at the first quiet period, and under load the first CDC poll
+// after a snapshot can take longer than any short quiet period (9s measured at
+// a load average of 450), so the test would report as lost an object that was
+// only late.
+func drainUntil(ctx context.Context, s *source.Source, seen map[string]int, budget time.Duration, done func(map[string]int) bool) {
+	deadline := time.Now().Add(budget)
+	for !done(seen) && time.Now().Before(deadline) {
+		rec, err := readWithTimeout(ctx, s, 5*time.Second)
+		if err == nil {
+			seen[string(rec.Key.Bytes())]++
+			continue
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+	}
+}
+
+// bothLate is done for the a-late/z-late tests: both injected objects arrived.
+func bothLate(seen map[string]int) bool { return seen["a-late"] > 0 && seen["z-late"] > 0 }
+
 // TestMinIO_SnapshotHandoffDoesNotSkipObjects: an object created while the
 // snapshot is paginating, under a page the snapshot already passed, must not be
 // lost at the snapshot-to-CDC handoff.
@@ -156,7 +184,7 @@ func TestMinIO_SnapshotHandoffDoesNotSkipObjects(t *testing.T) {
 	s := openSource(ctx, t, cfg, nil)
 
 	seen := map[string]int{}
-	rec, err := readWithTimeout(ctx, s, 10*time.Second) // lists page 1 (k0000..k0998 + ...)
+	rec, err := readWithTimeout(ctx, s, waitBudget) // lists page 1 (k0000..k0998 + ...)
 	is.NoErr(err)
 	seen[string(rec.Key.Bytes())]++
 
@@ -165,9 +193,7 @@ func TestMinIO_SnapshotHandoffDoesNotSkipObjects(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond) // GetObject's LastModified has one-second resolution
 	putObject(ctx, t, client, bucket, "z-late")
 
-	for k, n := range drainKeys(ctx, s, 3*time.Second) {
-		seen[k] += n
-	}
+	drainUntil(ctx, s, seen, waitBudget, bothLate)
 
 	t.Logf("distinct=%d a-late=%d z-late=%d first=%s", len(seen), seen["a-late"], seen["z-late"], string(rec.Key.Bytes()))
 	is.True(seen["z-late"] > 0) // control: the later write is delivered
@@ -674,7 +700,7 @@ func TestMinIO_SnapshotLongerThanLookbackDoesNotSkip(t *testing.T) {
 	s := openSource(ctx, t, cfg, nil)
 
 	seen := map[string]int{}
-	rec, err := readWithTimeout(ctx, s, 20*time.Second) // anchor pass + page 1
+	rec, err := readWithTimeout(ctx, s, waitBudget) // anchor pass + page 1
 	is.NoErr(err)
 	seen[string(rec.Key.Bytes())]++
 
@@ -682,9 +708,7 @@ func TestMinIO_SnapshotLongerThanLookbackDoesNotSkip(t *testing.T) {
 	time.Sleep(3100 * time.Millisecond)         // the snapshot has now run for longer than the lookback
 	putObject(ctx, t, client, bucket, "z-late") // read by page 2, 3s newer than a-late
 
-	for k, n := range drainKeys(ctx, s, 3*time.Second) {
-		seen[k] += n
-	}
+	drainUntil(ctx, s, seen, waitBudget, bothLate)
 	is.True(seen["z-late"] > 0)
 	if seen["a-late"] == 0 {
 		t.Fatalf("a-late was written early in a snapshot that outlasted the lookback and was never delivered (%d distinct keys)", len(seen))
