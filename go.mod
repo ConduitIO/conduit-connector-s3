@@ -11,6 +11,7 @@ require (
 	github.com/conduitio/conduit-connector-sdk v0.14.1
 	github.com/google/uuid v1.6.0
 	github.com/matryer/is v1.4.1
+	github.com/rs/zerolog v1.34.0
 	github.com/xitongsys/parquet-go v1.6.2
 	github.com/xitongsys/parquet-go-source v0.0.0-20211228015320-b4f792c43cd0
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
@@ -183,7 +184,6 @@ require (
 	github.com/raeperd/recvcheck v0.2.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
-	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/ryancurrah/gomodguard v1.3.5 // indirect
 	github.com/ryanrolds/sqlclosecheck v0.5.1 // indirect
 	github.com/sagikazarmark/locafero v0.6.0 // indirect
