@@ -16,6 +16,7 @@ package source_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -139,7 +140,7 @@ func TestMinIO_FutureAnchorLongSnapshot(t *testing.T) {
 	putObject(ctx, t, client, bucket, "zz-bogus")
 	s := openSource(ctx, t, cfg, nil)
 	seen := map[string]int{}
-	rec, err := readWithTimeout(ctx, s, 30*time.Second)
+	rec, err := readWithTimeout(ctx, s, waitBudget)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,9 +148,7 @@ func TestMinIO_FutureAnchorLongSnapshot(t *testing.T) {
 	putObject(ctx, t, client, bucket, "a-late")
 	time.Sleep(3100 * time.Millisecond)
 	putObject(ctx, t, client, bucket, "z-late")
-	for k, n := range drainKeys(ctx, s, 4*time.Second) {
-		seen[k] += n
-	}
+	drainUntil(ctx, s, seen, waitBudget, bothLate)
 	if seen["a-late"] == 0 {
 		t.Fatalf("a-late LOST with a future-stamped object in the bucket: z-late=%d distinct=%d", seen["z-late"], len(seen))
 	}
@@ -191,11 +190,16 @@ func TestMinIO_VersionedBucketAnchor(t *testing.T) {
 	time.Sleep(3100 * time.Millisecond)
 	putObject(ctx, t, client, bucket, "z-late")
 	ops := map[string]string{}
-	deadline := time.Now().Add(60 * time.Second)
+	// Wait for a-late and z-late, however slow the first CDC poll is (it took 9s
+	// at a load average of 450), then stop at the first quiet period.
+	deadline := time.Now().Add(waitBudget)
 	for time.Now().Before(deadline) {
-		r, err := readWithTimeout(ctx, s, 4*time.Second)
+		r, err := readWithTimeout(ctx, s, 5*time.Second)
 		if err != nil {
-			break
+			if !errors.Is(err, context.DeadlineExceeded) || bothLate(seen) {
+				break
+			}
+			continue
 		}
 		seen[string(r.Key.Bytes())]++
 		ops[string(r.Key.Bytes())] = r.Operation.String()
