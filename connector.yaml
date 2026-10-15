@@ -230,12 +230,29 @@ specification:
 
     A batch is split into one object per directory. If one of those writes
     fails, the records before the first record of the failed object are
-    acknowledged and the rest are retried (or sent to the DLQ): nothing is
-    acknowledged that is not stored. A record without the value its
-    partitioner needs (no collection, no `kafka.partition`, no
-    `opencdc.createdAt`, a missing or null field) is never written under an
-    empty partition: it fails with the error code
-    `s3.destination.partition_value`.
+    acknowledged and the rest are nacked with the error: the pipeline stops,
+    or, with a dead-letter queue configured, those records go to it. Nothing is
+    acknowledged that is not stored. A restart delivers the nacked records
+    again, and records of objects that were already written can then be stored
+    twice (at-least-once). A record without the value its partitioner needs
+    (no collection, no `kafka.partition`, no `opencdc.createdAt`, a missing or
+    null field) is never written under an empty partition: it fails with the
+    error code `s3.destination.partition_value`.
+
+    Differences from Kafka Connect's `FieldPartitioner` that a reader of the
+    layout can notice:
+
+    - a null field fails the record (`s3.destination.partition_value`); Kafka
+      Connect writes it under `field=null`;
+    - values are escaped as Hive escapes path names (`/` becomes `%2F`, `=`
+      becomes `%3D`, and so on); Kafka Connect writes them unescaped, so a
+      value with `/` there becomes extra directory levels;
+    - numbers keep the text they have in a raw JSON payload (`5`, `5.0`,
+      `1e3` stay as written), and a number in structured data is written in its
+      shortest form (`5` for 5.0). Kafka Connect writes the Java string of the
+      converted value (`5.0` for a double, `1000.0` for `1e3`), so a double
+      field with a whole value can land in `field=5` here and `field=5.0`
+      there.
 
     `builtin:kafka` does not set `kafka.partition` yet, so `partitioner: default`
     needs it set by a processor until it does.
