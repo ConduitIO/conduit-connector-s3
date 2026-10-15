@@ -3,8 +3,8 @@ name: chaos
 # SIGKILL chaos test of the S3 destination (test/chaos): a real Conduit
 # process, this connector as a standalone plugin, MinIO. Nightly and on
 # demand; it takes about 90s plus setup. Not on every PR yet: it fails the
-# graceful-stop check (invariant 7) on an SDK stall when the last record
-# exactly fills a batch (ConduitIO/conduit#3092, fixed by
+# graceful-stop check (invariant 7) on a bounded 60s SDK stall when the last
+# record exactly fills a batch (ConduitIO/conduit#3092, fixed by
 # ConduitIO/conduit-connector-sdk#414). After the bump to SDK v0.16.1 this
 # should pass and move to PRs that touch destination/.
 on:

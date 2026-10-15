@@ -466,7 +466,7 @@ func TestDestination_SIGKILL(t *testing.T) {
 	select {
 	case <-final.done:
 	case <-time.After(60 * time.Second):
-		t.Errorf("conduit did not stop within 60s of SIGTERM (invariant 7); known SDK stall when the last record exactly fills a batch, ConduitIO/conduit#3092, fixed by conduit-connector-sdk#414 (v0.16.1)")
+		t.Errorf("conduit did not stop within 60s of SIGTERM (invariant 7); known bounded 60s SDK stall when the last record exactly fills a batch (30000 lines at batch 50 always do), ConduitIO/conduit#3092, fixed by conduit-connector-sdk#414 (v0.16.1)")
 		h.kill(final)
 	}
 
