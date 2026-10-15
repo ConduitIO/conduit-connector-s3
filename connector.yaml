@@ -147,7 +147,12 @@ specification:
     bucket's default encryption applies. On AWS every bucket encrypts new
     objects with SSE-S3 unless it is configured otherwise, and a bucket whose
     default is SSE-KMS gets SSE-KMS objects. An S3-compatible store without a
-    default encryption configuration stores objects unencrypted.
+    default encryption configuration stores objects unencrypted. When
+    `aws.serverSideEncryption` is empty, `Open` reads the bucket's default
+    encryption (`GetBucketEncryption`, permission
+    `s3:GetEncryptionConfiguration`) and logs a warning with the code
+    `s3.destination.bucket_unencrypted` if there is none. It never refuses to
+    start; without the permission the check is skipped (debug log).
 
     Set `aws.serverSideEncryption` to `AES256`, `aws:kms` or `aws:kms:dsse` to
     request a mode explicitly, and `aws.sseKmsKeyId` to pick the KMS key for the

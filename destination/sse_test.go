@@ -206,3 +206,69 @@ func TestDestination_SSEConfigRejected(t *testing.T) {
 		})
 	}
 }
+
+// A KMS failure on PutObject (unknown key, no permission) must name the
+// setting, so the error points at the fix.
+func TestDestination_KMSPutErrorNamesTheKey(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if r.Method == http.MethodPut {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `<?xml version="1.0" encoding="UTF-8"?><Error><Code>KMS.NotFoundException</Code><Message>Invalid keyId</Message></Error>`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("AWS_ENDPOINT_URL", "")
+
+	cfg := map[string]string{
+		config.ConfigKeyAWSAccessKeyID:            "fake-access-key",
+		config.ConfigKeyAWSSecretAccessKey:        "fake-secret-key",
+		config.ConfigKeyAWSRegion:                 "us-east-1",
+		config.ConfigKeyAWSBucket:                 "sse-test-bucket",
+		config.ConfigKeyAWSEndpoint:               srv.URL,
+		config.ConfigKeyAWSPathStyle:              "true",
+		destination.ConfigKeyFormat:               "json",
+		destination.ConfigKeyServerSideEncryption: "aws:kms",
+		destination.ConfigKeySSEKMSKeyID:          "no-such-key",
+		"sdk.schema.extract.key.enabled":          "false",
+		"sdk.schema.extract.payload.enabled":      "false",
+	}
+	d := destination.NewDestination()
+	if err := sdk.Util.ParseConfig(ctx, cfg, d.Config(), s3Conn.Connector.NewSpecification().DestinationParams); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Open(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = d.Teardown(ctx) })
+	_, err := d.Write(ctx, []opencdc.Record{{Operation: opencdc.OperationCreate, Position: opencdc.Position("p1"), Payload: opencdc.Change{After: opencdc.RawData("v")}}})
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), destination.ConfigKeySSEKMSKeyID) || !strings.Contains(err.Error(), "KMS.NotFoundException") {
+		t.Fatalf("error should name %s and keep the cause: %v", destination.ConfigKeySSEKMSKeyID, err)
+	}
+}
+
+// Configuration values are trimmed by the SDK's parser, so a key id pasted with
+// surrounding whitespace reaches S3 trimmed. Config.Validate additionally
+// rejects whitespace for callers that fill the struct directly.
+func TestDestination_KMSKeyIDWhitespace(t *testing.T) {
+	headers := writeOneRecord(t, map[string]string{
+		destination.ConfigKeyServerSideEncryption: "aws:kms",
+		destination.ConfigKeySSEKMSKeyID:          "  alias/my-key\t",
+	})
+	if got := headers.Get(headerSSEKMSKeyID); got != "alias/my-key" {
+		t.Fatalf("%s = %q, want the trimmed key", headerSSEKMSKeyID, got)
+	}
+
+	c := destination.Config{ServerSideEncryption: "aws:kms", SSEKMSKeyID: " alias/my-key"}
+	err := c.Validate(context.Background())
+	if err == nil || !strings.Contains(err.Error(), destination.ConfigKeySSEKMSKeyID) {
+		t.Fatalf("Validate should reject a key id with whitespace and name the setting, got %v", err)
+	}
+}

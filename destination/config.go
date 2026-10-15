@@ -17,6 +17,7 @@ package destination
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/format"
@@ -92,6 +93,12 @@ func (c *Config) validateEncryption() error {
 	default:
 		return fmt.Errorf("%s: unsupported value %q, must be one of %s: %w",
 			ConfigKeyServerSideEncryption, c.ServerSideEncryption, sseModesHelp, config.ErrInvalidParameterValue)
+	}
+	if strings.TrimSpace(c.SSEKMSKeyID) != c.SSEKMSKeyID {
+		// A key id with surrounding whitespace is never valid, and trimming
+		// silently would hide a copy-paste error in a security setting.
+		return fmt.Errorf("%s: %q has leading or trailing whitespace; remove it: %w",
+			ConfigKeySSEKMSKeyID, c.SSEKMSKeyID, config.ErrInvalidParameterValue)
 	}
 	if c.SSEKMSKeyID != "" && c.ServerSideEncryption != SSEKMS && c.ServerSideEncryption != SSEKMSDSSE {
 		return fmt.Errorf("%s is set but %s is %q: a KMS key is only used with aws:kms or aws:kms:dsse (set %s to aws:kms, or remove %s): %w",

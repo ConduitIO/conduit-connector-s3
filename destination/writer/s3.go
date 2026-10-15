@@ -17,6 +17,7 @@ package writer
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/conduitio/conduit-commons/opencdc"
 )
 
@@ -151,6 +153,14 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 
 	_, err = w.Client.PutObject(ctx, input)
 	if err != nil {
+		var apiErr smithy.APIError
+		if w.SSEKMSKeyID != "" && errors.As(err, &apiErr) {
+			// KMS problems (unknown key, key in another region, no
+			// kms:GenerateDataKey permission) come back from S3 as plain API
+			// errors; name the setting so the fix is findable.
+			return fmt.Errorf("PutObject with server-side encryption %s and KMS key %q (config aws.sseKmsKeyId) failed; if the error concerns the key, check that it exists in the bucket's region and that these credentials may use it: %w",
+				w.ServerSideEncryption, w.SSEKMSKeyID, err)
+		}
 		return err
 	}
 
@@ -165,6 +175,34 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 	w.Position = batch.LastPosition()
 
 	return nil
+}
+
+// errCodeNoBucketEncryption is the S3 error code of GetBucketEncryption for a
+// bucket without a default encryption configuration.
+const errCodeNoBucketEncryption = "ServerSideEncryptionConfigurationNotFoundError"
+
+// BucketDefaultEncryption returns the algorithm of the bucket's default
+// encryption ("AES256", "aws:kms", ...), or "" if the bucket has none. Any other
+// failure (no s3:GetEncryptionConfiguration permission, a store without the
+// API) is returned as an error; callers treat it as "unknown".
+func (w *S3) BucketDefaultEncryption(ctx context.Context) (string, error) {
+	out, err := w.Client.GetBucketEncryption(ctx, &s3.GetBucketEncryptionInput{Bucket: aws.String(w.Bucket)})
+	if err != nil {
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) && apiErr.ErrorCode() == errCodeNoBucketEncryption {
+			return "", nil
+		}
+		return "", err
+	}
+	if out.ServerSideEncryptionConfiguration == nil {
+		return "", nil
+	}
+	for _, r := range out.ServerSideEncryptionConfiguration.Rules {
+		if r.ApplyServerSideEncryptionByDefault != nil && r.ApplyServerSideEncryptionByDefault.SSEAlgorithm != "" {
+			return string(r.ApplyServerSideEncryptionByDefault.SSEAlgorithm), nil
+		}
+	}
+	return "", nil
 }
 
 // LastPosition returns the last persisted position

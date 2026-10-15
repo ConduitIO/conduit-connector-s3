@@ -23,6 +23,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/conduitio/conduit-commons/opencdc"
 	s3Conn "github.com/conduitio/conduit-connector-s3"
 	"github.com/conduitio/conduit-connector-s3/config"
@@ -205,4 +206,76 @@ func TestS3MinIO_ServerSideEncryption(t *testing.T) {
 			is.Equal(string(head.ServerSideEncryption), tt.sse)
 		})
 	}
+}
+
+// TestS3MinIO_BucketDefaultKMSApplies is the #1047 scenario: a bucket whose
+// default encryption is SSE-KMS, written with the default configuration. The
+// hardcoded AES256 header used to override it with SSE-S3; now no header is
+// sent and the object is stored with the bucket's aws:kms default.
+func TestS3MinIO_BucketDefaultKMSApplies(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	endpoint := os.Getenv(EnvMinIOEndpoint)
+	if endpoint == "" {
+		t.Skipf("%v env var must be set", EnvMinIOEndpoint)
+	}
+	requireNoSDKEndpointEnv(t)
+	env := getEnv(EnvAWSAccessKeyID, EnvAWSSecretAccessKey, EnvAWSS3Bucket, EnvAWSRegion)
+	failOnEmptyEnv(t, env)
+	env[EnvMinIOEndpoint] = endpoint
+	s3Client := newPathStyleS3Client(t, env)
+
+	// A bucket of its own: default encryption is bucket-wide.
+	bucket := "sse-kms-" + strings.ToLower(uuid.NewString()[:8])
+	_, err := s3Client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	is.NoErr(err)
+	t.Cleanup(func() {
+		list, _ := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
+		if list != nil {
+			for _, o := range list.Contents {
+				_, _ = s3Client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(bucket), Key: o.Key})
+			}
+		}
+		_, _ = s3Client.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
+	})
+	// my-minio-key is the key MINIO_KMS_SECRET_KEY defines in test/docker-compose.yml.
+	_, err = s3Client.PutBucketEncryption(ctx, &s3.PutBucketEncryptionInput{
+		Bucket: aws.String(bucket),
+		ServerSideEncryptionConfiguration: &types.ServerSideEncryptionConfiguration{Rules: []types.ServerSideEncryptionRule{{
+			ApplyServerSideEncryptionByDefault: &types.ServerSideEncryptionByDefault{
+				SSEAlgorithm:   types.ServerSideEncryptionAwsKms,
+				KMSMasterKeyID: aws.String("my-minio-key"),
+			},
+		}}},
+	})
+	is.NoErr(err)
+
+	underTest := destination.NewDestination()
+	cfg := map[string]string{
+		config.ConfigKeyAWSAccessKeyID:       env[EnvAWSAccessKeyID],
+		config.ConfigKeyAWSSecretAccessKey:   env[EnvAWSSecretAccessKey],
+		config.ConfigKeyAWSRegion:            env[EnvAWSRegion],
+		config.ConfigKeyAWSBucket:            bucket,
+		config.ConfigKeyAWSEndpoint:          endpoint,
+		config.ConfigKeyAWSPathStyle:         "true",
+		destination.ConfigKeyFormat:          "json",
+		"sdk.schema.extract.key.enabled":     "false",
+		"sdk.schema.extract.payload.enabled": "false",
+	}
+	is.NoErr(sdk.Util.ParseConfig(ctx, cfg, underTest.Config(), s3Conn.Connector.NewSpecification().DestinationParams))
+	is.NoErr(underTest.Open(ctx))
+	n, err := underTest.Write(ctx, []opencdc.Record{{
+		Operation: opencdc.OperationCreate, Position: opencdc.Position("p1"), Key: opencdc.RawData("k1"),
+		Payload: opencdc.Change{After: opencdc.RawData("v1")},
+	}})
+	is.NoErr(err)
+	is.Equal(n, 1)
+	is.NoErr(underTest.Teardown(ctx))
+
+	list, err := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
+	is.NoErr(err)
+	is.Equal(len(list.Contents), 1)
+	head, err := s3Client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: list.Contents[0].Key})
+	is.NoErr(err)
+	is.Equal(head.ServerSideEncryption, types.ServerSideEncryptionAwsKms) // the bucket default, not SSE-S3
 }
