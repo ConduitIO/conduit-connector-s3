@@ -22,6 +22,9 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_REGION: us-west-2
           AWS_S3_BUCKET: conduit-tests
+          # This job has real AWS credentials: opt in to the tests that write
+          # to real AWS S3 (they skip without it, so local runs never do).
+          S3_ALLOW_REAL_AWS: "1"
         run: make test GOTEST_FLAGS="-v -count=1"
 
   minio:
