@@ -60,11 +60,35 @@ type SnapshotIterator struct {
 	prefix   string
 	anchor   time.Time
 	anchored bool
+
+	// lookback is the CDC lookback the handoff floor is computed with
+	// (anchor - lookback). delivered holds the object versions this snapshot
+	// handed over whose listing LastModified is at or after that floor:
+	// exactly what the CDC iterator would select again at the handoff (#1040).
+	// The CDC iterator starts with it as its dedupe set, so an object the
+	// snapshot delivered is not delivered a second time when nothing failed.
+	// It is bounded by maxSeedBytes; beyond it entries are not recorded, which
+	// only means redelivery (at-least-once), never a skip.
+	lookback       time.Duration
+	delivered      map[deliveredKey]struct{}
+	deliveredBytes int64
 }
+
+// nullVersionID is the version id S3 lists for objects in an unversioned
+// bucket.
+const nullVersionID = "null"
+
+// maxSeedBytes bounds the memory of SnapshotIterator.delivered. Half of the
+// CDC dedupe budget, so that the CDC iterator has room for its own first
+// polls. A variable so tests can lower it.
+var maxSeedBytes = maxDeliveredBytes / 2
 
 // NewSnapshotIterator takes the s3 bucket, the client, and the position.
 // it returns a snapshotIterator starting from the position provided.
-func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Position, log *zerolog.Logger) (*SnapshotIterator, error) {
+// lookback is the CDC lookback period, used to decide which delivered objects
+// the CDC iterator must not deliver again at the handoff (see
+// SnapshotIterator.delivered).
+func NewSnapshotIterator(bucket, prefix string, lookback time.Duration, client *s3.Client, p position.Position, log *zerolog.Logger) (*SnapshotIterator, error) {
 	if log == nil {
 		nop := zerolog.Nop()
 		log = &nop
@@ -81,6 +105,8 @@ func NewSnapshotIterator(bucket, prefix string, client *s3.Client, p position.Po
 		paginator:       s3.NewListObjectsV2Paginator(client, input),
 		maxLastModified: p.Timestamp,
 		log:             log,
+		lookback:        lookback,
+		delivered:       make(map[deliveredKey]struct{}),
 	}, nil
 }
 
@@ -211,7 +237,8 @@ func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 		}
 
 		// after making sure the object is available, get the object's key
-		key := w.page.Contents[w.index].Key
+		listed := w.page.Contents[w.index]
+		key := listed.Key
 
 		// read object
 		object, err := w.client.GetObject(ctx, &s3.GetObjectInput{
@@ -228,11 +255,43 @@ func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 			return opencdc.Record{}, w.fail(fmt.Errorf("could not fetch the next object: %w", err))
 		}
 
-		return w.buildRecord(key, object)
+		return w.buildRecord(listed, object)
 	}
 }
 
-func (w *SnapshotIterator) buildRecord(key *string, object *s3.GetObjectOutput) (opencdc.Record, error) {
+// recordDelivered remembers the version just handed over if CDC would select
+// it again at the handoff. The version is identified the way the CDC iterator
+// identifies what it lists (ListObjectVersions): key, version id, ETag and
+// LastModified. ETag and LastModified come from the listing, not from
+// GetObject: GetObject's LastModified is the HTTP Last-Modified header, which
+// has one-second resolution, while listings carry milliseconds on stores that
+// have them (#1040). The version id is GetObject's, "null" when the store
+// sends none (an unversioned bucket, where ListObjectVersions says "null").
+// If any part differs from what CDC lists, CDC simply delivers the object
+// again: a mismatch can only cause a duplicate, never a skip.
+func (w *SnapshotIterator) recordDelivered(listed types.Object, object *s3.GetObjectOutput) {
+	// Invariant 3: only a version that was handed over is recorded, and CDC
+	// suppresses only exact matches, so the seed can cause no skip.
+	if listed.LastModified == nil || listed.LastModified.Before(w.anchor.Add(-w.lookback)) {
+		return // below the CDC floor at the handoff: CDC never selects it
+	}
+	versionID := aws.ToString(object.VersionId)
+	if versionID == "" {
+		versionID = nullVersionID
+	}
+	k := deliveredKey{key: aws.ToString(listed.Key), versionID: versionID, etag: aws.ToString(listed.ETag), modified: *listed.LastModified}
+	if _, ok := w.delivered[k]; ok {
+		return
+	}
+	if w.deliveredBytes+k.bytes() > maxSeedBytes {
+		return // over budget: CDC delivers it again (at-least-once)
+	}
+	w.delivered[k] = struct{}{}
+	w.deliveredBytes += k.bytes()
+}
+
+func (w *SnapshotIterator) buildRecord(listed types.Object, object *s3.GetObjectOutput) (opencdc.Record, error) {
+	key := listed.Key
 	defer object.Body.Close()
 
 	rawBody, err := io.ReadAll(object.Body)
@@ -242,6 +301,7 @@ func (w *SnapshotIterator) buildRecord(key *string, object *s3.GetObjectOutput) 
 
 	// Everything that can fail is behind us: only now move the position.
 	w.index++
+	w.recordDelivered(listed, object)
 	if lm := aws.ToTime(object.LastModified); w.maxLastModified.Before(lm) {
 		w.maxLastModified = lm
 	}

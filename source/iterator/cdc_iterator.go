@@ -176,13 +176,35 @@ func NewCDCIterator(
 	log *zerolog.Logger,
 ) (*CDCIterator, error) {
 	cdc := newCDCIterator(bucket, prefix, lookback, client, from, log)
-	cdc.ticker = time.NewTicker(pollingPeriod)
-
-	// start listening to changes
-	cdc.tomb.Go(cdc.startCDC)
-	cdc.tomb.Go(cdc.flush)
-
+	cdc.start(pollingPeriod)
 	return cdc, nil
+}
+
+// start begins polling every pollingPeriod. Nothing may touch the iterator's
+// state from outside after it was called.
+func (w *CDCIterator) start(pollingPeriod time.Duration) {
+	w.ticker = time.NewTicker(pollingPeriod)
+	w.tomb.Go(w.startCDC)
+	w.tomb.Go(w.flush)
+}
+
+// seedDelivered marks object versions as already delivered, before start. The
+// snapshot-to-CDC handoff uses it to hand over what the snapshot delivered
+// inside the CDC window (see SnapshotIterator.delivered, #1040). Entries below
+// the floor are dropped by the first poll like any other. A seed that does not
+// fit the dedupe budget is not used beyond the budget: those objects are
+// delivered again, which is at-least-once, never a skip.
+func (w *CDCIterator) seedDelivered(seed map[deliveredKey]struct{}) {
+	for k := range seed {
+		if _, ok := w.delivered[k]; ok {
+			continue
+		}
+		if w.deliveredBytes+k.bytes() > maxDeliveredBytes/2 {
+			return
+		}
+		w.delivered[k] = struct{}{}
+		w.deliveredBytes += k.bytes()
+	}
 }
 
 // newCDCIterator builds the iterator without starting it (tests drive step
