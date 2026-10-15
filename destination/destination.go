@@ -16,7 +16,10 @@ package destination
 
 import (
 	"context"
+	"errors"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -53,13 +56,48 @@ func (d *Destination) Open(ctx context.Context) error {
 		KeyPrefix:       d.config.Prefix,
 		Endpoint:        d.config.AWSEndpoint,
 		PathStyle:       d.config.AWSPathStyle,
+		// Config.Validate restricts both settings to the values the SDK enum
+		// defines, so the conversion cannot produce an unknown mode.
+		ServerSideEncryption: types.ServerSideEncryption(d.config.ServerSideEncryption),
+		SSEKMSKeyID:          d.config.SSEKMSKeyID,
 	})
 	if err != nil {
 		return err
 	}
 
 	d.Writer = w
+	if d.config.ServerSideEncryption == SSENone {
+		d.checkBucketEncryption(ctx, w)
+	}
 	return nil
+}
+
+// checkBucketEncryption warns when no encryption is configured and the bucket
+// has no default encryption either, so objects are stored unencrypted. On AWS
+// every bucket has at least SSE-S3 by default; S3-compatible stores often do
+// not. It never refuses to start: an unencrypted bucket can be deliberate, and
+// the check needs a permission (s3:GetEncryptionConfiguration) the connector
+// does not otherwise need.
+func (d *Destination) checkBucketEncryption(ctx context.Context, w *writer.S3) {
+	algo, err := w.BucketDefaultEncryption(ctx)
+	logger := sdk.Logger(ctx)
+	switch {
+	case err != nil:
+		var apiErr smithy.APIError
+		code := ""
+		if errors.As(err, &apiErr) {
+			code = apiErr.ErrorCode()
+		}
+		logger.Debug().Err(err).Str("error_code", code).Str("bucket", d.config.AWSBucket).
+			Msg("could not read the bucket's default encryption; objects get whatever the bucket applies")
+	case algo == "":
+		logger.Warn().Str("code", "s3.destination.bucket_unencrypted").Str("bucket", d.config.AWSBucket).
+			Msgf("%s is not set and the bucket has no default encryption, so objects are stored unencrypted; set %s (AES256, aws:kms or aws:kms:dsse) or configure default encryption on the bucket",
+				ConfigKeyServerSideEncryption, ConfigKeyServerSideEncryption)
+	default:
+		logger.Debug().Str("bucket", d.config.AWSBucket).Str("default_encryption", algo).
+			Msg("no encryption configured: the bucket's default encryption applies")
+	}
 }
 
 // Write writes a slice of records into a Destination.
