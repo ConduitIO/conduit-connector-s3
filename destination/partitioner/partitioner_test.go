@@ -284,3 +284,29 @@ func FuzzParsePathFormat(f *testing.F) {
 		_ = pf.Format(ts) // must not panic
 	})
 }
+
+// The documented number encoding of field partitions (it differs from Kafka
+// Connect, which writes the Java string of the converted value): raw JSON
+// keeps the source text, structured data uses the shortest form.
+func TestFieldPartition_NumberEncoding(t *testing.T) {
+	f := mustNew(t, Config{Kind: KindField, Fields: []string{"n"}})
+	for _, tc := range []struct {
+		name  string
+		after opencdc.Data
+		want  string
+	}{
+		{"raw 5", opencdc.RawData(`{"n":5}`), "orders/n=5"},
+		{"raw 5.0", opencdc.RawData(`{"n":5.0}`), "orders/n=5.0"},
+		{"raw 1e3", opencdc.RawData(`{"n":1e3}`), "orders/n=1e3"},
+		{"structured float 5.0", opencdc.StructuredData{"n": 5.0}, "orders/n=5"},
+		{"structured int 5", opencdc.StructuredData{"n": 5}, "orders/n=5"},
+		{"structured float 2.5", opencdc.StructuredData{"n": 2.5}, "orders/n=2.5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := f(rec(nil, tc.after), time.Now())
+			if err != nil || got != tc.want {
+				t.Fatalf("got %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
