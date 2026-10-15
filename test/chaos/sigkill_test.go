@@ -316,10 +316,15 @@ func parseLines(t *testing.T, key string, body []byte) []int {
 
 // keyTime is the UnixNano the destination put in the object key.
 func keyTime(t *testing.T, key string) time.Time {
+	// The name is <UnixNano>.json (v0.9.x) or <UnixNano>-<writer id>-<counter>.json
+	// (s3#1064); the timestamp is the leading field either way.
 	base := strings.TrimSuffix(path.Base(key), ".json")
+	if i := strings.IndexByte(base, '-'); i >= 0 {
+		base = base[:i]
+	}
 	n, err := strconv.ParseInt(base, 10, 64)
 	if err != nil {
-		t.Fatalf("object key %q does not end in <UnixNano>.json", key)
+		t.Fatalf("object key %q does not start with <UnixNano> or end in .json", key)
 	}
 	return time.Unix(0, n)
 }
