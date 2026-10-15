@@ -31,6 +31,9 @@ type S3 struct {
 	SecretAccessKey string
 	Region          string
 	Bucket          string
+	// Endpoint, when set, is an S3-compatible endpoint (MinIO) addressed
+	// path-style.
+	Endpoint string
 }
 
 // Validate takes a name of an S3 file and compares the contents of a file with
@@ -51,7 +54,12 @@ func (v *S3) Validate(name string, reference []byte) error {
 		return err
 	}
 
-	client := s3.NewFromConfig(awsConfig)
+	client := s3.NewFromConfig(awsConfig, func(o *s3.Options) {
+		if v.Endpoint != "" {
+			o.BaseEndpoint = aws.String(v.Endpoint)
+			o.UsePathStyle = true
+		}
+	})
 
 	object, err := client.GetObject(
 		context.TODO(),
