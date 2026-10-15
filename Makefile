@@ -54,3 +54,13 @@ install-tools:
 	@echo Installing tools from tools/go.mod
 	@go list -modfile=tools/go.mod tool | xargs -I % go list -modfile=tools/go.mod -f "%@{{.Module.Version}}" % | xargs -tI % go install %
 	@go mod tidy
+
+# test-chaos runs the SIGKILL chaos test (test/chaos) against MinIO with a
+# pinned Conduit release binary. Set CONDUIT_BIN to it; the CI workflow
+# chaos.yml downloads and verifies the release.
+.PHONY: test-chaos
+test-chaos:
+	docker compose -f test/docker-compose.yml up -d --wait
+	@trap 'docker compose -f test/docker-compose.yml down -v' EXIT; \
+		env -u AWS_ENDPOINT_URL MINIO_ENDPOINT=http://localhost:9000 \
+		go test -tags chaos -count=1 -timeout 15m -v ./test/chaos
