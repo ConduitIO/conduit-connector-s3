@@ -23,6 +23,9 @@ import (
 type Batch struct {
 	Format  format.Format
 	Records []opencdc.Record
+	// Dir is the partition directory under the key prefix, without leading
+	// or trailing slash; empty for no partitioning.
+	Dir string
 }
 
 // Bytes returns a byte representation for the Writer to write into a file.

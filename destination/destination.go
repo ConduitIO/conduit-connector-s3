@@ -17,10 +17,13 @@ package destination
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/destination/partitioner"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -33,6 +36,11 @@ type Destination struct {
 
 	config Config
 	Writer writer.Writer
+	// partition is nil without partitioning (partitioner "none").
+	partition partitioner.Func
+	// now is the clock of the wallclock timestamp extractor; a field so tests
+	// can fix it.
+	now func() time.Time
 }
 
 func NewDestination() sdk.Destination {
@@ -69,6 +77,13 @@ func (d *Destination) Open(ctx context.Context) error {
 	if d.config.ServerSideEncryption == SSENone {
 		d.checkBucketEncryption(ctx, w)
 	}
+	d.partition, err = partitioner.New(d.config.PartitionerConfig())
+	if err != nil {
+		return err // Validate already checked it; kept for callers that skip it
+	}
+	if d.now == nil {
+		d.now = time.Now
+	}
 	return nil
 }
 
@@ -100,14 +115,72 @@ func (d *Destination) checkBucketEncryption(ctx context.Context, w *writer.S3) {
 	}
 }
 
-// Write writes a slice of records into a Destination.
+// Write writes a slice of records into a Destination: one object per batch,
+// or with a partitioner one object per partition directory.
+//
+// It returns the number of records, from the start of the slice, that are
+// stored: the SDK acks exactly those and nacks the rest with the error.
 func (d *Destination) Write(ctx context.Context, records []opencdc.Record) (int, error) {
-	err := d.Writer.Write(ctx, &writer.Batch{
-		Records: records,
-		Format:  d.config.Format,
-	})
-	if err != nil {
-		return 0, err
+	if d.partition == nil {
+		// Invariant 1: ack only after PutObject confirmed the write.
+		if err := d.Writer.Write(ctx, &writer.Batch{Records: records, Format: d.config.Format}); err != nil {
+			return 0, err
+		}
+		return len(records), nil
+	}
+	return d.writePartitioned(ctx, records)
+}
+
+// group is the records of one batch that go to one directory. first is the
+// index of the group's first record in the batch.
+type group struct {
+	dir     string
+	first   int
+	records []opencdc.Record
+}
+
+// writePartitioned splits records by directory and writes one object per
+// directory, in the order in which each directory first appears.
+//
+// The count it returns is the index of the first record that is not stored:
+// the first record of the first group whose write failed, or the record whose
+// partition could not be computed. Every record before that index belongs to a
+// group whose first record comes earlier, and groups are written in that
+// order, so all of them were written. Records after it that are in groups
+// written successfully are written again on retry: a duplicate, never a loss.
+func (d *Destination) writePartitioned(ctx context.Context, records []opencdc.Record) (int, error) {
+	now := d.now()
+	var groups []*group
+	byDir := map[string]*group{}
+	limit, partErr := len(records), error(nil)
+	for i, r := range records {
+		dir, err := d.partition(r, now)
+		if err != nil {
+			// Records from here on are not written in this call; the
+			// earlier ones still are, so that the ones before i are acked.
+			limit, partErr = i, err
+			break
+		}
+		g, ok := byDir[dir]
+		if !ok {
+			g = &group{dir: dir, first: i}
+			byDir[dir] = g
+			groups = append(groups, g)
+		}
+		g.records = append(g.records, r)
+	}
+
+	for _, g := range groups {
+		if err := d.Writer.Write(ctx, &writer.Batch{Records: g.records, Format: d.config.Format, Dir: g.dir}); err != nil {
+			// Invariant 1: report as written only records whose object
+			// PutObject confirmed. Groups are written in order of their first
+			// record, so everything before g.first is stored.
+			return g.first, fmt.Errorf("writing %d records to %s: %w", len(g.records), g.dir, err)
+		}
+		sdk.Logger(ctx).Debug().Str("dir", g.dir).Int("records", len(g.records)).Msg("wrote object")
+	}
+	if partErr != nil {
+		return limit, partErr
 	}
 	return len(records), nil
 }
