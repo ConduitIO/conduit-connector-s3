@@ -1,0 +1,67 @@
+name: chaos
+
+# SIGKILL chaos test of the S3 destination (test/chaos): a real Conduit
+# process, this connector as a standalone plugin, MinIO. Nightly and on
+# demand; it takes about 90s plus setup. Not on every PR yet: it fails on the
+# graceful-stop hang ConduitIO/conduit#3092 (invariant 7) until that is fixed,
+# and a job that is red for a reason outside the PR would teach people to
+# ignore it.
+on:
+  schedule:
+    - cron: '35 4 * * *'
+  workflow_dispatch:
+
+env:
+  CONDUIT_VERSION: v0.20.0
+
+jobs:
+  sigkill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Download Conduit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/conduit"
+          cd "$RUNNER_TEMP/conduit"
+          gh release download "$CONDUIT_VERSION" -R ConduitIO/conduit -p '*Linux_x86_64.tar.gz' -p 'checksums.txt'
+          grep -E ' conduit_[^ ]+_Linux_x86_64\.tar\.gz$' checksums.txt | sha256sum -c -
+          tar xzf ./*Linux_x86_64.tar.gz conduit
+          echo "CONDUIT_BIN=$RUNNER_TEMP/conduit/conduit" >> "$GITHUB_ENV"
+
+      - name: Start MinIO
+        run: docker compose -f test/docker-compose.yml up -d --wait
+
+      - name: Chaos test
+        env:
+          MINIO_ENDPOINT: http://localhost:9000
+          CHAOS_ARTIFACTS: ${{ runner.temp }}/chaos-logs
+          CHAOS_PID_FILE: ${{ runner.temp }}/chaos-pids
+        run: go test -tags chaos -count=1 -timeout 15m -v ./test/chaos
+
+      - name: Kill leftover Conduit process groups
+        if: always()
+        run: |
+          f="$RUNNER_TEMP/chaos-pids"
+          [ -f "$f" ] || exit 0
+          while read -r pgid; do kill -9 -- "-$pgid" 2>/dev/null || true; done < "$f"
+
+      - name: Upload Conduit logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: chaos-logs
+          path: ${{ runner.temp }}/chaos-logs
+          if-no-files-found: ignore
+
+      - name: Stop MinIO
+        if: always()
+        run: docker compose -f test/docker-compose.yml down -v
