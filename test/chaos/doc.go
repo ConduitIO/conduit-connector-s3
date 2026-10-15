@@ -31,6 +31,15 @@
 //   - Invariant 3 (at-least-once): after a final run every input record is in
 //     the bucket at least once.
 //
+// Limit of the invariant 1 check: Conduit persists source positions in the
+// background, about once a second. An early ack (a record acked before its
+// object is stored) is caught only when the gap between the ack and the
+// object write is longer than that lag, because a kill inside the lag resumes
+// from an older position, which looks correct. Kill points that matter let a
+// run stream for a few seconds first (minStream) for that reason, but a
+// connector that acks early by milliseconds can pass. The SDK acceptance suite's
+// in-process crash cases (DST-04) cover that side.
+//
 // The resume position is read from the data, not from Conduit's database: the
 // input is a file of numbered lines read by the built-in file source, which
 // reads in order, so the first line a restarted run writes is the line after

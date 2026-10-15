@@ -424,6 +424,9 @@ func TestDestination_SIGKILL(t *testing.T) {
 	const minStream = 2500 * time.Millisecond
 
 	schedule := []killPoint{killStartup, killAfterWrite, killMidStream, killAfterWrite, killMidStream, killStartup, killMidStream, killAfterWrite}
+	// A cycle that fails is reported (t.Errorf) and the test goes on: a build
+	// that loses records must still reach the invariant checks below and
+	// report which invariant it broke, not stop at the first symptom.
 	for i, kp := range schedule {
 		p := h.start()
 		switch kp {
@@ -431,16 +434,22 @@ func TestDestination_SIGKILL(t *testing.T) {
 			time.Sleep(time.Duration(100+rng.Intn(400)) * time.Millisecond)
 		case killAfterWrite:
 			if !h.waitObjects(p, 0, 60*time.Second) {
-				t.Fatalf("cycle %d: run wrote nothing within 60s (log %s)", i, p.log)
+				t.Errorf("cycle %d: run wrote nothing within 60s (log %s)", i, p.log)
+				h.kill(p)
+				continue
 			}
 			time.Sleep(minStream + time.Duration(rng.Intn(1000))*time.Millisecond)
 			// kill the moment the next object becomes visible
 			if !h.waitObjects(p, h.objectsOf(p), 30*time.Second) {
-				t.Fatalf("cycle %d: run stopped writing (log %s)", i, p.log)
+				t.Errorf("cycle %d: run stopped writing (log %s)", i, p.log)
+				h.kill(p)
+				continue
 			}
 		case killMidStream:
 			if !h.waitObjects(p, 0, 60*time.Second) {
-				t.Fatalf("cycle %d: run wrote nothing within 60s (log %s)", i, p.log)
+				t.Errorf("cycle %d: run wrote nothing within 60s (log %s)", i, p.log)
+				h.kill(p)
+				continue
 			}
 			time.Sleep(minStream + time.Duration(rng.Intn(2000))*time.Millisecond)
 		}
@@ -451,17 +460,31 @@ func TestDestination_SIGKILL(t *testing.T) {
 	// Final run: drain everything, then stop gracefully.
 	final := h.start()
 	deadline := time.Now().Add(4 * time.Minute)
+	exited := false
 	for coverage(h.scan(), lines) != lines {
 		if time.Now().After(deadline) {
 			break // invariant 3 below reports what is missing
 		}
 		select {
 		case err := <-final.done:
-			t.Fatalf("final run exited on its own: %v (log %s)", err, final.log)
+			t.Errorf("final run exited on its own: %v (log %s)", err, final.log)
+			exited = true
+			deadline = time.Time{} // stop waiting; the checks below report what is missing
 		default:
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	if !exited {
+		h.stopGracefully(final)
+	}
+
+	h.check(lines)
+}
+
+// stopGracefully sends SIGTERM and checks that Conduit exits within 60s
+// (invariant 7).
+func (h *harness) stopGracefully(final *conduitProc) {
+	t := h.t
 	_ = final.cmd.Process.Signal(syscall.SIGTERM)
 	select {
 	case <-final.done:
@@ -469,8 +492,6 @@ func TestDestination_SIGKILL(t *testing.T) {
 		t.Errorf("conduit did not stop within 60s of SIGTERM (invariant 7); known bounded 60s SDK stall when the last record exactly fills a batch (30000 lines at batch 50 always do), ConduitIO/conduit#3092, fixed by conduit-connector-sdk#414 (v0.16.1)")
 		h.kill(final)
 	}
-
-	h.check(lines)
 }
 
 func coverage(objs map[string][]int, n int) int {
