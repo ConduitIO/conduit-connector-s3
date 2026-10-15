@@ -92,8 +92,16 @@ type Config struct {
 	// aws:kms:dsse; when empty with those modes, S3 uses the bucket's default
 	// KMS key, or the AWS managed key aws/s3.
 	SSEKMSKeyID string `json:"aws.sseKmsKeyId"`
-	// The directory layout under the prefix. "none" writes every batch to
-	// <prefix>/<UnixNano>.<ext>, as earlier versions do. The others reproduce
+	// Send If-None-Match: * with every PutObject, so that the store refuses
+	// to replace an existing object (error s3.destination.key_exists) instead
+	// of silently overwriting one whose records were already acknowledged.
+	// Object keys are unique by construction; this makes any collision fail
+	// loudly. AWS S3 and MinIO support it; set to false for a store that
+	// answers with s3.destination.conditional_writes_unsupported.
+	ConditionalWrites bool `json:"conditionalWrites" default:"true"`
+	// The directory layout under the prefix (<name> is the object name,
+	// <UnixNano>-<writer id>-<counter>). "none" writes every batch to
+	// <prefix>/<name>.<ext>, as earlier versions do. The others reproduce
 	// the directories of the Kafka Connect S3 sink's partitioners, under
 	// <prefix>/<collection>/ (the collection is the opencdc.collection
 	// metadata, the topic for records from builtin:kafka): "default" adds

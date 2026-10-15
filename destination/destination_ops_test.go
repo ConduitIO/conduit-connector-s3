@@ -16,9 +16,11 @@ package destination_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -278,4 +280,76 @@ func TestS3MinIO_BucketDefaultKMSApplies(t *testing.T) {
 	head, err := s3Client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: list.Contents[0].Key})
 	is.NoErr(err)
 	is.Equal(head.ServerSideEncryption, types.ServerSideEncryptionAwsKms) // the bucket default, not SSE-S3
+}
+
+// TestS3MinIO_TwoDestinationsNeverOverwrite is the integration test for
+// s3#1064: two destination instances on one bucket and prefix (two pipelines,
+// or two Conduit instances) write concurrently. Every acked batch must be its
+// own object; with keys from the clock alone, writes in the same tick
+// overwrote each other. Conditional writes are on (the default).
+func TestS3MinIO_TwoDestinationsNeverOverwrite(t *testing.T) {
+	is := is.New(t)
+	ctx := context.Background()
+	endpoint := os.Getenv(EnvMinIOEndpoint)
+	if endpoint == "" {
+		t.Skipf("%v env var must be set", EnvMinIOEndpoint)
+	}
+	requireNoSDKEndpointEnv(t)
+	env := getEnv(EnvAWSAccessKeyID, EnvAWSSecretAccessKey, EnvAWSS3Bucket, EnvAWSRegion)
+	failOnEmptyEnv(t, env)
+	env[EnvMinIOEndpoint] = endpoint
+	bucket := env[EnvAWSS3Bucket]
+	s3Client := newPathStyleS3Client(t, env)
+	_, err := s3Client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	if err != nil && !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou") && !strings.Contains(err.Error(), "BucketAlreadyExists") {
+		t.Fatalf("create bucket: %v", err)
+	}
+	prefix := "two-writers-" + uuid.NewString()
+	open := func() sdk.Destination {
+		d := destination.NewDestination()
+		is.NoErr(sdk.Util.ParseConfig(ctx, map[string]string{
+			config.ConfigKeyAWSAccessKeyID:       env[EnvAWSAccessKeyID],
+			config.ConfigKeyAWSSecretAccessKey:   env[EnvAWSSecretAccessKey],
+			config.ConfigKeyAWSRegion:            env[EnvAWSRegion],
+			config.ConfigKeyAWSBucket:            bucket,
+			config.ConfigKeyAWSEndpoint:          endpoint,
+			config.ConfigKeyAWSPathStyle:         "true",
+			config.ConfigKeyPrefix:               prefix,
+			destination.ConfigKeyFormat:          "json",
+			"sdk.schema.extract.key.enabled":     "false",
+			"sdk.schema.extract.payload.enabled": "false",
+		}, d.Config(), s3Conn.Connector.NewSpecification().DestinationParams))
+		is.NoErr(d.Open(ctx))
+		t.Cleanup(func() { _ = d.Teardown(ctx) })
+		return d
+	}
+	const n = 300
+	ds := []sdk.Destination{open(), open()}
+	var wg sync.WaitGroup
+	for di, d := range ds {
+		wg.Add(1)
+		go func(di int, d sdk.Destination) {
+			defer wg.Done()
+			for i := 0; i < n; i++ {
+				w, err := d.Write(ctx, []opencdc.Record{{
+					Operation: opencdc.OperationCreate, Position: opencdc.Position(fmt.Sprintf("d%d-%d", di, i)),
+					Payload: opencdc.Change{After: opencdc.RawData(fmt.Sprintf("d%d-%d", di, i))},
+				}})
+				if err != nil || w != 1 {
+					t.Errorf("write: %d %v", w, err)
+					return
+				}
+			}
+		}(di, d)
+	}
+	wg.Wait()
+
+	objects := 0
+	p := s3.NewListObjectsV2Paginator(s3Client, &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix + "/")})
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		is.NoErr(err)
+		objects += len(page.Contents)
+	}
+	is.Equal(objects, len(ds)*n) // one object per acked batch: none overwritten
 }
