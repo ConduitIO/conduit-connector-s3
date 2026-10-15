@@ -143,7 +143,10 @@ func (c Config) LogEndpointWarnings(ctx context.Context) {
 			Msg("connecting to a plaintext http endpoint: requests, including the SigV4 Authorization header that carries the access key ID, are sent unencrypted and can be read on the wire; use an https endpoint unless the store is on localhost")
 	}
 
-	if !c.AWSPathStyle {
+	// The virtual-hosted addressing hint is for S3-compatible stores. Real AWS
+	// S3 endpoints (regional, dualstack, FIPS, access point, China) require it,
+	// so telling those users to set aws.pathStyle would be wrong.
+	if !c.AWSPathStyle && !isAWSS3Host(u.Hostname()) {
 		sdk.Logger(ctx).Warn().
 			Str(ConfigKeyAWSEndpoint, c.AWSEndpoint).
 			Bool(ConfigKeyAWSPathStyle, c.AWSPathStyle).
@@ -160,6 +163,36 @@ func isLoopbackHost(host string) bool {
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()
+	}
+	return false
+}
+
+// awsDomainSuffixes are the DNS suffixes under which AWS serves S3 endpoints:
+// the global and China partitions, and the dual-stack api.aws names.
+var awsDomainSuffixes = []string{".amazonaws.com", ".amazonaws.com.cn", ".api.aws"}
+
+// isAWSS3Host reports whether host is an AWS S3 endpoint, as opposed to a
+// custom S3-compatible store. It matches hosts under an AWS domain suffix that
+// carry an S3 label, which covers s3.amazonaws.com, s3.<region>.amazonaws.com,
+// the legacy s3-<region>.amazonaws.com, dualstack (s3.dualstack.<region>...),
+// FIPS (s3-fips.<region>...), access points (s3-accesspoint.<region>...,
+// <name>-<account>.s3-accesspoint.<region>...), bucket-prefixed virtual-hosted
+// names, VPC interface endpoints, and the amazonaws.com.cn and api.aws
+// variants. The suffix is anchored with a leading dot, so look-alikes such as
+// s3.amazonaws.com.example.com or evilamazonaws.com do not match, and other AWS
+// services (sqs.us-east-1.amazonaws.com) have no S3 label.
+func isAWSS3Host(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, suffix := range awsDomainSuffixes {
+		rest, ok := strings.CutSuffix(host, suffix)
+		if !ok {
+			continue
+		}
+		for _, label := range strings.Split(rest, ".") {
+			if label == "s3" || strings.HasPrefix(label, "s3-") {
+				return true
+			}
+		}
 	}
 	return false
 }
