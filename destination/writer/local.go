@@ -16,11 +16,13 @@ package writer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/destination/format"
 )
 
 // Local writer dumps bytes into a local file. The file will be placed in a
@@ -43,19 +45,23 @@ func (w *Local) Write(_ context.Context, batch *Batch) error {
 		fmt.Sprintf("local-%04d.%s", w.Count, batch.Format.Ext()),
 	)
 
-	bytes, err := batch.Bytes()
+	bytes, refused := batch.Bytes()
+	var re *format.RecordError
+	if refused != nil && !errors.As(refused, &re) {
+		return refused
+	}
+	if len(bytes) == 0 {
+		return refused
+	}
+
+	err := os.WriteFile(path, bytes, 0o600)
 	if err != nil {
 		return err
 	}
 
-	err = os.WriteFile(path, bytes, 0o600)
-	if err != nil {
-		return err
-	}
+	w.Position = batch.Records[batch.Written(refused)-1].Position
 
-	w.Position = batch.LastPosition()
-
-	return nil
+	return refused
 }
 
 // LastPosition returns the last persisted position

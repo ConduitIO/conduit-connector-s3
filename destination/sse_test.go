@@ -266,7 +266,7 @@ func TestDestination_KMSKeyIDWhitespace(t *testing.T) {
 		t.Fatalf("%s = %q, want the trimmed key", headerSSEKMSKeyID, got)
 	}
 
-	c := destination.Config{ServerSideEncryption: "aws:kms", SSEKMSKeyID: " alias/my-key"}
+	c := destination.Config{Format: "json", ServerSideEncryption: "aws:kms", SSEKMSKeyID: " alias/my-key"}
 	err := c.Validate(context.Background())
 	if err == nil || !strings.Contains(err.Error(), destination.ConfigKeySSEKMSKeyID) {
 		t.Fatalf("Validate should reject a key id with whitespace and name the setting, got %v", err)
