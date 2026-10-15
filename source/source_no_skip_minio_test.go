@@ -88,16 +88,27 @@ func minioSourceEnv(t *testing.T, endpointOverride string) (*s3.Client, map[stri
 
 func openSource(ctx context.Context, t *testing.T, cfg map[string]string, pos opencdc.Position) *source.Source {
 	t.Helper()
+	s, err := tryOpenSource(ctx, t, cfg, pos)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	return s
+}
+
+// tryOpenSource is openSource for tests that accept a failing Open (a loud
+// failure) as an outcome.
+func tryOpenSource(ctx context.Context, t *testing.T, cfg map[string]string, pos opencdc.Position) (*source.Source, error) {
+	t.Helper()
 	s := &source.Source{}
 	err := sdk.Util.ParseConfig(ctx, cfg, s.Config(), s3Conn.Connector.NewSpecification().SourceParams)
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if err := s.Open(ctx, pos); err != nil {
-		t.Fatalf("open: %v", err)
-	}
 	t.Cleanup(func() { _ = s.Teardown(ctx) })
-	return s
+	if err := s.Open(ctx, pos); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func putObject(ctx context.Context, t *testing.T, client *s3.Client, bucket, key string) {
@@ -659,12 +670,15 @@ func TestMinIO_HostileDateHeader(t *testing.T) {
 			ctx := context.Background()
 			proxy := minioProxy(t, os.Getenv(envMinIOEndpoint), proxyOpts{date: tc.date})
 			client, cfg := minioSourceEnv(t, proxy)
-			s := openSource(ctx, t, cfg, nil)
+			s, err := tryOpenSource(ctx, t, cfg, nil)
+			if err != nil {
+				return // Open failed loudly
+			}
 			if _, err := s.Read(ctx); err != nil && !errors.Is(err, sdk.ErrBackoffRetry) {
 				return // failed loudly
 			}
 			putObject(ctx, t, client, cfg[config.ConfigKeyAWSBucket], "obj")
-			_, err := readWithTimeout(ctx, s, 8*time.Second)
+			_, err = readWithTimeout(ctx, s, 8*time.Second)
 			silentLoss(t, err, "obj")
 		})
 		t.Run(tc.name+"/snapshot handoff", func(t *testing.T) {
@@ -673,7 +687,10 @@ func TestMinIO_HostileDateHeader(t *testing.T) {
 			client, cfg := minioSourceEnv(t, proxy)
 			bucket := cfg[config.ConfigKeyAWSBucket]
 			putObject(ctx, t, client, bucket, "old")
-			s := openSource(ctx, t, cfg, nil)
+			s, err := tryOpenSource(ctx, t, cfg, nil)
+			if err != nil {
+				return // Open failed loudly
+			}
 			if _, err := readWithTimeout(ctx, s, 8*time.Second); err != nil {
 				silentLoss(t, err, "old")
 				return

@@ -16,12 +16,15 @@ package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/conduitio/conduit-commons/lang"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
@@ -65,9 +68,9 @@ func (s *Source) Config() sdk.SourceConfig {
 // Open prepare the plugin to start sending records from the given position
 func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
 	s.config.LogEndpointWarnings(ctx)
-	if s.config.LookbackPeriod > WarnLookbackPeriod {
-		sdk.Logger(ctx).Warn().Dur("lookbackPeriod", s.config.LookbackPeriod).
-			Msg("lookbackPeriod is large: after every restart, and at the snapshot-to-CDC handoff, the objects modified within that window are delivered again")
+	s.logLookbackWarnings(ctx)
+	if err := checkBucketName(s.config.AWSBucket); err != nil {
+		return err
 	}
 
 	awsCredsProvider := credentials.NewStaticCredentialsProvider(
@@ -97,17 +100,20 @@ func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
 	if err != nil {
 		return err
 	}
+	if err := s.probeListings(ctx); err != nil {
+		return err
+	}
 
 	s.iterator, err = iterator.NewCombinedIterator(ctx, iterator.CombinedConfig{
 		Bucket:                 s.config.AWSBucket,
 		Prefix:                 s.config.Prefix,
 		PollingPeriod:          s.config.PollingPeriod,
 		Lookback:               s.config.LookbackPeriod,
-		MultipartHold:          true,
-		MaxTrackedUploads:      iterator.DefaultMaxTrackedUploads,
-		MaxPendingUploadAge:    iterator.DefaultMaxPendingUploadAge,
-		MaxEarlyObjects:        iterator.DefaultMaxEarlyObjects,
-		MaxSettledBytesPerPoll: iterator.DefaultMaxSettledBytesPerPoll,
+		MultipartHold:          s.config.MultipartHold,
+		MaxTrackedUploads:      s.config.MaxTrackedUploads,
+		MaxPendingUploadAge:    s.config.MaxPendingUploadAge,
+		MaxEarlyObjects:        s.config.MaxEarlyObjects,
+		MaxSettledBytesPerPoll: int64(s.config.MaxSettledBytesPerPoll),
 	}, s.client, rp)
 	if err != nil {
 		return fmt.Errorf("couldn't create a combined iterator: %w", err)
@@ -145,4 +151,76 @@ func (s *Source) bucketExists(ctx context.Context, bucketName string) error {
 func (s *Source) Ack(ctx context.Context, position opencdc.Position) error {
 	sdk.Logger(ctx).Debug().Str("position", string(position)).Msg("got ack")
 	return nil // no ack needed
+}
+
+// ErrStoreUnsupported is the stable error code of a store whose listing does
+// not support listing-based change capture.
+var ErrStoreUnsupported = errors.New("s3.source.store_unsupported")
+
+func (s *Source) logLookbackWarnings(ctx context.Context) {
+	lb := s.config.LookbackPeriod
+	log := sdk.Logger(ctx).Warn().Dur(ConfigKeyLookbackPeriod, lb)
+	switch {
+	case lb == 0:
+		log.Str("code", "s3.source.lookback_short").
+			Msg("lookbackPeriod is 0: an object that becomes visible in listings after its LastModified (replication lag, a slow PUT) can be missed; only multipart uploads are covered. Exact resume is not claimed for this setting")
+	case lb < MinExactLookback:
+		log.Str("code", "s3.source.lookback_short").Dur("supported_minimum", MinExactLookback).
+			Msg("lookbackPeriod below 30s is deprecated and will be rejected in a later release: it gives almost no tolerance for late-visible objects (the store's Date is rounded down by up to a second, and a listing takes time of its own)")
+	case lb > WarnLookbackPeriod:
+		log.Msg("lookbackPeriod is large: new objects that do not fit cdc.maxEarlyObjects wait up to this long before they are delivered")
+	}
+	if !s.config.MultipartHold {
+		sdk.Logger(ctx).Warn().Str("code", "s3.source.multipart_hold_disabled").
+			Msg("cdc.multipartHold is false: a multipart upload that runs longer than lookbackPeriod is stamped with its start time and can be missed. Exact resume is not claimed for this setting")
+	}
+}
+
+// checkBucketName rejects S3 Express One Zone directory buckets: they have no
+// versions listing and do not list in key order.
+func checkBucketName(bucket string) error {
+	if strings.HasSuffix(bucket, "--x-s3") {
+		return fmt.Errorf("%w: %q is an S3 Express One Zone directory bucket, which cannot be read with listing-based change capture (no versions listing, no key order); use a general purpose bucket", ErrStoreUnsupported, bucket)
+	}
+	return nil
+}
+
+// probeListings checks, once at Open, that the store supports the listings
+// change capture needs and that the credentials may use them. A failure here
+// is cheaper to act on than an iterator that stops later.
+func (s *Source) probeListings(ctx context.Context) error {
+	_, err := s.client.ListObjectVersions(ctx, &s3.ListObjectVersionsInput{
+		Bucket: aws.String(s.config.AWSBucket), Prefix: aws.String(s.config.Prefix), MaxKeys: aws.Int32(1),
+	})
+	if err != nil {
+		switch apiCode(err) {
+		case "NotImplemented", "MethodNotAllowed", "InvalidRequest":
+			return fmt.Errorf("%w: the store does not support ListObjectVersions (%s), which change capture needs; tested stores are AWS S3 and MinIO: %w", ErrStoreUnsupported, apiCode(err), err)
+		case "AccessDenied":
+			return fmt.Errorf("listing object versions was denied; grant s3:ListBucketVersions on bucket %q: %w", s.config.AWSBucket, err)
+		}
+		return fmt.Errorf("could not list object versions: %w", err)
+	}
+	if !s.config.MultipartHold {
+		return nil
+	}
+	_, err = s.client.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{
+		Bucket: aws.String(s.config.AWSBucket), Prefix: aws.String(s.config.Prefix), MaxUploads: aws.Int32(1),
+	})
+	if err != nil {
+		if apiCode(err) == "AccessDenied" {
+			return fmt.Errorf("%w: listing in-progress multipart uploads under %q was denied; grant s3:ListBucketMultipartUploads, or set %s to false (lossy for multipart uploads longer than %s): %w",
+				iterator.ErrMultipartListingDenied, s.config.Prefix, ConfigKeyMultipartHold, ConfigKeyLookbackPeriod, err)
+		}
+		return fmt.Errorf("could not list multipart uploads: %w", err)
+	}
+	return nil
+}
+
+func apiCode(err error) string {
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.ErrorCode()
+	}
+	return ""
 }
