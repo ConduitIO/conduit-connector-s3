@@ -17,6 +17,7 @@ package destination
 import (
 	"context"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -53,6 +54,10 @@ func (d *Destination) Open(ctx context.Context) error {
 		KeyPrefix:       d.config.Prefix,
 		Endpoint:        d.config.AWSEndpoint,
 		PathStyle:       d.config.AWSPathStyle,
+		// Config.Validate restricts both settings to the values the SDK enum
+		// defines, so the conversion cannot produce an unknown mode.
+		ServerSideEncryption: types.ServerSideEncryption(d.config.ServerSideEncryption),
+		SSEKMSKeyID:          d.config.SSEKMSKeyID,
 	})
 	if err != nil {
 		return err

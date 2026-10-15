@@ -53,6 +53,13 @@ const (
 	schemeHTTPS = "https"
 )
 
+// ErrInvalidParameterValue is conduit-commons' error for a parameter with an
+// invalid value, re-exported so that the source and destination config
+// packages can wrap it without importing a second package named config, which
+// confuses the specification generator (it resolves the embedded config.Config
+// to the wrong type).
+var ErrInvalidParameterValue = cconfig.ErrInvalidParameterValue
+
 // Config represents configuration needed for S3
 type Config struct {
 	// AWS access key id.

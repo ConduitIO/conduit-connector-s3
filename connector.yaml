@@ -140,6 +140,23 @@ specification:
     time `Write` is called, a new record is added to the buffer. When the buffer is
     full, all the records from it will be written to the S3 bucket, and an ack
     function will be called for each record after being written.
+
+    ### Server-side encryption
+
+    By default the destination sends no server-side encryption header, so the
+    bucket's default encryption applies. On AWS every bucket encrypts new
+    objects with SSE-S3 unless it is configured otherwise, and a bucket whose
+    default is SSE-KMS gets SSE-KMS objects. An S3-compatible store without a
+    default encryption configuration stores objects unencrypted.
+
+    Set `aws.serverSideEncryption` to `AES256`, `aws:kms` or `aws:kms:dsse` to
+    request a mode explicitly, and `aws.sseKmsKeyId` to pick the KMS key for the
+    two KMS modes. An explicit mode overrides the bucket default.
+
+    Upgrading from v0.9.5 or earlier: those versions sent `AES256` on every
+    write, whatever the bucket default was, so an SSE-KMS bucket default was
+    silently replaced by SSE-S3 (#1047). To keep the old behavior, set
+    `aws.serverSideEncryption: AES256`.
   version: v0.9.4
   author: Meroxa, Inc.
   source:
@@ -354,6 +371,27 @@ specification:
           MinIO answers with a 400 MalformedXML. Leave false for AWS S3.
         type: bool
         default: "false"
+        validations: []
+      - name: aws.serverSideEncryption
+        description: |-
+          Server-side encryption to request for every object written: AES256
+          (SSE-S3), aws:kms (SSE-KMS) or aws:kms:dsse (DSSE-KMS). Leave empty to
+          send no encryption header, so the bucket's default encryption applies
+          (on AWS every bucket encrypts with SSE-S3 by default; an S3-compatible
+          store may store the object unencrypted). An explicit value overrides the
+          bucket default: setting AES256 on a bucket whose default is SSE-KMS
+          stores objects with SSE-S3 instead.
+        type: string
+        default: ""
+        validations: []
+      - name: aws.sseKmsKeyId
+        description: |-
+          The KMS key ID, key ARN, alias name or alias ARN to encrypt objects
+          with. Only valid when aws.serverSideEncryption is aws:kms or
+          aws:kms:dsse; when empty with those modes, S3 uses the bucket's default
+          KMS key, or the AWS managed key aws/s3.
+        type: string
+        default: ""
         validations: []
       - name: prefix
         description: the S3 key prefix.

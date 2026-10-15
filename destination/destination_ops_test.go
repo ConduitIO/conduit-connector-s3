@@ -136,3 +136,73 @@ func TestS3MinIO_UpdateAndDeleteRecords(t *testing.T) {
 		})
 	}
 }
+
+// TestS3MinIO_ServerSideEncryption writes through the production destination
+// with and without aws.serverSideEncryption and reads the stored object's
+// encryption back. With no setting no header is sent (#1047), so MinIO, which
+// has no bucket default encryption here, stores the object unencrypted; with
+// AES256 the object is stored with SSE-S3.
+func TestS3MinIO_ServerSideEncryption(t *testing.T) {
+	ctx := context.Background()
+
+	endpoint := os.Getenv(EnvMinIOEndpoint)
+	if endpoint == "" {
+		t.Skipf("%v env var must be set", EnvMinIOEndpoint)
+	}
+	requireNoSDKEndpointEnv(t)
+	env := getEnv(EnvAWSAccessKeyID, EnvAWSSecretAccessKey, EnvAWSS3Bucket, EnvAWSRegion)
+	failOnEmptyEnv(t, env)
+	env[EnvMinIOEndpoint] = endpoint
+
+	bucket := env[EnvAWSS3Bucket]
+	s3Client := newPathStyleS3Client(t, env)
+	_, err := s3Client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+	if err != nil && !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou") && !strings.Contains(err.Error(), "BucketAlreadyExists") {
+		t.Fatalf("create bucket: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		sse  string
+	}{
+		{"default", ""},
+		{"AES256", "AES256"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			is := is.New(t)
+			underTest := destination.NewDestination()
+			prefix := "sse-" + tt.name + "-" + uuid.NewString()
+			cfg := map[string]string{
+				config.ConfigKeyAWSAccessKeyID:       env[EnvAWSAccessKeyID],
+				config.ConfigKeyAWSSecretAccessKey:   env[EnvAWSSecretAccessKey],
+				config.ConfigKeyAWSRegion:            env[EnvAWSRegion],
+				config.ConfigKeyAWSBucket:            bucket,
+				config.ConfigKeyAWSEndpoint:          endpoint,
+				config.ConfigKeyAWSPathStyle:         "true",
+				config.ConfigKeyPrefix:               prefix,
+				destination.ConfigKeyFormat:          "json",
+				"sdk.schema.extract.key.enabled":     "false",
+				"sdk.schema.extract.payload.enabled": "false",
+			}
+			if tt.sse != "" {
+				cfg[destination.ConfigKeyServerSideEncryption] = tt.sse
+			}
+			is.NoErr(sdk.Util.ParseConfig(ctx, cfg, underTest.Config(), s3Conn.Connector.NewSpecification().DestinationParams))
+			is.NoErr(underTest.Open(ctx))
+			n, err := underTest.Write(ctx, []opencdc.Record{{
+				Operation: opencdc.OperationCreate, Position: opencdc.Position("p1"), Key: opencdc.RawData("k1"),
+				Payload: opencdc.Change{After: opencdc.RawData("v1")},
+			}})
+			is.NoErr(err)
+			is.Equal(n, 1)
+			is.NoErr(underTest.Teardown(ctx))
+
+			list, err := s3Client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix + "/")})
+			is.NoErr(err)
+			is.Equal(len(list.Contents), 1)
+			head, err := s3Client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(bucket), Key: list.Contents[0].Key})
+			is.NoErr(err)
+			is.Equal(string(head.ServerSideEncryption), tt.sse)
+		})
+	}
+}
