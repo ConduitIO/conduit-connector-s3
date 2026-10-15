@@ -199,7 +199,7 @@ func (w *CDCIterator) seedDelivered(seed map[deliveredKey]struct{}) {
 		if _, ok := w.delivered[k]; ok {
 			continue
 		}
-		if w.deliveredBytes+k.bytes() > maxDeliveredBytes/2 {
+		if w.deliveredBytes+k.bytes() > maxSeedBytes {
 			return
 		}
 		w.delivered[k] = struct{}{}
@@ -311,6 +311,9 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 	w.maxSeen = base
 	w.clamped = true
 	if len(cache) == 0 {
+		// Nothing new, but entries below the floor (for example a handoff
+		// seed) are still released.
+		w.pruneBelow(laterOf(w.floorFor(base, hostNow), w.effMinFloor(hostNow)))
 		return nil
 	}
 	sort.Slice(cache, func(i, j int) bool {
@@ -357,6 +360,17 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 		}
 	}
 	return nil
+}
+
+// pruneBelow drops tracked versions older than floor: they are never selected
+// again.
+func (w *CDCIterator) pruneBelow(floor time.Time) {
+	for k := range w.delivered {
+		if k.modified.Before(floor) {
+			delete(w.delivered, k)
+			w.deliveredBytes -= k.bytes()
+		}
+	}
 }
 
 // baseMax is the newest-seen time a poll starts from. A resume position that

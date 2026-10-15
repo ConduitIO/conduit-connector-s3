@@ -270,8 +270,15 @@ func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 // If any part differs from what CDC lists, CDC simply delivers the object
 // again: a mismatch can only cause a duplicate, never a skip.
 func (w *SnapshotIterator) recordDelivered(listed types.Object, object *s3.GetObjectOutput) {
-	// Invariant 3: only a version that was handed over is recorded, and CDC
-	// suppresses only exact matches, so the seed can cause no skip.
+	// Invariant 3: only the version whose body was handed over is recorded,
+	// and CDC suppresses only exact matches, so the seed can cause no skip.
+	// GetObject reads whatever is current, which can differ from what was
+	// listed (an overwrite in between, or a stale read). If its ETag is not the
+	// listed one, the delivered body is not the listed version, and recording
+	// the listed identity would make CDC suppress a version nobody delivered.
+	if aws.ToString(object.ETag) != aws.ToString(listed.ETag) {
+		return // CDC delivers the listed version again: a duplicate at worst
+	}
 	if listed.LastModified == nil || listed.LastModified.Before(w.anchor.Add(-w.lookback)) {
 		return // below the CDC floor at the handoff: CDC never selects it
 	}
