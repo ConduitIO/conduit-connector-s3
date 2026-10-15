@@ -54,8 +54,26 @@ type Config struct {
 	sdk.DefaultDestinationMiddleware
 	config.Config
 
-	// the destination format, either "json" or "parquet".
-	Format format.Format `validate:"required,inclusion=parquet|json"`
+	// The destination format: "json" (one OpenCDC-shaped JSON object per
+	// line), "parquet", or "bytearray" (the payload bytes of every record
+	// followed by format.bytearray.separator; Kafka Connect's ByteArrayFormat,
+	// and with format.bytearray.extension set to .json the bytes Kafka
+	// Connect's JsonFormat writes for JSON values). bytearray fails a record
+	// without a payload (a delete or a Kafka tombstone) with the error
+	// s3.destination.null_value; json fails a record that is not valid UTF-8
+	// with s3.destination.invalid_utf8.
+	Format format.Format `validate:"required,inclusion=parquet|json|bytearray"`
+	// Written after every record by format bytearray. The escapes \n, \r,
+	// \t and \\ are resolved.
+	BytearraySeparator string `json:"format.bytearray.separator" default:"\\n"`
+	// File extension of objects written by format bytearray, with or without
+	// the leading dot.
+	BytearrayExtension string `json:"format.bytearray.extension" default:".bin"`
+	// Compression of the objects: none or gzip for json and bytearray (gzip
+	// appends .gz to the extension), none, gzip or snappy (the column codec)
+	// for parquet. Empty means the format's default: none for json and
+	// bytearray, gzip for parquet.
+	Compression string `json:"compression"`
 
 	// Server-side encryption to request for every object written: AES256
 	// (SSE-S3), aws:kms (SSE-KMS) or aws:kms:dsse (DSSE-KMS). Leave empty to
@@ -122,6 +140,12 @@ func (c *Config) PartitionerConfig() partitioner.Config {
 	}
 }
 
+// Encoder builds the encoder from the format settings. Errors name the config
+// path and the fix.
+func (c *Config) Encoder() (format.Encoder, error) {
+	return format.NewEncoder(c.Format, c.BytearraySeparator, c.BytearrayExtension, format.Compression(c.Compression))
+}
+
 // Validate implements sdk.Validatable: the SDK calls it automatically after
 // configuration parsing. It runs the middleware validations and the ones the
 // parameter specifications cannot express, such as the aws.endpoint URL shape.
@@ -133,6 +157,9 @@ func (c *Config) Validate(ctx context.Context) error {
 		return err
 	}
 	if _, err := partitioner.New(c.PartitionerConfig()); err != nil {
+		return err
+	}
+	if _, err := c.Encoder(); err != nil {
 		return err
 	}
 	return c.validateEncryption()

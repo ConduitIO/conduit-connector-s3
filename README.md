@@ -142,6 +142,43 @@ after a failure or a restart is written again as a new object, so a reader
 can see a record twice, never zero times. Object names are
 `<UnixNano>.<ext>`, not deterministic.
 
+### Formats
+
+- `json`: one JSON object per line with `Operation`, `Position`, `Payload`,
+  `Key` and `Metadata`; payload and key are JSON strings. A record whose key,
+  payload, position or metadata is not valid UTF-8 is refused with the error
+  `s3.destination.invalid_utf8` instead of being stored with replaced bytes.
+- `parquet`: the same fields as string columns.
+- `bytearray`: the payload bytes of every record, unchanged, each followed
+  by `format.bytearray.separator` (default a newline). Structured payloads
+  are written as their JSON encoding. A record without a payload (a delete,
+  a Kafka tombstone) is refused with the error `s3.destination.null_value`;
+  drop such records with a `filter` processor if they are expected.
+
+`compression` is `none` or `gzip` for `json` and `bytearray` (gzip appends
+`.gz` to the extension and sets the content type to `application/gzip`), and
+`none`, `gzip` (default) or `snappy` for `parquet`, where it is the column
+codec.
+
+When a record is refused, the records before it in the batch are written as
+one object and acked, the refused record and the ones after it are nacked
+(to the DLQ, if one is configured).
+
+### Coming from the Kafka Connect S3 sink
+
+- `ByteArrayFormat` is `format: bytearray`; `format.bytearray.separator` and
+  `format.bytearray.extension` have the same meaning (Kafka Connect's
+  extension default is `.bin` as well).
+- `JsonFormat` for topics with JSON values is `format: bytearray` with
+  `format.bytearray.extension: .json`: the stored bytes are the record
+  values. Kafka Connect re-serializes values through its converter, so
+  whitespace and key order can differ, and `schemas.enable=true` envelopes
+  are not produced.
+- `s3.compression.type: gzip` is `compression: gzip`; `parquet.codec` is
+  `compression` with `format: parquet` (Kafka Connect defaults to snappy,
+  this connector to gzip).
+- `behavior.on.null.values` other than `fail` has no counterpart.
+
 ### Server-side encryption
 
 By default the destination sends no server-side encryption header, so the
@@ -354,7 +391,14 @@ pipelines:
           # Type: string
           # Required: yes
           aws.secretAccessKey: ""
-          # the destination format, either "json" or "parquet".
+          # The destination format: "json" (one OpenCDC-shaped JSON object per
+          # line), "parquet", or "bytearray" (the payload bytes of every record
+          # followed by format.bytearray.separator; Kafka Connect's
+          # ByteArrayFormat, and with format.bytearray.extension set to .json
+          # the bytes Kafka Connect's JsonFormat writes for JSON values).
+          # bytearray fails a record without a payload (a delete or a Kafka
+          # tombstone) with the error s3.destination.null_value; json fails a
+          # record that is not valid UTF-8 with s3.destination.invalid_utf8.
           # Type: string
           # Required: yes
           format: ""
@@ -398,6 +442,23 @@ pipelines:
           # Type: string
           # Required: no
           aws.sseKmsKeyId: ""
+          # Compression of the objects: none or gzip for json and bytearray
+          # (gzip appends .gz to the extension), none, gzip or snappy (the
+          # column codec) for parquet. Empty means the format's default: none
+          # for json and bytearray, gzip for parquet.
+          # Type: string
+          # Required: no
+          compression: ""
+          # File extension of objects written by format bytearray, with or
+          # without the leading dot.
+          # Type: string
+          # Required: no
+          format.bytearray.extension: ".bin"
+          # Written after every record by format bytearray. The escapes \n, \r,
+          # \t and \\ are resolved.
+          # Type: string
+          # Required: no
+          format.bytearray.separator: "\n"
           # The directory layout under the prefix. "none" writes every batch to
           # <prefix>/<UnixNano>.<ext>, as earlier versions do. The others
           # reproduce the directories of the Kafka Connect S3 sink's

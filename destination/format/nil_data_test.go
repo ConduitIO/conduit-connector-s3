@@ -63,7 +63,7 @@ func TestMakeBytes_NilData(t *testing.T) {
 	})
 	t.Run("parquet", func(t *testing.T) {
 		is := is.New(t)
-		b, err := makeParquetBytes(recs)
+		b, err := makeParquetBytes(recs, CompressionGzip)
 		is.NoErr(err)
 
 		pf := buffer.NewBufferFileFromBytes(b)
