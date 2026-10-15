@@ -59,12 +59,16 @@ type Config struct {
 	// followed by format.bytearray.separator; Kafka Connect's ByteArrayFormat,
 	// and with format.bytearray.extension set to .json the bytes Kafka
 	// Connect's JsonFormat writes for JSON values). bytearray fails a record
-	// without a payload (a delete or a Kafka tombstone) with the error
+	// without a payload (a delete or a Kafka tombstone) or with an empty one
+	// (indistinguishable from a tombstone) with the error
 	// s3.destination.null_value; json fails a record that is not valid UTF-8
 	// with s3.destination.invalid_utf8.
 	Format format.Format `validate:"required,inclusion=parquet|json|bytearray"`
 	// Written after every record by format bytearray. The escapes \n, \r,
-	// \t and \\ are resolved.
+	// \t and \\ are resolved. The separator is not escaped inside payloads,
+	// so a payload that contains it cannot be split back unambiguously
+	// (as with Kafka Connect's ByteArrayFormat); pick a separator the data
+	// cannot contain, or use json or parquet.
 	BytearraySeparator string `json:"format.bytearray.separator" default:"\\n"`
 	// File extension of objects written by format bytearray, with or without
 	// the leading dot.

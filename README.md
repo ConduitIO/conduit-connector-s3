@@ -152,8 +152,13 @@ can see a record twice, never zero times. Object names are
 - `bytearray`: the payload bytes of every record, unchanged, each followed
   by `format.bytearray.separator` (default a newline). Structured payloads
   are written as their JSON encoding. A record without a payload (a delete,
-  a Kafka tombstone) is refused with the error `s3.destination.null_value`;
-  drop such records with a `filter` processor if they are expected.
+  a Kafka tombstone) or with an empty one is refused with the error
+  `s3.destination.null_value`; drop such records with a `filter` processor
+  if they are expected. A Kafka tombstone arrives as an empty value, so an
+  empty Kafka value cannot be told apart from it and is refused too. The
+  separator is not escaped inside payloads: a payload that contains it
+  cannot be split back unambiguously (as with Kafka Connect's
+  `ByteArrayFormat`).
 
 `compression` is `none` or `gzip` for `json` and `bytearray` (gzip appends
 `.gz` to the extension and sets the content type to `application/gzip`), and
@@ -397,8 +402,9 @@ pipelines:
           # ByteArrayFormat, and with format.bytearray.extension set to .json
           # the bytes Kafka Connect's JsonFormat writes for JSON values).
           # bytearray fails a record without a payload (a delete or a Kafka
-          # tombstone) with the error s3.destination.null_value; json fails a
-          # record that is not valid UTF-8 with s3.destination.invalid_utf8.
+          # tombstone) or with an empty one (indistinguishable from a tombstone)
+          # with the error s3.destination.null_value; json fails a record that
+          # is not valid UTF-8 with s3.destination.invalid_utf8.
           # Type: string
           # Required: yes
           format: ""
@@ -455,7 +461,10 @@ pipelines:
           # Required: no
           format.bytearray.extension: ".bin"
           # Written after every record by format bytearray. The escapes \n, \r,
-          # \t and \\ are resolved.
+          # \t and \\ are resolved. The separator is not escaped inside
+          # payloads, so a payload that contains it cannot be split back
+          # unambiguously (as with Kafka Connect's ByteArrayFormat); pick a
+          # separator the data cannot contain, or use json or parquet.
           # Type: string
           # Required: no
           format.bytearray.separator: "\n"

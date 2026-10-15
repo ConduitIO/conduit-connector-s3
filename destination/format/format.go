@@ -287,8 +287,14 @@ func (e Encoder) MakeBytes(records []opencdc.Record) ([]byte, error) {
 func (e Encoder) Check(r opencdc.Record) error {
 	switch e.Format {
 	case ByteArray:
-		if r.Payload.After == nil {
-			return fmt.Errorf("%s: format bytearray stores the payload and this %s record has none; "+
+		// A Kafka tombstone (null value) reaches the destination as empty
+		// raw data after the gRPC hop between Conduit and a plugin, not as a
+		// nil payload, so both are refused. An empty Kafka value is
+		// therefore indistinguishable from a tombstone and is refused too:
+		// written as zero bytes plus a separator it would be acked and never
+		// recoverable as a record.
+		if r.Payload.After == nil || len(r.Payload.After.Bytes()) == 0 {
+			return fmt.Errorf("%s: format bytearray stores the payload and this %s record has none (a delete, a Kafka tombstone or an empty value); "+
 				"drop such records before the destination with a filter processor, or use format json or parquet, which store the operation",
 				CodeNullValue, r.Operation)
 		}

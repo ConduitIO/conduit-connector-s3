@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	opencdcv1 "github.com/conduitio/conduit-commons/proto/opencdc/v1"
 	"github.com/matryer/is"
 	"github.com/xitongsys/parquet-go-source/buffer"
 	"github.com/xitongsys/parquet-go/parquet"
@@ -229,4 +230,47 @@ func TestNewEncoder_Rejects(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A builtin:kafka tombstone (null Kafka value) reaches a destination plugin as
+// empty raw data after the gRPC hop, not as a nil payload, so the empty shapes
+// must be refused too, or the record is written as a bare separator and acked.
+// Regression test for the review of #1053.
+func TestEncoder_ByteArrayRefusesEveryTombstoneShape(t *testing.T) {
+	// the shape a tombstone has after the plugin protocol round trip
+	viaGRPC := func() opencdc.Record {
+		in := opencdc.Record{Operation: opencdc.OperationCreate, Position: opencdc.Position("p"), Key: opencdc.RawData("k"),
+			Payload: opencdc.Change{After: opencdc.RawData(nil)}}
+		var pb opencdcv1.Record
+		if err := in.ToProto(&pb); err != nil {
+			t.Fatal(err)
+		}
+		var out opencdc.Record
+		if err := out.FromProto(&pb); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	for name, r := range map[string]opencdc.Record{
+		"nil payload":         {Operation: opencdc.OperationDelete, Position: opencdc.Position("p")},
+		"RawData(nil)":        {Operation: opencdc.OperationCreate, Position: opencdc.Position("p"), Payload: opencdc.Change{After: opencdc.RawData(nil)}},
+		"RawData{}":           {Operation: opencdc.OperationCreate, Position: opencdc.Position("p"), Payload: opencdc.Change{After: opencdc.RawData{}}},
+		"after the gRPC hop":  viaGRPC(),
+		"empty value (alike)": {Operation: opencdc.OperationCreate, Position: opencdc.Position("p"), Payload: opencdc.Change{After: opencdc.RawData("")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			e := mustEncoder(t, ByteArray, `\n`, "", "")
+			b, err := e.MakeBytes([]opencdc.Record{r})
+			var re *RecordError
+			is.True(errors.As(err, &re))
+			is.True(strings.HasPrefix(re.Err.Error(), CodeNullValue))
+			is.Equal(len(b), 0)
+		})
+	}
+	// an empty structured payload is a value ("{}"), not a tombstone
+	is := is.New(t)
+	b, err := mustEncoder(t, ByteArray, `\n`, "", "").MakeBytes([]opencdc.Record{{Position: opencdc.Position("p"), Payload: opencdc.Change{After: opencdc.StructuredData{}}}})
+	is.NoErr(err)
+	is.Equal(string(b), "{}\n")
 }

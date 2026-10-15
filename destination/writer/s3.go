@@ -125,6 +125,12 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 		return refused
 	}
 	if len(batchBytes) == 0 {
+		if refused == nil && len(batch.Records) > 0 {
+			// Records that encode to nothing would be acked without being
+			// stored (invariant 1); the format checks make this unreachable,
+			// so it is a bug if it happens.
+			return fmt.Errorf("%d records encoded to an empty object; not writing or acknowledging them", len(batch.Records))
+		}
 		return refused
 	}
 
