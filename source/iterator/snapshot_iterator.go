@@ -19,321 +19,375 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsmw "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
+	"github.com/aws/smithy-go/middleware"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/rs/zerolog"
 )
 
-// SnapshotIterator to iterate through S3 objects in a specific bucket.
-type SnapshotIterator struct {
-	bucket          string
-	client          *s3.Client
-	paginator       *s3.ListObjectsV2Paginator
-	page            *s3.ListObjectsV2Output
-	index           int
-	maxLastModified time.Time
-	log             *zerolog.Logger
-	// listErr is a failed page listing. It must reach the caller: treating it
-	// as the end of the snapshot would hand over to CDC and silently skip every
-	// object not yet listed.
-	listErr error
-	// lastToken is the continuation token the last page was requested with.
-	lastToken string
+// Defaults of the settings the snapshot and CDC use for multipart uploads.
+// They become connector settings in a later change; see the design,
+// ConduitIO/conduit docs/design-documents/20261015-s3-source-exact-resume.md.
+const (
+	DefaultMaxTrackedUploads   = 256
+	DefaultMaxPendingUploadAge = 24 * time.Hour
+)
 
-	// anchor is the newest LastModified among the objects that existed when
-	// the snapshot started, found by one listing pass before the first page
-	// is read. The snapshot-to-CDC handoff is anchored to it, NOT to the
-	// newest LastModified the snapshot happens to read: later pages can hold
-	// objects written long after the snapshot began, and handing over from
-	// those would leave an object written early in the snapshot, under an
-	// already listed key range, below the CDC floor whenever the snapshot
-	// took longer than lookbackPeriod (#1032). Cost: one extra full listing of
-	// the prefix (one ListObjectsV2 request per 1000 keys) per snapshot, capped at
-	// the host clock when it was taken. Zero
-	// for an empty bucket, which makes CDC select everything.
-	prefix   string
-	anchor   time.Time
-	anchored bool
+// ErrMultipartListingDenied is the stable error code of a source that may not
+// list in-progress multipart uploads. It stops the source instead of falling
+// back silently: without the listing, an upload that runs longer than the
+// lookback can be missed. The fix is the s3:ListBucketMultipartUploads
+// permission, or the documented, lossy opt-out.
+var ErrMultipartListingDenied = errors.New("s3.source.multipart_listing_denied")
 
-	// lookback is the CDC lookback the handoff floor is computed with
-	// (anchor - lookback). delivered holds the object versions this snapshot
-	// handed over whose listing LastModified is at or after that floor:
-	// exactly what the CDC iterator would select again at the handoff (#1040).
-	// The CDC iterator starts with it as its dedupe set, so an object the
-	// snapshot delivered is not delivered a second time when nothing failed.
-	// It is bounded by maxSeedBytes; beyond it entries are not recorded, which
-	// only means redelivery (at-least-once), never a skip.
-	lookback       time.Duration
-	delivered      map[deliveredKey]struct{}
-	deliveredBytes int64
+// SnapshotConfig configures a SnapshotIterator.
+type SnapshotConfig struct {
+	Bucket, Prefix string
+	// Lookback is the CDC lookback period: the snapshot delivers only objects
+	// that were settled (older than the lookback) when it started.
+	Lookback time.Duration
+	// MultipartHold enables the multipart uploads listing (on by default;
+	// false is the lossy opt-out).
+	MultipartHold       bool
+	MaxTrackedUploads   int
+	MaxPendingUploadAge time.Duration
+	// Now is the host clock; nil means time.Now.
+	Now func() time.Time
 }
 
-// nullVersionID is the version id S3 lists for objects in an unversioned
-// bucket.
-const nullVersionID = "null"
+// SnapshotIterator delivers the objects that existed and were settled when
+// the snapshot started, in key order, and resumes exactly from any of its
+// positions.
+//
+// Invariants (design "Snapshot"):
+//
+//   - The snapshot cut C0 = min(Tu, Tl) - lookback, where Tu and Tl are the
+//     Date headers of the first ListMultipartUploads and ListObjectsV2 pages,
+//     capped at the host clock, and lowered below an old upload that could not
+//     be tracked. Only objects with LastModified <= C0 are delivered; newer
+//     ones, and completed versions of uploads tracked in R0, are left to CDC.
+//   - Every record carries a snapshot position (C0, its key, R0). Resuming lists
+//     after that key with the same C0 and R0, so nothing acked comes again and
+//     nothing is skipped (s3#1041).
+//   - A fetched object must be the listed version (If-Match on the ETag and the
+//     same Last-Modified second); otherwise it changed after the listing and
+//     is a CDC event, so the snapshot skips it.
+//   - A failure is sticky: the iterator never reports the end of the snapshot
+//     after an error, which would hand over to CDC and skip what is unread.
+type SnapshotIterator struct {
+	cfg    SnapshotConfig
+	client *s3.Client
+	log    *zerolog.Logger
 
-// maxSeedBytes bounds the memory of SnapshotIterator.delivered. Half of the
-// CDC dedupe budget, so that the CDC iterator has room for its own first
-// polls. A variable so tests can lower it.
-var maxSeedBytes = maxDeliveredBytes / 2
+	started bool
+	cut     time.Time
+	tracked []position.TrackedUpload
 
-// NewSnapshotIterator takes the s3 bucket, the client, and the position.
-// it returns a snapshotIterator starting from the position provided.
-// lookback is the CDC lookback period, used to decide which delivered objects
-// the CDC iterator must not deliver again at the handoff (see
-// SnapshotIterator.delivered).
-func NewSnapshotIterator(bucket, prefix string, lookback time.Duration, client *s3.Client, p position.Position, log *zerolog.Logger) (*SnapshotIterator, error) {
+	startAfter string
+	paginator  *s3.ListObjectsV2Paginator
+	page       *s3.ListObjectsV2Output
+	index      int
+	lastToken  string
+	exhausted  bool
+	// listErr is sticky (see the type doc).
+	listErr error
+}
+
+// NewSnapshotIterator returns an iterator that starts a new snapshot (resume
+// nil) or continues the one in resume.
+func NewSnapshotIterator(cfg SnapshotConfig, client *s3.Client, resume *position.SnapshotV2, log *zerolog.Logger) *SnapshotIterator {
 	if log == nil {
 		nop := zerolog.Nop()
 		log = &nop
 	}
-	input := &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
-		Prefix: aws.String(prefix),
+	if cfg.Now == nil {
+		cfg.Now = time.Now
 	}
-
-	return &SnapshotIterator{
-		prefix:          prefix,
-		bucket:          bucket,
-		client:          client,
-		paginator:       s3.NewListObjectsV2Paginator(client, input),
-		maxLastModified: p.Timestamp,
-		log:             log,
-		lookback:        lookback,
-		delivered:       make(map[deliveredKey]struct{}),
-	}, nil
+	it := &SnapshotIterator{cfg: cfg, client: client, log: log}
+	if resume != nil {
+		it.started = true
+		it.cut = resume.Cut
+		it.tracked = resume.Tracked
+		it.startAfter = resume.LastKey
+	}
+	return it
 }
 
-// shouldRefreshPage returns a boolean indicating whether the SnapshotIterator is empty or not.
-func (w *SnapshotIterator) shouldRefreshPage() bool {
-	return w.page == nil || len(w.page.Contents) == w.index
+// Cut returns the snapshot cut and the uploads tracked at snapshot start. They
+// are what change capture starts from after the snapshot. Valid once the
+// snapshot has started (after the first HasNext or Next).
+func (w *SnapshotIterator) Cut() (time.Time, []position.TrackedUpload) {
+	return w.cut, w.tracked
 }
 
-// refreshPage retrieves the next page from s3. It returns sdk.ErrBackoffRetry
-// only when the listing is really exhausted; every other outcome that is not a
-// page is an error. Nothing about the iterator's position changes unless a page
-// was fetched successfully, so a failed call can be retried without skipping.
-func (w *SnapshotIterator) refreshPage(ctx context.Context) error {
-	if !w.anchored {
-		if err := w.findAnchor(ctx); err != nil {
-			return fmt.Errorf("could not list the bucket to anchor the snapshot: %w", err)
-		}
-	}
-	for w.paginator.HasMorePages() {
-		nextPage, err := w.paginator.NextPage(ctx)
-		if err != nil {
-			// The paginator did not advance, so the same page is fetched again.
-			return fmt.Errorf("could not fetch next page: %w", err)
-		}
-		// A page that claims to be truncated but offers no way to get the next
-		// one (no or repeated continuation token) is a broken listing, not the
-		// end of the bucket: ending here would skip everything after it.
-		next := aws.ToString(nextPage.NextContinuationToken)
-		if aws.ToBool(nextPage.IsTruncated) && (next == "" || next == w.lastToken) {
-			return fmt.Errorf("could not fetch next page: the listing is truncated but has no new continuation token")
-		}
-		w.lastToken = next
-		w.page, w.index = nextPage, 0
-		if len(nextPage.Contents) > 0 {
-			return nil
-		}
-	}
-	w.page, w.index = nil, 0
-	return sdk.ErrBackoffRetry
-}
-
-// findAnchor lists the whole prefix once and records the newest LastModified.
-// It runs before the first page of the snapshot proper, so everything the
-// snapshot lists afterwards that is newer than the anchor was written after the
-// snapshot started.
-func (w *SnapshotIterator) findAnchor(ctx context.Context) error {
-	pg := s3.NewListObjectsV2Paginator(w.client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(w.bucket),
-		Prefix: aws.String(w.prefix),
-	})
-	var newest time.Time
-	var last string
-	for pg.HasMorePages() {
-		page, err := pg.NextPage(ctx)
-		if err != nil {
-			return err
-		}
-		for _, o := range page.Contents {
-			if o.LastModified != nil && o.LastModified.After(newest) {
-				newest = *o.LastModified
-			}
-		}
-		next := aws.ToString(page.NextContinuationToken)
-		if aws.ToBool(page.IsTruncated) && (next == "" || next == last) {
-			return errors.New("the listing is truncated but has no new continuation token")
-		}
-		last = next
-	}
-	// Capped at the host clock at the time of the listing: a future-stamped
-	// object in the bucket must not make the handoff point (and with it the CDC
-	// floor) land above objects written during the snapshot. The cap only
-	// lowers the anchor, which means more redelivery.
-	if now := time.Now(); newest.After(now) {
-		newest = now
-	}
-	w.anchor, w.anchored = newest, true
-	return nil
-}
-
-// fail records a listing or read error. It is sticky: once the snapshot has
-// failed it never reports "no more objects" or moves on, whatever the caller
-// does next. Treating a failure as the end of the snapshot would hand over to
-// CDC and silently skip every object not yet read.
 func (w *SnapshotIterator) fail(err error) error {
 	w.listErr = err
 	return err
 }
 
-// HasNext returns a boolean that indicates whether the iterator has more objects to return or not.
-// A failed listing is not "no more objects": it returns true and Next reports
-// the error.
+// start computes the cut of a new snapshot and fetches its first page.
+func (w *SnapshotIterator) start(ctx context.Context) error {
+	host := w.cfg.Now()
+	var uploads []types.MultipartUpload
+	tu := host
+	if w.cfg.MultipartHold {
+		var err error
+		uploads, tu, err = listUploads(ctx, w.client, w.cfg.Bucket, w.cfg.Prefix, host, w.log)
+		if err != nil {
+			return err
+		}
+	}
+	w.paginator = s3.NewListObjectsV2Paginator(w.client, w.listInput())
+	first, err := w.paginator.NextPage(ctx)
+	if err != nil {
+		return fmt.Errorf("could not fetch the first snapshot page: %w", err)
+	}
+	tl := responseDate(first.ResultMetadata, host, w.log)
+	t0 := earliest(tu, tl, host)
+	w.cut, w.tracked = cutAndTrack(t0, w.cfg.Lookback, tu, uploads, nil, w.cfg.MaxTrackedUploads, w.cfg.MaxPendingUploadAge, w.log)
+	w.started = true
+	return w.acceptPage(first)
+}
+
+func (w *SnapshotIterator) listInput() *s3.ListObjectsV2Input {
+	in := &s3.ListObjectsV2Input{Bucket: aws.String(w.cfg.Bucket), Prefix: aws.String(w.cfg.Prefix)}
+	if w.startAfter != "" {
+		in.StartAfter = aws.String(w.startAfter)
+	}
+	return in
+}
+
+// acceptPage installs a fetched page. A page that claims to be truncated but
+// offers no way to get the next one is a broken listing, not the end of the
+// bucket: ending there would skip everything after it.
+func (w *SnapshotIterator) acceptPage(p *s3.ListObjectsV2Output) error {
+	next := aws.ToString(p.NextContinuationToken)
+	if aws.ToBool(p.IsTruncated) && (next == "" || next == w.lastToken) {
+		return errors.New("could not fetch next page: the listing is truncated but has no new continuation token")
+	}
+	w.lastToken = next
+	w.page, w.index = p, 0
+	return nil
+}
+
+// advance makes sure a page with an unread entry is current. It returns
+// sdk.ErrBackoffRetry only when the listing is really exhausted.
+func (w *SnapshotIterator) advance(ctx context.Context) error {
+	if !w.started {
+		if err := w.start(ctx); err != nil {
+			return err
+		}
+	}
+	if w.paginator == nil {
+		w.paginator = s3.NewListObjectsV2Paginator(w.client, w.listInput())
+	}
+	for w.page == nil || w.index >= len(w.page.Contents) {
+		if !w.paginator.HasMorePages() || (w.page != nil && !aws.ToBool(w.page.IsTruncated)) {
+			w.exhausted = true
+			return sdk.ErrBackoffRetry
+		}
+		p, err := w.paginator.NextPage(ctx)
+		if err != nil {
+			// The paginator did not advance, so the same page would be
+			// fetched again; the error is sticky anyway.
+			return fmt.Errorf("could not fetch next page: %w", err)
+		}
+		if err := w.acceptPage(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// HasNext reports whether a record may follow. A failure is not "no more
+// objects": it returns true and Next reports the error.
 func (w *SnapshotIterator) HasNext(ctx context.Context) bool {
 	if w.listErr != nil {
 		return true
 	}
-	if w.shouldRefreshPage() {
-		err := w.refreshPage(ctx)
-		if err != nil {
-			if !errors.Is(err, sdk.ErrBackoffRetry) {
-				_ = w.fail(err)
-				return true
-			}
+	if w.exhausted {
+		return false
+	}
+	if err := w.advance(ctx); err != nil {
+		if errors.Is(err, sdk.ErrBackoffRetry) {
 			return false
 		}
+		_ = w.fail(err)
 	}
 	return true
 }
 
-// Next returns the next record in the iterator.
-// returns an empty record and an error if anything wrong happened. The position
-// (page index, max LastModified) only advances once the record is fully built,
-// and an error is sticky. An object that was deleted between being listed and
-// being read is skipped: it is gone, so there is nothing to deliver, and the
-// CDC phase reports the deletion.
+// Next returns the next settled object. Objects newer than the cut, completed
+// versions of tracked uploads, and objects that changed or disappeared after
+// the listing are skipped: change capture delivers them.
 func (w *SnapshotIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	for {
 		if w.listErr != nil {
 			return opencdc.Record{}, w.listErr
 		}
-		if w.shouldRefreshPage() {
-			err := w.refreshPage(ctx)
-			if err != nil {
-				if errors.Is(err, sdk.ErrBackoffRetry) {
-					return opencdc.Record{}, err
-				}
-				return opencdc.Record{}, w.fail(err)
+		if err := w.advance(ctx); err != nil {
+			if errors.Is(err, sdk.ErrBackoffRetry) {
+				return opencdc.Record{}, err
 			}
+			return opencdc.Record{}, w.fail(err)
 		}
-
-		// after making sure the object is available, get the object's key
 		listed := w.page.Contents[w.index]
-		key := listed.Key
-
-		// read object
-		object, err := w.client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(w.bucket),
-			Key:    key,
-		})
-		if err != nil {
-			var noSuchKey *types.NoSuchKey
-			if errors.As(err, &noSuchKey) {
-				w.log.Debug().Str("key", *key).Msg("object was deleted after it was listed, skipping it")
-				w.index++
-				continue
-			}
-			return opencdc.Record{}, w.fail(fmt.Errorf("could not fetch the next object: %w", err))
+		if !w.belongsToSnapshot(listed) {
+			w.index++
+			continue
 		}
-
-		return w.buildRecord(listed, object)
+		rec, skip, err := w.read(ctx, listed)
+		if err != nil {
+			return opencdc.Record{}, w.fail(err)
+		}
+		// Everything that can fail is behind us: only now move on.
+		w.index++
+		if skip {
+			continue
+		}
+		return rec, nil
 	}
 }
 
-// recordDelivered remembers the version just handed over if CDC would select
-// it again at the handoff. The version is identified the way the CDC iterator
-// identifies what it lists (ListObjectVersions): key, version id, ETag and
-// LastModified. ETag and LastModified come from the listing, not from
-// GetObject: GetObject's LastModified is the HTTP Last-Modified header, which
-// has one-second resolution, while listings carry milliseconds on stores that
-// have them (#1040). The version id is GetObject's, "null" when the store
-// sends none (an unversioned bucket, where ListObjectVersions says "null").
-// If any part differs from what CDC lists, CDC simply delivers the object
-// again: a mismatch can only cause a duplicate, never a skip.
-func (w *SnapshotIterator) recordDelivered(listed types.Object, object *s3.GetObjectOutput) {
-	// Invariant 3: only the version whose body was handed over is recorded,
-	// and CDC suppresses only exact matches, so the seed can cause no skip.
-	// GetObject reads whatever is current, which can differ from what was
-	// listed (an overwrite in between, or a stale read). If its ETag is not the
-	// listed one, the delivered body is not the listed version, and recording
-	// the listed identity would make CDC suppress a version nobody delivered.
-	if aws.ToString(object.ETag) != aws.ToString(listed.ETag) {
-		return // CDC delivers the listed version again: a duplicate at worst
+// belongsToSnapshot reports whether the listed object is delivered by the
+// snapshot: settled at the start, and not the completed version of a tracked
+// upload (change capture delivers those, design "Tracked uploads").
+func (w *SnapshotIterator) belongsToSnapshot(o types.Object) bool {
+	if o.LastModified == nil || o.LastModified.After(w.cut) {
+		return false
 	}
-	if listed.LastModified == nil || listed.LastModified.Before(w.anchor.Add(-w.lookback)) {
-		return // below the CDC floor at the handoff: CDC never selects it
-	}
-	versionID := aws.ToString(object.VersionId)
-	if versionID == "" {
-		versionID = nullVersionID
-	}
-	k := deliveredKey{key: aws.ToString(listed.Key), versionID: versionID, etag: aws.ToString(listed.ETag), modified: *listed.LastModified}
-	if _, ok := w.delivered[k]; ok {
-		return
-	}
-	if w.deliveredBytes+k.bytes() > maxSeedBytes {
-		return // over budget: CDC delivers it again (at-least-once)
-	}
-	w.delivered[k] = struct{}{}
-	w.deliveredBytes += k.bytes()
+	return !matchesTracked(w.tracked, aws.ToString(o.Key), *o.LastModified, aws.ToString(o.ETag))
 }
 
-func (w *SnapshotIterator) buildRecord(listed types.Object, object *s3.GetObjectOutput) (opencdc.Record, error) {
-	key := listed.Key
-	defer object.Body.Close()
-
-	rawBody, err := io.ReadAll(object.Body)
+// read fetches the listed version. skip is true when the object changed or
+// disappeared after it was listed.
+func (w *SnapshotIterator) read(ctx context.Context, listed types.Object) (rec opencdc.Record, skip bool, err error) {
+	key := aws.ToString(listed.Key)
+	object, err := w.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket:  aws.String(w.cfg.Bucket),
+		Key:     listed.Key,
+		IfMatch: listed.ETag,
+	})
 	if err != nil {
-		return opencdc.Record{}, w.fail(fmt.Errorf("could not read the object's body: %w", err))
+		if isGone(err) {
+			w.log.Debug().Str("key", key).Msg("object changed or was deleted after it was listed; change capture delivers what replaced it")
+			return opencdc.Record{}, true, nil
+		}
+		return opencdc.Record{}, false, fmt.Errorf("could not fetch the next object: %w", err)
 	}
-
-	// Everything that can fail is behind us: only now move the position.
-	w.index++
-	w.recordDelivered(listed, object)
-	if lm := aws.ToTime(object.LastModified); w.maxLastModified.Before(lm) {
-		w.maxLastModified = lm
+	defer object.Body.Close()
+	if !sameSecond(object.LastModified, listed.LastModified) {
+		// Same content written again after the listing: the ETag matches, the
+		// time does not. Delivering it here would deliver it again from CDC.
+		w.log.Debug().Str("key", key).Msg("object was overwritten with the same content after it was listed; change capture delivers it")
+		return opencdc.Record{}, true, nil
 	}
-
-	p := position.Position{
-		Key:       *key,
-		Type:      position.TypeSnapshot,
-		Timestamp: w.maxLastModified,
+	body, err := io.ReadAll(object.Body)
+	if err != nil {
+		return opencdc.Record{}, false, fmt.Errorf("could not read the object's body: %w", err)
 	}
-
-	m := opencdc.Metadata{
-		MetadataS3HeaderPrefix + MetadataContentType: aws.ToString(object.ContentType),
+	p, err := position.SnapshotV2{Cut: w.cut, LastKey: key, Tracked: w.tracked}.ToRecordPosition()
+	if err != nil {
+		return opencdc.Record{}, false, fmt.Errorf("could not encode the position for %q: %w", key, err)
 	}
-	for key, val := range object.Metadata {
-		m[key] = val
+	m := opencdc.Metadata{MetadataS3HeaderPrefix + MetadataContentType: aws.ToString(object.ContentType)}
+	for k, v := range object.Metadata {
+		m[k] = v
 	}
-
-	// create the record
-	return sdk.Util.Source.NewRecordSnapshot(
-		p.ToRecordPosition(), m,
-		opencdc.RawData(*key),
-		opencdc.RawData(rawBody),
-	), nil
+	return sdk.Util.Source.NewRecordSnapshot(p, m, opencdc.RawData(key), opencdc.RawData(body)), false, nil
 }
 
-func (w *SnapshotIterator) Stop() {
-	// nothing to stop
+func (w *SnapshotIterator) Stop() {}
+
+// isGone reports a GetObject that found the listed version replaced (412 on
+// If-Match) or deleted (404).
+func isGone(err error) bool {
+	var noSuchKey *types.NoSuchKey
+	if errors.As(err, &noSuchKey) {
+		return true
+	}
+	var re *smithyhttp.ResponseError
+	if errors.As(err, &re) {
+		switch re.HTTPStatusCode() {
+		case http.StatusPreconditionFailed, http.StatusNotFound:
+			return true
+		}
+	}
+	return false
+}
+
+func sameSecond(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Unix() == b.Unix()
+}
+
+// responseDate returns the Date header of a response, capped at the host
+// clock; the host clock when it is missing or unparseable.
+func responseDate(md middleware.Metadata, host time.Time, log *zerolog.Logger) time.Time {
+	raw, ok := awsmw.GetRawResponse(md).(*smithyhttp.Response)
+	if !ok || raw == nil {
+		return host
+	}
+	d, err := http.ParseTime(raw.Header.Get("Date"))
+	if err != nil {
+		log.Warn().Str("date", raw.Header.Get("Date")).Msg("listing response has no usable Date header; using the host clock for the settled cut")
+		return host
+	}
+	if d.After(host) {
+		return host
+	}
+	return d
+}
+
+func earliest(ts ...time.Time) time.Time {
+	m := ts[0]
+	for _, t := range ts[1:] {
+		if t.Before(m) {
+			m = t
+		}
+	}
+	return m
+}
+
+// listUploads lists the in-progress multipart uploads under the prefix, all
+// pages, and returns the Date of the first page (Tu, capped at host).
+func listUploads(ctx context.Context, client *s3.Client, bucket, prefix string, host time.Time, log *zerolog.Logger) ([]types.MultipartUpload, time.Time, error) {
+	in := &s3.ListMultipartUploadsInput{Bucket: aws.String(bucket), Prefix: aws.String(prefix)}
+	var all []types.MultipartUpload
+	tu := time.Time{}
+	for {
+		out, err := client.ListMultipartUploads(ctx, in)
+		if err != nil {
+			var apiErr smithy.APIError
+			if errors.As(err, &apiErr) && apiErr.ErrorCode() == "AccessDenied" {
+				return nil, time.Time{}, fmt.Errorf("%w: listing in-progress multipart uploads under %q was denied; grant s3:ListBucketMultipartUploads, or set cdc.multipartHold to false (lossy for multipart uploads longer than lookbackPeriod): %w",
+					ErrMultipartListingDenied, prefix, err)
+			}
+			return nil, time.Time{}, fmt.Errorf("could not list multipart uploads: %w", err)
+		}
+		if tu.IsZero() {
+			tu = responseDate(out.ResultMetadata, host, log)
+		}
+		all = append(all, out.Uploads...)
+		if !aws.ToBool(out.IsTruncated) {
+			break
+		}
+		if aws.ToString(out.NextKeyMarker) == "" && aws.ToString(out.NextUploadIdMarker) == "" {
+			return nil, time.Time{}, errors.New("could not list multipart uploads: the listing is truncated but has no next marker")
+		}
+		in.KeyMarker, in.UploadIdMarker = out.NextKeyMarker, out.NextUploadIdMarker
+	}
+	return all, tu, nil
 }

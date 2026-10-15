@@ -591,11 +591,32 @@ func TestSource_MinIO(t *testing.T) {
 
 	testFiles := addObjectsToBucket(ctx, t, bucket, "", client, 3)
 
-	// read and assert the objects are read back from MinIO
-	for _, file := range testFiles {
-		_, err := readAndAssert(ctx, t, underTest, file)
-		is.NoErr(err) // unexpected error
+	// Read the objects back from MinIO. They were written after Open, so
+	// they are newer than the snapshot cut and arrive from change capture
+	// after a poll, not from the first Read (design: ConduitIO/conduit
+	// 20261015-s3-source-exact-resume.md, "Behavior change for recent
+	// objects").
+	want := map[string]Object{}
+	for _, f := range testFiles {
+		want[f.key] = f
 	}
+	deadline := time.Now().Add(waitBudget)
+	for len(want) > 0 && time.Now().Before(deadline) {
+		rec, err := readWithTimeout(ctx, underTest, 5*time.Second)
+		if err != nil {
+			continue
+		}
+		f, ok := want[string(rec.Key.Bytes())]
+		if !ok {
+			t.Fatalf("unexpected or repeated record %q", rec.Key.Bytes())
+		}
+		is.Equal(string(rec.Payload.After.Bytes()), f.content)
+		for k, v := range f.metadata {
+			is.Equal(rec.Metadata[k], v)
+		}
+		delete(want, f.key)
+	}
+	is.Equal(len(want), 0) // every object was delivered
 
 	_, err = underTest.Read(ctx)
 	is.True(errors.Is(err, sdk.ErrBackoffRetry))

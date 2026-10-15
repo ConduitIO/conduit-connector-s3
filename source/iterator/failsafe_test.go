@@ -51,7 +51,13 @@ type fakeStore struct {
 	mu       sync.Mutex
 	requests []string
 	handler  func(r *http.Request) *http.Response
+	// uploads answers ListMultipartUploads; nil means no uploads in progress.
+	uploads func(r *http.Request) *http.Response
 }
+
+func isUploads(r *http.Request) bool { return r.URL.Query().Has("uploads") }
+
+const noUploads = `<?xml version="1.0"?><ListMultipartUploadsResult><Bucket>b</Bucket><IsTruncated>false</IsTruncated></ListMultipartUploadsResult>`
 
 func (f *fakeStore) client() *s3.Client {
 	return s3.New(s3.Options{
@@ -64,7 +70,15 @@ func (f *fakeStore) client() *s3.Client {
 			f.mu.Lock()
 			f.requests = append(f.requests, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
 			f.mu.Unlock()
-			resp := f.handler(r)
+			var resp *http.Response
+			switch {
+			case isUploads(r) && f.uploads != nil:
+				resp = f.uploads(r)
+			case isUploads(r):
+				resp = xmlResp(200, noUploads)
+			default:
+				resp = f.handler(r)
+			}
 			resp.Request = r
 			if resp.Header == nil {
 				resp.Header = http.Header{}
@@ -137,17 +151,16 @@ func (errReader) Read([]byte) (int, error) { return 0, errors.New("connection re
 
 func isList(r *http.Request) bool { return r.URL.Query().Get("list-type") == "2" }
 func isGet(r *http.Request) bool {
-	return r.Method == http.MethodGet && !isList(r) && !r.URL.Query().Has("versions")
+	return r.Method == http.MethodGet && !isList(r) && !r.URL.Query().Has("versions") && !isUploads(r)
 }
 func keyOf(r *http.Request) string { return strings.TrimPrefix(r.URL.Path, "/b/") }
 func token(r *http.Request) string { return r.URL.Query().Get("continuation-token") }
 func newSnap(t *testing.T, c *s3.Client) *SnapshotIterator {
 	t.Helper()
-	it, err := NewSnapshotIterator("b", "", 5*time.Minute, c, position.Position{}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return it
+	return NewSnapshotIterator(SnapshotConfig{
+		Bucket: "b", Lookback: 5 * time.Minute, MultipartHold: true,
+		MaxTrackedUploads: DefaultMaxTrackedUploads, MaxPendingUploadAge: DefaultMaxPendingUploadAge,
+	}, c, nil, nil)
 }
 
 // twoPages serves keys a,b on page 1 and c on page 2; hooks can override a
@@ -188,12 +201,10 @@ func assertSticky(t *testing.T, it *SnapshotIterator) {
 	}
 }
 
-// failSnapshotPage2 fails page 2 only from its second request on: the first one
-// is the anchor listing, the second the snapshot proper.
+// failSnapshotPage2 fails every request for page 2.
 func failSnapshotPage2() func(r *http.Request) *http.Response {
-	var n atomic.Int32
 	return func(r *http.Request) *http.Response {
-		if isList(r) && token(r) == "t1" && n.Add(1) >= 2 {
+		if isList(r) && token(r) == "t1" {
 			return errResp(403)
 		}
 		return nil
@@ -214,23 +225,17 @@ func TestSnapshotIterator_ListErrorOnLaterPageIsSticky(t *testing.T) {
 	_, err := it.Next(ctx) // needs page 2
 	is.True(err != nil)
 	assertSticky(t, it)
-	is.Equal(st.count("continuation-token=t1"), 2) // anchor pass + the one failed request: not retried behind the caller's back
+	is.Equal(st.count("continuation-token=t1"), 1) // the one failed request: not retried behind the caller's back
 	is.Equal(st.count("GET /b/c"), 0)              // and c is never read
 }
 
-// The anchor listing runs before the first page; its failure is as sticky as
-// any other and no record is delivered without an anchor.
-func TestSnapshotIterator_AnchorListingFailureIsSticky(t *testing.T) {
+// The uploads listing runs before the first page; its failure is as sticky as
+// any other and no record is delivered without a cut.
+func TestSnapshotIterator_UploadsListingFailureIsSticky(t *testing.T) {
 	is := is.New(t)
-	st := &fakeStore{handler: twoPages(func(r *http.Request) *http.Response { //nolint:bodyclose // scripted responses, closed by the SDK
-		if isList(r) && token(r) == "t1" {
-			return errResp(403)
-		}
-		return nil
-	})}
+	st := &fakeStore{handler: twoPages(nil), uploads: func(*http.Request) *http.Response { return errResp(500) }} //nolint:bodyclose // scripted responses, closed by the SDK
 	it := newSnap(t, st.client())
 	assertSticky(t, it)
-	is.True(it.anchor.IsZero())
 	is.Equal(st.count("GET /b/a"), 0)
 }
 
@@ -274,8 +279,7 @@ func TestSnapshotIterator_BodyReadErrorDoesNotAdvancePosition(t *testing.T) {
 	it := newSnap(t, st.client())
 	_, err := it.Next(context.Background())
 	is.True(err != nil)
-	is.Equal(it.index, 0)
-	is.True(it.maxLastModified.IsZero()) // not advanced by a record that was never delivered
+	is.Equal(it.index, 0) // not advanced by a record that was never delivered
 	assertSticky(t, it)
 }
 
@@ -313,7 +317,7 @@ func TestCombinedIterator_ListErrorNeverHandsOverToCDC(t *testing.T) {
 	is := is.New(t)
 	st := &fakeStore{handler: twoPages(failSnapshotPage2())} //nolint:bodyclose // scripted responses, closed by the SDK
 	ctx := context.Background()
-	c, err := NewCombinedIterator(ctx, "b", "", time.Hour, time.Minute, st.client(), position.Position{})
+	c, err := NewCombinedIterator(ctx, CombinedConfig{Bucket: "b", PollingPeriod: time.Hour, Lookback: time.Minute, MultipartHold: true, MaxTrackedUploads: 4, MaxPendingUploadAge: time.Hour}, st.client(), nil)
 	is.NoErr(err)
 
 	var keys []string
@@ -979,29 +983,6 @@ func TestCDCIterator_ObjectDeletedAfterListingIsSkipped(t *testing.T) {
 	st.mu2.Unlock()
 	mustDeliver(t, it, "a")
 	mustDeliver(t, it, "c") // "gone" was skipped, the iterator did not stop
-}
-
-// F2: a future-stamped object in the bucket must not put the snapshot's
-// handoff anchor above the host clock; the anchor is capped at the host clock
-// of the anchor listing (it only lowers the CDC floor).
-func TestSnapshotIterator_AnchorIsCappedAtHostClock(t *testing.T) {
-	is := is.New(t)
-	future := time.Now().Add(2 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
-	past := time.Now().Add(-10 * time.Minute).UTC().Format("2006-01-02T15:04:05.000Z")
-	body := fmt.Sprintf(`<?xml version="1.0"?><ListBucketResult><IsTruncated>false</IsTruncated>
-<Contents><Key>old</Key><LastModified>%s</LastModified><ETag>"e"</ETag><Size>1</Size></Contents>
-<Contents><Key>bogus</Key><LastModified>%s</LastModified><ETag>"e"</ETag><Size>1</Size></Contents></ListBucketResult>`, past, future)
-	st := &fakeStore{handler: func(r *http.Request) *http.Response {
-		if isList(r) {
-			return xmlResp(200, body)
-		}
-		return objectResp(keyOf(r))
-	}}
-	it := newSnap(t, st.client())
-	before := time.Now()
-	is.True(it.HasNext(context.Background()))
-	is.True(!it.anchor.After(time.Now()))
-	is.True(!it.anchor.Before(before.Add(-time.Second))) // capped at "now", not at the 10 minute old object
 }
 
 // F1 x F3: the candidate budget defers some candidates; the shrink must not
