@@ -325,7 +325,7 @@ func TestSnapshot_DeniedUploadsListingStops(t *testing.T) {
 
 func TestCombined_PositionKinds(t *testing.T) {
 	ctx := context.Background()
-	cfg := CombinedConfig{Bucket: "b", PollingPeriod: time.Hour, Lookback: 5 * time.Minute, MultipartHold: true, MaxTrackedUploads: 8, MaxPendingUploadAge: 24 * time.Hour}
+	cfg := CombinedConfig{Bucket: "b", PollingPeriod: time.Hour, Lookback: 5 * time.Minute, MultipartHold: true, MaxTrackedUploads: 8, MaxPendingUploadAge: 24 * time.Hour, MaxEarlyObjects: 16, MaxSettledBytesPerPoll: 1 << 20}
 
 	t.Run("v1 snapshot position restarts the snapshot", func(t *testing.T) {
 		is := is.New(t)
@@ -349,12 +349,23 @@ func TestCombined_PositionKinds(t *testing.T) {
 		t.Cleanup(c.Stop)
 		is.True(c.cdcIterator != nil && c.snapshotIterator == nil)
 	})
-	t.Run("v2 CDC position is refused by this build", func(t *testing.T) {
+	t.Run("v2 CDC position resumes CDC with its state", func(t *testing.T) {
 		is := is.New(t)
-		p, err := position.CDCV2{S: position.Tuple{Time: tNow, Inf: true}}.ToRecordPosition()
+		state := position.CDCV2{
+			S:       position.Tuple{Time: tNow, Key: "k", VersionID: "null"},
+			Early:   []position.EarlyEntry{{Modified: tNow.Add(time.Second), Hash: position.Hash{7}}},
+			Tracked: []position.TrackedUpload{{KeyHash: position.KeyHash("u"), Initiated: tNow.Add(-time.Hour)}},
+		}
+		p, err := state.ToRecordPosition()
 		is.NoErr(err)
-		_, err = NewCombinedIterator(ctx, cfg, newSnapStore(tNow).client(), p)
-		is.True(errors.Is(err, position.ErrInvalid))
+		c, err := NewCombinedIterator(ctx, cfg, newSnapStore(tNow).client(), p)
+		is.NoErr(err)
+		t.Cleanup(c.Stop)
+		is.True(c.cdcIterator != nil && c.snapshotIterator == nil)
+		got := c.cdcIterator.State()
+		is.Equal(got.S, state.S)
+		is.Equal(len(got.Early), 1)
+		is.Equal(len(got.Tracked), 1)
 	})
 	t.Run("corrupt position fails", func(t *testing.T) {
 		is := is.New(t)

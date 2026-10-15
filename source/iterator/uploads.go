@@ -51,9 +51,14 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 		known[idOf(u)] = struct{}{}
 	}
 
+	// An upload is old if its completed object could be stamped at or below
+	// the cut. AWS stamps that object with the initiation time at one-second
+	// resolution, so the comparison uses the second the upload was initiated
+	// in, and "at or below": S = (cut, +inf) covers versions stamped exactly
+	// at the cut.
 	old := make([]types.MultipartUpload, 0, len(uploads))
 	for _, u := range uploads {
-		if u.Initiated != nil && u.Key != nil && u.Initiated.Before(cut) {
+		if u.Initiated != nil && u.Key != nil && !stampSecond(*u.Initiated).After(cut) {
 			old = append(old, u)
 		}
 	}
@@ -78,7 +83,7 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 		}
 		// Invariant 3: an old upload that cannot be tracked must stay above S,
 		// so it holds the cut.
-		hold := u.Initiated.Add(-time.Second)
+		hold := stampSecond(*u.Initiated).Add(-time.Second)
 		if hold.Before(cut) {
 			cut = hold
 		}
@@ -90,6 +95,14 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 	}
 	return cut, tracked
 }
+
+// nullVersionID is the version id S3 lists for objects in an unversioned
+// bucket.
+const nullVersionID = "null"
+
+// stampSecond is the earliest LastModified the completed object of an upload
+// initiated at t can carry: t rounded down to the second.
+func stampSecond(t time.Time) time.Time { return t.UTC().Truncate(time.Second) }
 
 type trackedID struct {
 	h  position.Hash

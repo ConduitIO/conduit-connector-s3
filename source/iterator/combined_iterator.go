@@ -17,7 +17,6 @@ package iterator
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -34,12 +33,14 @@ const (
 
 // CombinedConfig configures a CombinedIterator.
 type CombinedConfig struct {
-	Bucket, Prefix      string
-	PollingPeriod       time.Duration
-	Lookback            time.Duration
-	MultipartHold       bool
-	MaxTrackedUploads   int
-	MaxPendingUploadAge time.Duration
+	Bucket, Prefix         string
+	PollingPeriod          time.Duration
+	Lookback               time.Duration
+	MultipartHold          bool
+	MaxTrackedUploads      int
+	MaxPendingUploadAge    time.Duration
+	MaxEarlyObjects        int
+	MaxSettledBytesPerPoll int64
 }
 
 // CombinedIterator runs the snapshot, then change capture.
@@ -71,14 +72,11 @@ func NewCombinedIterator(ctx context.Context, cfg CombinedConfig, client *s3.Cli
 	case parsed.V2 != nil && parsed.V2.Snapshot != nil:
 		c.snapshotIterator = NewSnapshotIterator(c.snapshotConfig(), client, parsed.V2.Snapshot, c.log)
 	case parsed.V2 != nil:
-		// Written by the change capture of a later build (the CDC part of the
-		// exact-resume design is not in this one).
-		return nil, fmt.Errorf("%w: change capture positions of format v2 are not supported by this build; reset the pipeline's position", position.ErrInvalid)
+		c.cdcIterator = NewCDCIterator(c.cdcConfig(), client, *parsed.V2.CDC, c.log)
 	case parsed.V1 != nil && parsed.V1.Type == position.TypeCDC:
-		c.cdcIterator, err = NewCDCIterator(cfg.Bucket, cfg.Prefix, cfg.PollingPeriod, cfg.Lookback, client, parsed.V1.Timestamp, c.log)
-		if err != nil {
-			return nil, fmt.Errorf("could not create the CDC iterator: %w", err)
-		}
+		c.log.Warn().Str("code", "s3.source.position_upgraded").Str("position", string(rp)).
+			Msg("resuming from a change capture position written by an earlier version: the lookback window is delivered once more; positions from now on resume exactly")
+		c.cdcIterator = NewCDCIteratorFromV1(c.cdcConfig(), client, *parsed.V1, c.log)
 	default:
 		if parsed.V1 != nil {
 			// A v1 snapshot position holds no snapshot cut, so the snapshot
@@ -97,6 +95,15 @@ func (c *CombinedIterator) snapshotConfig() SnapshotConfig {
 		Bucket: c.cfg.Bucket, Prefix: c.cfg.Prefix, Lookback: c.cfg.Lookback,
 		MultipartHold: c.cfg.MultipartHold, MaxTrackedUploads: c.cfg.MaxTrackedUploads,
 		MaxPendingUploadAge: c.cfg.MaxPendingUploadAge,
+	}
+}
+
+func (c *CombinedIterator) cdcConfig() CDCConfig {
+	return CDCConfig{
+		Bucket: c.cfg.Bucket, Prefix: c.cfg.Prefix, PollingPeriod: c.cfg.PollingPeriod, Lookback: c.cfg.Lookback,
+		MultipartHold: c.cfg.MultipartHold, MaxTrackedUploads: c.cfg.MaxTrackedUploads,
+		MaxPendingUploadAge: c.cfg.MaxPendingUploadAge, MaxEarlyObjects: c.cfg.MaxEarlyObjects,
+		MaxSettledBytesPerPoll: c.cfg.MaxSettledBytesPerPoll,
 	}
 }
 
@@ -149,23 +156,16 @@ func (c *CombinedIterator) Stop() {
 	}
 }
 
-// switchToCDCIterator starts change capture from the snapshot cut C0: the
-// snapshot delivered exactly the settled objects (<= C0), so change capture
-// must deliver everything above it.
-//
-// Transitional (until the change capture part of the exact-resume design
-// lands): the CDC iterator of this build takes "newest seen" and selects from
-// newest seen - lookback. Passing C0 + lookback makes it select from C0, so it
-// delivers everything above C0 (and at most the objects stamped in C0's own
-// second again: a duplicate, never a skip). Uploads tracked in R0 are not
-// handed over to it.
+// switchToCDCIterator starts change capture from the snapshot cut: S = (C0,
+// +inf), E empty, R = R0. The snapshot delivered exactly the settled objects
+// at or below C0 (except tracked uploads), so this is exact (design
+// "Snapshot", handoff).
 func (c *CombinedIterator) switchToCDCIterator() error {
-	cut, _ := c.snapshotIterator.Cut()
-	var err error
-	c.cdcIterator, err = NewCDCIterator(c.cfg.Bucket, c.cfg.Prefix, c.cfg.PollingPeriod, c.cfg.Lookback, c.client, cut.Add(c.cfg.Lookback), c.log)
-	if err != nil {
-		return fmt.Errorf("could not create cdc iterator: %w", err)
-	}
+	cut, tracked := c.snapshotIterator.Cut()
+	c.cdcIterator = NewCDCIterator(c.cdcConfig(), c.client, position.CDCV2{
+		S:       position.Tuple{Time: cut.UTC().Truncate(time.Millisecond), Inf: true},
+		Tracked: tracked,
+	}, c.log)
 	c.snapshotIterator = nil
 	return nil
 }

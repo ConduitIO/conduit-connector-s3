@@ -245,6 +245,21 @@ func minioProxy(t *testing.T, endpoint string, opts proxyOpts) string {
 				resp.Header.Set("Date", d.Add(opts.shift).UTC().Format(http.TimeFormat))
 			}
 		}
+		// A real store reports the same LastModified in a listing and on
+		// GetObject, and the source checks that they match (a fetch must return
+		// the listed version). So the GetObject Last-Modified header is
+		// rewritten the same way as the listings.
+		if lmh := resp.Header.Get("Last-Modified"); lmh != "" && (opts.lastModified != nil || opts.shift != 0) {
+			if d, err := http.ParseTime(lmh); err == nil {
+				orig := d.UTC().Format("2006-01-02T15:04:05.000Z")
+				if opts.lastModified != nil {
+					orig = opts.lastModified(orig)
+				}
+				if t, err := time.Parse(time.RFC3339Nano, orig); err == nil {
+					resp.Header.Set("Last-Modified", t.Add(opts.shift).UTC().Format(http.TimeFormat))
+				}
+			}
+		}
 		if (opts.lastModified == nil && opts.shift == 0 && opts.hide == nil) ||
 			!strings.Contains(resp.Header.Get("Content-Type"), "xml") {
 			return nil
