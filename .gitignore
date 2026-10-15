@@ -6,3 +6,7 @@
 
 # GoReleaser output
 dist/
+
+# SDK acceptance suite v2 report (make test-acceptance)
+/acceptance-report.json
+

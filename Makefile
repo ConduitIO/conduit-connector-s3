@@ -36,6 +36,23 @@ test-integration-s3:
 		MINIO_ENDPOINT=http://localhost:9000 \
 		go test -race -count=1 -p 1 -run '^(TestS3MinIO.*|TestSource_MinIO|TestMinIO_.*)$$' ./destination ./source
 
+# test-acceptance runs SDK acceptance suite v2 against MinIO and writes the
+# report to acceptance-report.json (see docs in the SDK,
+# docs/acceptance-tests-v2.md). The report counts only if it is finished and
+# complete.
+.PHONY: test-acceptance
+test-acceptance:
+	docker compose -f test/docker-compose.yml up -d --wait
+	@rm -f acceptance-report.json
+	@trap 'docker compose -f test/docker-compose.yml down -v' EXIT; \
+		env -u AWS_ENDPOINT_URL \
+		AWS_ACCESS_KEY_ID=conduitminio \
+		AWS_SECRET_ACCESS_KEY=conduitminiosecret \
+		AWS_REGION=us-east-1 \
+		MINIO_ENDPOINT=http://localhost:9000 \
+		CONDUIT_ACCEPTANCE_REPORT=$(CURDIR)/acceptance-report.json \
+		go test -race -count=1 -timeout 30m -run '^TestAcceptanceV2$$' .
+
 .PHONY: lint
 lint:
 	golangci-lint run

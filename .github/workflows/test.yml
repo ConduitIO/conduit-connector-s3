@@ -59,3 +59,51 @@ jobs:
       - name: Stop MinIO
         if: always()
         run: docker compose -f test/docker-compose.yml down
+
+  # SDK acceptance suite v2 against MinIO (#1035). It is the certification
+  # bar: the report it writes (acceptance-report.json, uploaded as an
+  # artifact) is what a registry entry at the Certified tier points to. A run
+  # passes only if the test passes AND the report says finished and complete;
+  # a missing report is a failed run.
+  acceptance-v2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Start MinIO
+        run: docker compose -f test/docker-compose.yml up -d --wait
+
+      - name: Acceptance suite v2
+        env:
+          AWS_ACCESS_KEY_ID: conduitminio
+          AWS_SECRET_ACCESS_KEY: conduitminiosecret
+          AWS_REGION: us-east-1
+          MINIO_ENDPOINT: http://localhost:9000
+          CONDUIT_ACCEPTANCE_REPORT: ${{ github.workspace }}/acceptance-report.json
+        run: |
+          rm -f "$CONDUIT_ACCEPTANCE_REPORT"
+          go test -race -count=1 -timeout 30m -run '^TestAcceptanceV2$' .
+
+      - name: Check the report
+        if: always()
+        run: |
+          test -f acceptance-report.json || { echo "no acceptance report written"; exit 1; }
+          jq -e '.finished == true and .complete == true' acceptance-report.json >/dev/null || { echo "report is not finished and complete"; exit 1; }
+          jq -r '.cases[] | "\(.id)\t\(.outcome)\t\(.skip_kind // "")\t\(.reason // "")"' acceptance-report.json | sort
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: acceptance-report
+          path: acceptance-report.json
+          if-no-files-found: warn
+
+      - name: Stop MinIO
+        if: always()
+        run: docker compose -f test/docker-compose.yml down -v
