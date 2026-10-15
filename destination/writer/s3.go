@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/http"
 	"path"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -72,6 +73,12 @@ type S3 struct {
 // write fails loudly and the records are not acknowledged, instead of
 // replacing an object whose records were acknowledged earlier.
 var ErrKeyExists = errors.New("s3.destination.key_exists")
+
+// ErrConditionalConflict is the stable error code of a conditional PutObject
+// that the store refused because a conflicting operation on the same key was
+// in progress (AWS: 409 ConditionalRequestConflict). It is transient: the
+// records are not acknowledged, and a retry writes them under a new key.
+var ErrConditionalConflict = errors.New("s3.destination.conditional_conflict")
 
 // ErrConditionalWritesUnsupported is the stable error code of a store that
 // does not support conditional PutObject (If-None-Match: *).
@@ -292,25 +299,42 @@ func (w *S3) conditionalWriteError(err error, key string) error {
 	if !w.ConditionalWrites {
 		return nil
 	}
+	code, msg := "", ""
 	var apiErr smithy.APIError
-	code := ""
 	if errors.As(err, &apiErr) {
-		code = apiErr.ErrorCode()
+		code, msg = apiErr.ErrorCode(), apiErr.ErrorMessage()
 	}
-	var re interface{ HTTPStatusCode() int }
 	status := 0
+	var re interface{ HTTPStatusCode() int }
 	if errors.As(err, &re) {
 		status = re.HTTPStatusCode()
 	}
 	switch {
-	case code == "PreconditionFailed" || status == http.StatusPreconditionFailed || code == "ConditionalRequestConflict" || status == http.StatusConflict:
-		return fmt.Errorf("%w: the object %q already exists, so it was not overwritten and the records are not acknowledged; another writer used the same key (bucket %q): %w",
+	case code == "PreconditionFailed" || status == http.StatusPreconditionFailed:
+		// Invariant 1: the records are nacked, never acked against an
+		// object this write did not create.
+		return fmt.Errorf("%w: the object %q already exists (bucket %q), so it was not overwritten and the records are not acknowledged. "+
+			"Either another writer used the same key, or the AWS SDK retried this writer's own PutObject after its response was lost and the first attempt had succeeded: "+
+			"then the records are stored once already, and redelivering them writes a duplicate under a new key (at-least-once): %w",
 			ErrKeyExists, key, w.Bucket, err)
-	case code == "NotImplemented" || status == http.StatusNotImplemented:
-		return fmt.Errorf("%w: the store does not support conditional writes (If-None-Match: *); set conditionalWrites to false to write without them (keys stay unique by construction): %w",
-			ErrConditionalWritesUnsupported, err)
+	case code == "ConditionalRequestConflict" || status == http.StatusConflict:
+		return fmt.Errorf("%w: the store refused the conditional PutObject of %q because a conflicting operation on that key was in progress; "+
+			"this is transient: the records are not acknowledged, and a retry writes them under a new key: %w",
+			ErrConditionalConflict, key, err)
+	case code == "NotImplemented" || status == http.StatusNotImplemented,
+		(code == "InvalidArgument" || code == "InvalidRequest" || status == http.StatusBadRequest || status == http.StatusMethodNotAllowed) && mentionsCondition(msg):
+		return fmt.Errorf("%w: the store does not support conditional writes (If-None-Match: *): %s; set conditionalWrites to false to write without them (keys stay unique by construction): %w",
+			ErrConditionalWritesUnsupported, code, err)
 	}
 	return nil
+}
+
+// mentionsCondition reports whether an error message refers to the
+// conditional header. Only then is a 400 or 405 taken as "conditional writes
+// unsupported"; any other 400 is an ordinary error.
+func mentionsCondition(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "if-none-match") || strings.Contains(m, "conditional")
 }
 
 // LastPosition returns the last persisted position

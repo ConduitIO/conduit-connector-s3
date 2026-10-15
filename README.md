@@ -140,7 +140,29 @@ with one `PutObject` per object, and the records are acknowledged only after
 `PutObject` succeeded. Delivery is at-least-once: a batch that is retried
 after a failure or a restart is written again as a new object, so a reader
 can see a record twice, never zero times. Object names are
-`<UnixNano>.<ext>`, not deterministic.
+`<UnixNano>-<writer id>-<counter>.<ext>`: the write time in nanoseconds (so
+objects still sort by write time), a random 16-hex-character id per
+destination instance, and that instance's write counter. They are unique by
+construction, also across pipelines or Conduit instances writing to the same
+bucket and prefix in the same clock tick, and not deterministic (a retried
+batch gets a new name). With `conditionalWrites` (default true) every
+`PutObject` carries `If-None-Match: *`, so a store never replaces an existing
+object. The records of a refused write are not acknowledged:
+
+- `s3.destination.key_exists` (412): the key exists. Either another writer
+  used it, or the AWS SDK retried this writer's own `PutObject` after the
+  response to a successful first attempt was lost; in that case the records
+  are already stored, and redelivering them writes a duplicate under a new
+  key (at-least-once, nothing is lost).
+- `s3.destination.conditional_conflict` (409): a conflicting operation on
+  the key was in progress. Transient; a retry writes under a new key.
+- `s3.destination.conditional_writes_unsupported`: the store rejects the
+  header (501, or a 400/405 that names it). Set `conditionalWrites: false`;
+  keys stay unique by construction.
+
+A store that silently ignores `If-None-Match` writes unconditionally, with
+no warning; the protection then rests on the unique names alone. Tested on
+MinIO; AWS S3 documents support for conditional writes.
 
 ### Formats
 
@@ -472,6 +494,20 @@ pipelines:
           # Type: string
           # Required: no
           compression: ""
+          # Send If-None-Match: * with every PutObject, so that the store
+          # refuses to replace an existing object (error
+          # s3.destination.key_exists) instead of silently overwriting one whose
+          # records were already acknowledged. Object keys are unique by
+          # construction; this makes any collision fail loudly (a 412 can also
+          # be the AWS SDK retrying this writer's own write after a lost
+          # response: then the redelivered records are a duplicate, never a
+          # loss). Tested on MinIO; AWS S3 documents support. Set to false for a
+          # store that answers with
+          # s3.destination.conditional_writes_unsupported. A store that silently
+          # ignores the header writes unconditionally, without a warning.
+          # Type: bool
+          # Required: no
+          conditionalWrites: "true"
           # File extension of objects written by format bytearray, with or
           # without the leading dot.
           # Type: string
@@ -485,18 +521,19 @@ pipelines:
           # Type: string
           # Required: no
           format.bytearray.separator: "\n"
-          # The directory layout under the prefix. "none" writes every batch to
-          # <prefix>/<UnixNano>.<ext>, as earlier versions do. The others
-          # reproduce the directories of the Kafka Connect S3 sink's
-          # partitioners, under <prefix>/<collection>/ (the collection is the
-          # opencdc.collection metadata, the topic for records from
-          # builtin:kafka): "default" adds partition=<kafka.partition metadata>,
-          # "field" adds <field>=<value> per field in partitioner.fields, "time"
-          # adds the record time formatted with partitioner.pathFormat, "hourly"
-          # and "daily" are "time" with Kafka Connect's hourly and daily
-          # patterns. A batch is split into one object per directory. A record
-          # that lacks the value its partitioner needs is not written: it fails
-          # with the error code s3.destination.partition_value.
+          # The directory layout under the prefix (<name> is the object name,
+          # <UnixNano>-<writer id>-<counter>). "none" writes every batch to
+          # <prefix>/<name>.<ext>, as earlier versions do. The others reproduce
+          # the directories of the Kafka Connect S3 sink's partitioners, under
+          # <prefix>/<collection>/ (the collection is the opencdc.collection
+          # metadata, the topic for records from builtin:kafka): "default" adds
+          # partition=<kafka.partition metadata>, "field" adds <field>=<value>
+          # per field in partitioner.fields, "time" adds the record time
+          # formatted with partitioner.pathFormat, "hourly" and "daily" are
+          # "time" with Kafka Connect's hourly and daily patterns. A batch is
+          # split into one object per directory. A record that lacks the value
+          # its partitioner needs is not written: it fails with the error code
+          # s3.destination.partition_value.
           # Type: string
           # Required: no
           partitioner: "none"

@@ -87,7 +87,11 @@ func newTestWriter(t *testing.T, endpoint string) *S3 {
 }
 
 func oneRecordBatch() *Batch {
-	return &Batch{Format: format.JSON, Records: []opencdc.Record{{Position: opencdc.Position("1"), Payload: opencdc.Change{After: opencdc.RawData("x")}}}}
+	enc, err := format.NewEncoder(format.JSON, "", "", format.CompressionDefault)
+	if err != nil {
+		panic(err) // test helper: JSON with no compression always constructs
+	}
+	return &Batch{Format: enc, Records: []opencdc.Record{{Position: opencdc.Position("1"), Payload: opencdc.Change{After: opencdc.RawData("x")}}}}
 }
 
 // TestS3_TwoWritersNeverShareAKey is the regression test for s3#1064: keys
@@ -192,20 +196,64 @@ func TestS3_ConditionalWriteRefusesAnExistingKey(t *testing.T) {
 	}
 }
 
-// A store that does not support If-None-Match fails with a code that names
-// the setting to turn it off.
-func TestS3_ConditionalWritesUnsupportedNamesTheSetting(t *testing.T) {
+// answering is a store that answers every PutObject with status and body.
+func answering(t *testing.T, status int, body string) *S3 {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusNotImplemented)
-		_, _ = io.WriteString(w, `<?xml version="1.0"?><Error><Code>NotImplemented</Code><Message>If-None-Match</Message></Error>`)
+		if body != "" {
+			w.Header().Set("Content-Type", "application/xml")
+		}
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
 	}))
 	t.Cleanup(srv.Close)
 	w := newTestWriter(t, srv.URL)
 	w.ConditionalWrites = true
-	err := w.Write(context.Background(), oneRecordBatch())
-	if !errors.Is(err, ErrConditionalWritesUnsupported) || !strings.Contains(err.Error(), "conditionalWrites") {
-		t.Fatalf("want ErrConditionalWritesUnsupported naming conditionalWrites, got %v", err)
+	return w
+}
+
+func s3Error(code, msg string) string {
+	return `<?xml version="1.0"?><Error><Code>` + code + `</Code><Message>` + msg + `</Message></Error>`
+}
+
+// Every answer to a conditional PutObject maps to the code that says what
+// happened; none of them acknowledges the batch (Position stays unset).
+func TestS3_ConditionalWriteErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   error  // nil: an ordinary error, not about the condition
+		text   string // part of the message
+	}{
+		{"412 with body", 412, s3Error("PreconditionFailed", "At least one of the pre-conditions you specified did not hold"), ErrKeyExists, "retried this writer's own PutObject"},
+		{"412 with empty body", 412, "", ErrKeyExists, "duplicate under a new key"},
+		{"409 conflict", 409, s3Error("ConditionalRequestConflict", "A conflicting conditional operation is currently in progress"), ErrConditionalConflict, "transient"},
+		{"501 not implemented", 501, s3Error("NotImplemented", "A header you provided implies functionality that is not implemented"), ErrConditionalWritesUnsupported, "conditionalWrites"},
+		{"400 naming If-None-Match", 400, s3Error("InvalidArgument", "Unsupported header If-None-Match"), ErrConditionalWritesUnsupported, "conditionalWrites"},
+		{"400 naming conditional writes", 400, s3Error("InvalidRequest", "Conditional writes are not supported"), ErrConditionalWritesUnsupported, "conditionalWrites"},
+		{"405 naming If-None-Match", 405, s3Error("MethodNotAllowed", "If-None-Match not allowed"), ErrConditionalWritesUnsupported, "conditionalWrites"},
+		{"400 about something else", 400, s3Error("InvalidArgument", "Invalid canned ACL"), nil, "Invalid canned ACL"},
+		{"403 access denied", 403, s3Error("AccessDenied", "Access Denied"), nil, "AccessDenied"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := answering(t, tc.status, tc.body)
+			err := w.Write(context.Background(), oneRecordBatch())
+			if err == nil {
+				t.Fatal("want an error")
+			}
+			for _, code := range []error{ErrKeyExists, ErrConditionalConflict, ErrConditionalWritesUnsupported} {
+				if errors.Is(err, code) != (code == tc.want) {
+					t.Fatalf("errors.Is(%v) = %v, want %v; err: %v", code, errors.Is(err, code), code == tc.want, err)
+				}
+			}
+			if !strings.Contains(err.Error(), tc.text) {
+				t.Fatalf("error should mention %q: %v", tc.text, err)
+			}
+			if w.Position != nil || len(w.FilesWritten) != 0 {
+				t.Fatalf("a failed write must not record a position or a file: %v %v", w.Position, w.FilesWritten)
+			}
+		})
 	}
 }
