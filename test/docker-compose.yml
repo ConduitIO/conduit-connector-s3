@@ -13,10 +13,12 @@
 # separate `mc mb` init container.
 #
 # MINIO_KMS_SECRET_KEY enables SSE-S3 (server-side encryption with S3-managed
-# keys): the destination writer hardcodes ServerSideEncryption=AES256
-# (destination/writer/s3.go, marked "TODO: config?"), and MinIO rejects
-# SSE-S3 requests with a 501 unless a KMS key is configured. This is the
-# standard MinIO dev configuration for SSE-S3.
+# keys): TestS3MinIO_ServerSideEncryption writes with
+# aws.serverSideEncryption=AES256, and MinIO rejects SSE-S3 requests with a
+# 501 unless a KMS key is configured. This is the standard MinIO dev
+# configuration for SSE-S3. Without the setting the destination sends no
+# encryption header (#1047), and this MinIO has no bucket default encryption,
+# so those objects are stored unencrypted.
 services:
   minio:
     # MinIO stopped publishing images: minio/minio was removed from Docker

@@ -176,13 +176,35 @@ func NewCDCIterator(
 	log *zerolog.Logger,
 ) (*CDCIterator, error) {
 	cdc := newCDCIterator(bucket, prefix, lookback, client, from, log)
-	cdc.ticker = time.NewTicker(pollingPeriod)
-
-	// start listening to changes
-	cdc.tomb.Go(cdc.startCDC)
-	cdc.tomb.Go(cdc.flush)
-
+	cdc.start(pollingPeriod)
 	return cdc, nil
+}
+
+// start begins polling every pollingPeriod. Nothing may touch the iterator's
+// state from outside after it was called.
+func (w *CDCIterator) start(pollingPeriod time.Duration) {
+	w.ticker = time.NewTicker(pollingPeriod)
+	w.tomb.Go(w.startCDC)
+	w.tomb.Go(w.flush)
+}
+
+// seedDelivered marks object versions as already delivered, before start. The
+// snapshot-to-CDC handoff uses it to hand over what the snapshot delivered
+// inside the CDC window (see SnapshotIterator.delivered, #1040). Entries below
+// the floor are dropped by the first poll like any other. A seed that does not
+// fit the dedupe budget is not used beyond the budget: those objects are
+// delivered again, which is at-least-once, never a skip.
+func (w *CDCIterator) seedDelivered(seed map[deliveredKey]struct{}) {
+	for k := range seed {
+		if _, ok := w.delivered[k]; ok {
+			continue
+		}
+		if w.deliveredBytes+k.bytes() > maxSeedBytes {
+			return
+		}
+		w.delivered[k] = struct{}{}
+		w.deliveredBytes += k.bytes()
+	}
 }
 
 // newCDCIterator builds the iterator without starting it (tests drive step
@@ -289,6 +311,9 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 	w.maxSeen = base
 	w.clamped = true
 	if len(cache) == 0 {
+		// Nothing new, but entries below the floor (for example a handoff
+		// seed) are still released.
+		w.pruneBelow(laterOf(w.floorFor(base, hostNow), w.effMinFloor(hostNow)))
 		return nil
 	}
 	sort.Slice(cache, func(i, j int) bool {
@@ -335,6 +360,17 @@ func (w *CDCIterator) step(ctx context.Context, hostNow time.Time, handover func
 		}
 	}
 	return nil
+}
+
+// pruneBelow drops tracked versions older than floor: they are never selected
+// again.
+func (w *CDCIterator) pruneBelow(floor time.Time) {
+	for k := range w.delivered {
+		if k.modified.Before(floor) {
+			delete(w.delivered, k)
+			w.deliveredBytes -= k.bytes()
+		}
+	}
 }
 
 // baseMax is the newest-seen time a poll starts from. A resume position that

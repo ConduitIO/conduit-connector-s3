@@ -143,7 +143,7 @@ func keyOf(r *http.Request) string { return strings.TrimPrefix(r.URL.Path, "/b/"
 func token(r *http.Request) string { return r.URL.Query().Get("continuation-token") }
 func newSnap(t *testing.T, c *s3.Client) *SnapshotIterator {
 	t.Helper()
-	it, err := NewSnapshotIterator("b", "", c, position.Position{}, nil)
+	it, err := NewSnapshotIterator("b", "", 5*time.Minute, c, position.Position{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

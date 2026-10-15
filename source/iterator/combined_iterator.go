@@ -73,7 +73,7 @@ func NewCombinedIterator(
 				Msg("previous snapshot did not complete successfully. snapshot will be restarted for consistency.")
 		}
 		p = position.Position{} // always start snapshot from the beginning, so position is nil
-		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, client, p, c.log)
+		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, lookback, client, p, c.log)
 		if err != nil {
 			return nil, fmt.Errorf("could not create the snapshot iterator: %w", err)
 		}
@@ -166,13 +166,17 @@ func (c *CombinedIterator) handoffTimestamp() time.Time {
 	return c.snapshotIterator.anchor
 }
 
+// switchToCDCIterator hands over from the snapshot to CDC. The CDC iterator
+// starts with what the snapshot delivered inside its window as already
+// delivered, so a run without failures delivers each object once (#1040).
+// After a restart from the CDC position that seed is gone and the window is
+// delivered again (at-least-once, documented).
 func (c *CombinedIterator) switchToCDCIterator() error {
-	var err error
 	timestamp := c.handoffTimestamp()
-	c.cdcIterator, err = NewCDCIterator(c.bucket, c.prefix, c.pollingPeriod, c.lookback, c.client, timestamp, c.log)
-	if err != nil {
-		return fmt.Errorf("could not create cdc iterator: %w", err)
-	}
+	cdc := newCDCIterator(c.bucket, c.prefix, c.lookback, c.client, timestamp, c.log)
+	cdc.seedDelivered(c.snapshotIterator.delivered)
+	cdc.start(c.pollingPeriod)
+	c.cdcIterator = cdc
 	c.snapshotIterator = nil
 	return nil
 }
