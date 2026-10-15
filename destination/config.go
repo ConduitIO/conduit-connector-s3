@@ -18,9 +18,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/format"
+	"github.com/conduitio/conduit-connector-s3/destination/partitioner"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
@@ -68,6 +70,56 @@ type Config struct {
 	// aws:kms:dsse; when empty with those modes, S3 uses the bucket's default
 	// KMS key, or the AWS managed key aws/s3.
 	SSEKMSKeyID string `json:"aws.sseKmsKeyId"`
+	// The directory layout under the prefix. "none" writes every batch to
+	// <prefix>/<UnixNano>.<ext>, as earlier versions do. The others reproduce
+	// the directories of the Kafka Connect S3 sink's partitioners, under
+	// <prefix>/<collection>/ (the collection is the opencdc.collection
+	// metadata, the topic for records from builtin:kafka): "default" adds
+	// partition=<kafka.partition metadata>, "field" adds <field>=<value> per
+	// field in partitioner.fields, "time" adds the record time formatted with
+	// partitioner.pathFormat, "hourly" and "daily" are "time" with Kafka
+	// Connect's hourly and daily patterns. A batch is split into one object per
+	// directory. A record that lacks the value its partitioner needs is not
+	// written: it fails with the error code s3.destination.partition_value.
+	Partitioner string `json:"partitioner" default:"none" validate:"inclusion=none|default|field|time|hourly|daily"`
+	// Comma-separated payload fields for partitioner "field", dots for nested
+	// fields (Kafka Connect: partition.field.name). The payload must be
+	// structured data or a raw JSON object.
+	PartitionerFields []string `json:"partitioner.fields"`
+	// The directory pattern for partitioner "time", in Kafka Connect's
+	// path.format syntax: yyyy or YYYY, MM, dd, HH, mm, ss, and quoted literal
+	// text, for example 'year'=YYYY/'month'=MM/'day'=dd/'hour'=HH. Text fields
+	// (MMM) are not supported.
+	PartitionerPathFormat string `json:"partitioner.pathFormat"`
+	// The width of a time partition for partitioner "time", at least 1s
+	// (Kafka Connect: partition.duration.ms). The record time is floored to a
+	// multiple of it in partitioner.timezone.
+	PartitionerDuration time.Duration `json:"partitioner.duration"`
+	// The IANA time zone the time partitioners floor and format in.
+	PartitionerTimezone string `json:"partitioner.timezone" default:"UTC"`
+	// Where the time partitioners take the time from: "record" (the
+	// opencdc.createdAt metadata, the Kafka record timestamp for
+	// builtin:kafka), "recordField" (the payload field in
+	// partitioner.timestampField: epoch milliseconds, an RFC 3339 string or a
+	// time) or "wallclock" (the time of the write; a redelivered record can
+	// land in a later directory).
+	PartitionerTimestampExtractor string `json:"partitioner.timestampExtractor" default:"record" validate:"inclusion=record|recordField|wallclock"`
+	// The payload field for timestampExtractor "recordField", dots for nested
+	// fields (Kafka Connect: timestamp.field).
+	PartitionerTimestampField string `json:"partitioner.timestampField"`
+}
+
+// PartitionerConfig returns the partitioner settings.
+func (c *Config) PartitionerConfig() partitioner.Config {
+	return partitioner.Config{
+		Kind:               c.Partitioner,
+		Fields:             c.PartitionerFields,
+		PathFormat:         c.PartitionerPathFormat,
+		Duration:           c.PartitionerDuration,
+		Timezone:           c.PartitionerTimezone,
+		TimestampExtractor: c.PartitionerTimestampExtractor,
+		TimestampField:     c.PartitionerTimestampField,
+	}
 }
 
 // Validate implements sdk.Validatable: the SDK calls it automatically after
@@ -78,6 +130,9 @@ func (c *Config) Validate(ctx context.Context) error {
 		return err
 	}
 	if err := config.ValidateEndpoint(c.AWSEndpoint); err != nil {
+		return err
+	}
+	if _, err := partitioner.New(c.PartitionerConfig()); err != nil {
 		return err
 	}
 	return c.validateEncryption()

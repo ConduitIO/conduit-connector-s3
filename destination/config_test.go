@@ -15,6 +15,8 @@
 package destination
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	cconfig "github.com/conduitio/conduit-commons/config"
@@ -46,4 +48,46 @@ func TestParseConfig(t *testing.T) {
 
 	is.NoErr(err)
 	is.Equal(want, got)
+}
+
+func TestParseConfig_Partitioner(t *testing.T) {
+	is := is.New(t)
+	c := cconfig.Config{}
+	for k, v := range exampleConfig {
+		c[k] = v
+	}
+	c["partitioner"] = "field"
+	c["partitioner.fields"] = "region,address.country"
+
+	var got Config
+	is.NoErr(c.DecodeInto(&got))
+	is.Equal(got.Partitioner, "field")
+	is.Equal(got.PartitionerFields, []string{"region", "address.country"})
+	is.NoErr(got.Validate(context.Background()))
+}
+
+func TestValidate_PartitionerErrorsNameTheSetting(t *testing.T) {
+	tests := map[string]cconfig.Config{
+		"partitioner.fields":     {"partitioner": "field"},
+		"partitioner.pathFormat": {"partitioner": "time", "partitioner.duration": "1h"},
+		"partitioner.timezone":   {"partitioner": "hourly", "partitioner.timezone": "Nowhere/Land"},
+	}
+	for want, extra := range tests {
+		t.Run(want, func(t *testing.T) {
+			is := is.New(t)
+			c := cconfig.Config{}
+			for k, v := range exampleConfig {
+				c[k] = v
+			}
+			for k, v := range extra {
+				c[k] = v
+			}
+			var got Config
+			is.NoErr(c.DecodeInto(&got))
+			err := got.Validate(context.Background())
+			is.True(err != nil)
+			is.True(strings.Contains(err.Error(), want))
+			is.True(strings.Contains(err.Error(), "s3.destination.partitioner_config"))
+		})
+	}
 }

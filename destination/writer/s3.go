@@ -127,9 +127,9 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 		batch.Format.Ext(),
 	)
 
-	if w.KeyPrefix != "" {
-		key = path.Join(w.KeyPrefix, key)
-	}
+	// path.Join drops empty elements, so no prefix and no directory give
+	// the bare name as before.
+	key = path.Join(w.KeyPrefix, batch.Dir, key)
 
 	input := &s3.PutObjectInput{
 		Bucket:             aws.String(w.Bucket),

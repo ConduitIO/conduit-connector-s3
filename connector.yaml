@@ -134,12 +134,15 @@ specification:
     `aws.region`. If the permissions fail, the connector will not be ready for
     writing to S3.
 
-    ### Writer
+    ### Writes and delivery
 
-    The S3 destination writer has a buffer with the size of `bufferSize`, for each
-    time `Write` is called, a new record is added to the buffer. When the buffer is
-    full, all the records from it will be written to the S3 bucket, and an ack
-    function will be called for each record after being written.
+    Every batch the SDK hands to the destination (`sdk.batch.size` records, or
+    fewer after `sdk.batch.delay`; one record per batch by default) is written
+    with one `PutObject` per object, and the records are acknowledged only after
+    `PutObject` succeeded. Delivery is at-least-once: a batch that is retried
+    after a failure or a restart is written again as a new object, so a reader
+    can see a record twice, never zero times. Object names are
+    `<UnixNano>.<ext>`, not deterministic.
 
     ### Server-side encryption
 
@@ -162,6 +165,38 @@ specification:
     write, whatever the bucket default was, so an SSE-KMS bucket default was
     silently replaced by SSE-S3 (#1047). To keep the old behavior, set
     `aws.serverSideEncryption: AES256`.
+
+    ### Partitioning (Kafka Connect S3 sink layout)
+
+    `partitioner` selects the directory layout under `prefix`:
+
+    | `partitioner` | Object key |
+    | --- | --- |
+    | `none` (default) | `<prefix>/<UnixNano>.<ext>` |
+    | `default` | `<prefix>/<collection>/partition=<kafka.partition>/<UnixNano>.<ext>` |
+    | `field` | `<prefix>/<collection>/<field>=<value>/.../<UnixNano>.<ext>` |
+    | `time`, `hourly`, `daily` | `<prefix>/<collection>/<time formatted with partitioner.pathFormat>/<UnixNano>.<ext>` |
+
+    `<collection>` is the `opencdc.collection` metadata, which `builtin:kafka`
+    sets to the topic, so with `prefix: topics` the directories are the ones the
+    Kafka Connect S3 sink writes, and tables or partition projections defined
+    over them keep working. `partitioner.pathFormat` takes Kafka Connect's
+    `path.format` syntax (numeric fields only), for example
+    `'year'=YYYY/'month'=MM/'day'=dd/'hour'=HH`. `hourly` and `daily` are Kafka
+    Connect's `HourlyPartitioner` and `DailyPartitioner`. Partition values are
+    escaped the way Hive escapes path names (`/` becomes `%2F`).
+
+    A batch is split into one object per directory. If one of those writes
+    fails, the records before the first record of the failed object are
+    acknowledged and the rest are retried (or sent to the DLQ): nothing is
+    acknowledged that is not stored. A record without the value its
+    partitioner needs (no collection, no `kafka.partition`, no
+    `opencdc.createdAt`, a missing or null field) is never written under an
+    empty partition: it fails with the error code
+    `s3.destination.partition_value`.
+
+    `builtin:kafka` does not set `kafka.partition` yet, so `partitioner: default`
+    needs it set by a processor until it does.
   version: v0.9.4
   author: Meroxa, Inc.
   source:
@@ -397,6 +432,74 @@ specification:
           KMS key, or the AWS managed key aws/s3.
         type: string
         default: ""
+        validations: []
+      - name: partitioner
+        description: |-
+          The directory layout under the prefix. "none" writes every batch to
+          <prefix>/<UnixNano>.<ext>, as earlier versions do. The others reproduce
+          the directories of the Kafka Connect S3 sink's partitioners, under
+          <prefix>/<collection>/ (the collection is the opencdc.collection
+          metadata, the topic for records from builtin:kafka): "default" adds
+          partition=<kafka.partition metadata>, "field" adds <field>=<value> per
+          field in partitioner.fields, "time" adds the record time formatted with
+          partitioner.pathFormat, "hourly" and "daily" are "time" with Kafka
+          Connect's hourly and daily patterns. A batch is split into one object per
+          directory. A record that lacks the value its partitioner needs is not
+          written: it fails with the error code s3.destination.partition_value.
+        type: string
+        default: none
+        validations:
+          - type: inclusion
+            value: none,default,field,time,hourly,daily
+      - name: partitioner.duration
+        description: |-
+          The width of a time partition for partitioner "time", at least 1s
+          (Kafka Connect: partition.duration.ms). The record time is floored to a
+          multiple of it in partitioner.timezone.
+        type: duration
+        default: ""
+        validations: []
+      - name: partitioner.fields
+        description: |-
+          Comma-separated payload fields for partitioner "field", dots for nested
+          fields (Kafka Connect: partition.field.name). The payload must be
+          structured data or a raw JSON object.
+        type: string
+        default: ""
+        validations: []
+      - name: partitioner.pathFormat
+        description: |-
+          The directory pattern for partitioner "time", in Kafka Connect's
+          path.format syntax: yyyy or YYYY, MM, dd, HH, mm, ss, and quoted literal
+          text, for example 'year'=YYYY/'month'=MM/'day'=dd/'hour'=HH. Text fields
+          (MMM) are not supported.
+        type: string
+        default: ""
+        validations: []
+      - name: partitioner.timestampExtractor
+        description: |-
+          Where the time partitioners take the time from: "record" (the
+          opencdc.createdAt metadata, the Kafka record timestamp for
+          builtin:kafka), "recordField" (the payload field in
+          partitioner.timestampField: epoch milliseconds, an RFC 3339 string or a
+          time) or "wallclock" (the time of the write; a redelivered record can
+          land in a later directory).
+        type: string
+        default: record
+        validations:
+          - type: inclusion
+            value: record,recordField,wallclock
+      - name: partitioner.timestampField
+        description: |-
+          The payload field for timestampExtractor "recordField", dots for nested
+          fields (Kafka Connect: timestamp.field).
+        type: string
+        default: ""
+        validations: []
+      - name: partitioner.timezone
+        description: The IANA time zone the time partitioners floor and format in.
+        type: string
+        default: UTC
         validations: []
       - name: prefix
         description: the S3 key prefix.
