@@ -55,6 +55,9 @@ const (
 	// MinIO whether or not the connector's aws.endpoint plumbing works, and
 	// this test would pass with that plumbing deleted.
 	EnvMinIOEndpoint = "MINIO_ENDPOINT"
+	// EnvAllowRealAWS opts in to tests that write to real AWS S3 with the
+	// AWS_* credentials of the environment.
+	EnvAllowRealAWS = "S3_ALLOW_REAL_AWS"
 
 	// EnvAWSEndpointURL is the SDK's own endpoint override. The MinIO tests
 	// refuse to run with it set, see requireNoSDKEndpointEnv.
@@ -176,8 +179,6 @@ func TestS3Parquet(t *testing.T) {
 	)
 	skipOnEmptyEnv(t, env)
 
-	underTest := &destination.Destination{}
-
 	cfg := map[string]string{
 		config.ConfigKeyAWSAccessKeyID:     env[EnvAWSAccessKeyID],
 		config.ConfigKeyAWSSecretAccessKey: env[EnvAWSSecretAccessKey],
@@ -186,6 +187,25 @@ func TestS3Parquet(t *testing.T) {
 		config.ConfigKeyPrefix:             "test",
 		destination.ConfigKeyFormat:        "parquet",
 	}
+	// MinIO when MINIO_ENDPOINT is set; real AWS only on explicit opt-in, so
+	// AWS_* credentials that happen to be in the environment never make the
+	// test write to a real account.
+	endpoint := os.Getenv(EnvMinIOEndpoint)
+	switch {
+	case endpoint != "":
+		requireNoSDKEndpointEnv(t)
+		cfg[config.ConfigKeyAWSEndpoint] = endpoint
+		cfg[config.ConfigKeyAWSPathStyle] = "true"
+		env[EnvMinIOEndpoint] = endpoint
+		_, err := newPathStyleS3Client(t, env).CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(env[EnvAWSS3Bucket])})
+		if err != nil && !strings.Contains(err.Error(), "BucketAlreadyOwnedByYou") && !strings.Contains(err.Error(), "BucketAlreadyExists") {
+			t.Fatalf("create bucket: %v", err)
+		}
+	case os.Getenv(EnvAllowRealAWS) != "1":
+		t.Skipf("neither %s (MinIO) nor %s=1 (real AWS) is set", EnvMinIOEndpoint, EnvAllowRealAWS)
+	}
+
+	underTest := &destination.Destination{}
 
 	err := sdk.Util.ParseConfig(ctx, cfg, underTest.Config(), s3Conn.Connector.NewSpecification().DestinationParams)
 	is.NoErr(err) // failed to parse the configuration
@@ -217,6 +237,7 @@ func TestS3Parquet(t *testing.T) {
 		SecretAccessKey: env[EnvAWSSecretAccessKey],
 		Bucket:          env[EnvAWSS3Bucket],
 		Region:          env[EnvAWSRegion],
+		Endpoint:        endpoint,
 	}
 
 	err = validateReferences(

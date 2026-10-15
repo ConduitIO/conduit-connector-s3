@@ -54,7 +54,7 @@ jobs:
           AWS_S3_BUCKET: conduit-s3-minio-test
           AWS_REGION: us-east-1
           MINIO_ENDPOINT: http://localhost:9000
-        run: go test -race -count=1 -p 1 -run '^(TestS3MinIO.*|TestSource_MinIO|TestMinIO_.*)$' ./destination ./source
+        run: go test -race -count=1 -p 1 -run '^(TestS3MinIO.*|TestS3Parquet|TestSource_MinIO|TestMinIO_.*)$' ./destination ./source
 
       - name: Stop MinIO
         if: always()

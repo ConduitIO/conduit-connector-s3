@@ -34,7 +34,7 @@ test-integration-s3:
 		AWS_S3_BUCKET=conduit-s3-minio-test \
 		AWS_REGION=us-east-1 \
 		MINIO_ENDPOINT=http://localhost:9000 \
-		go test -race -count=1 -p 1 -run '^(TestS3MinIO.*|TestSource_MinIO|TestMinIO_.*)$$' ./destination ./source
+		go test -race -count=1 -p 1 -run '^(TestS3MinIO.*|TestS3Parquet|TestSource_MinIO|TestMinIO_.*)$$' ./destination ./source
 
 .PHONY: lint
 lint:
