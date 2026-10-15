@@ -142,6 +142,48 @@ after a failure or a restart is written again as a new object, so a reader
 can see a record twice, never zero times. Object names are
 `<UnixNano>.<ext>`, not deterministic.
 
+### Formats
+
+- `json`: one JSON object per line with `Operation`, `Position`, `Payload`,
+  `Key` and `Metadata`; payload and key are JSON strings. A record whose key,
+  payload, position or metadata is not valid UTF-8 is refused with the error
+  `s3.destination.invalid_utf8` instead of being stored with replaced bytes.
+- `parquet`: the same fields as string columns.
+- `bytearray`: the payload bytes of every record, unchanged, each followed
+  by `format.bytearray.separator` (default a newline). Structured payloads
+  are written as their JSON encoding. A record without a payload (a delete,
+  a Kafka tombstone) or with an empty one is refused with the error
+  `s3.destination.null_value`; drop such records with a `filter` processor
+  if they are expected. A Kafka tombstone arrives as an empty value, so an
+  empty Kafka value cannot be told apart from it and is refused too. The
+  separator is not escaped inside payloads: a payload that contains it
+  cannot be split back unambiguously (as with Kafka Connect's
+  `ByteArrayFormat`).
+
+`compression` is `none` or `gzip` for `json` and `bytearray` (gzip appends
+`.gz` to the extension and sets the content type to `application/gzip`), and
+`none`, `gzip` (default) or `snappy` for `parquet`, where it is the column
+codec.
+
+When a record is refused, the records before it in the batch are written as
+one object and acked, the refused record and the ones after it are nacked
+(to the DLQ, if one is configured).
+
+### Coming from the Kafka Connect S3 sink
+
+- `ByteArrayFormat` is `format: bytearray`; `format.bytearray.separator` and
+  `format.bytearray.extension` have the same meaning (Kafka Connect's
+  extension default is `.bin` as well).
+- `JsonFormat` for topics with JSON values is `format: bytearray` with
+  `format.bytearray.extension: .json`: the stored bytes are the record
+  values. Kafka Connect re-serializes values through its converter, so
+  whitespace and key order can differ, and `schemas.enable=true` envelopes
+  are not produced.
+- `s3.compression.type: gzip` is `compression: gzip`; `parquet.codec` is
+  `compression` with `format: parquet` (Kafka Connect defaults to snappy,
+  this connector to gzip).
+- `behavior.on.null.values` other than `fail` has no counterpart.
+
 ### Server-side encryption
 
 By default the destination sends no server-side encryption header, so the
@@ -186,12 +228,29 @@ escaped the way Hive escapes path names (`/` becomes `%2F`).
 
 A batch is split into one object per directory. If one of those writes
 fails, the records before the first record of the failed object are
-acknowledged and the rest are retried (or sent to the DLQ): nothing is
-acknowledged that is not stored. A record without the value its
-partitioner needs (no collection, no `kafka.partition`, no
-`opencdc.createdAt`, a missing or null field) is never written under an
-empty partition: it fails with the error code
-`s3.destination.partition_value`.
+acknowledged and the rest are nacked with the error: the pipeline stops,
+or, with a dead-letter queue configured, those records go to it. Nothing is
+acknowledged that is not stored. A restart delivers the nacked records
+again, and records of objects that were already written can then be stored
+twice (at-least-once). A record without the value its partitioner needs
+(no collection, no `kafka.partition`, no `opencdc.createdAt`, a missing or
+null field) is never written under an empty partition: it fails with the
+error code `s3.destination.partition_value`.
+
+Differences from Kafka Connect's `FieldPartitioner` that a reader of the
+layout can notice:
+
+- a null field fails the record (`s3.destination.partition_value`); Kafka
+  Connect writes it under `field=null`;
+- values are escaped as Hive escapes path names (`/` becomes `%2F`, `=`
+  becomes `%3D`, and so on); Kafka Connect writes them unescaped, so a
+  value with `/` there becomes extra directory levels;
+- numbers keep the text they have in a raw JSON payload (`5`, `5.0`,
+  `1e3` stay as written), and a number in structured data is written in its
+  shortest form (`5` for 5.0). Kafka Connect writes the Java string of the
+  converted value (`5.0` for a double, `1000.0` for `1e3`), so a double
+  field with a whole value can land in `field=5` here and `field=5.0`
+  there.
 
 `builtin:kafka` does not set `kafka.partition` yet, so `partitioner: default`
 needs it set by a processor until it does.<!-- /readmegen:description -->
@@ -354,7 +413,15 @@ pipelines:
           # Type: string
           # Required: yes
           aws.secretAccessKey: ""
-          # the destination format, either "json" or "parquet".
+          # The destination format: "json" (one OpenCDC-shaped JSON object per
+          # line), "parquet", or "bytearray" (the payload bytes of every record
+          # followed by format.bytearray.separator; Kafka Connect's
+          # ByteArrayFormat, and with format.bytearray.extension set to .json
+          # the bytes Kafka Connect's JsonFormat writes for JSON values).
+          # bytearray fails a record without a payload (a delete or a Kafka
+          # tombstone) or with an empty one (indistinguishable from a tombstone)
+          # with the error s3.destination.null_value; json fails a record that
+          # is not valid UTF-8 with s3.destination.invalid_utf8.
           # Type: string
           # Required: yes
           format: ""
@@ -398,6 +465,26 @@ pipelines:
           # Type: string
           # Required: no
           aws.sseKmsKeyId: ""
+          # Compression of the objects: none or gzip for json and bytearray
+          # (gzip appends .gz to the extension), none, gzip or snappy (the
+          # column codec) for parquet. Empty means the format's default: none
+          # for json and bytearray, gzip for parquet.
+          # Type: string
+          # Required: no
+          compression: ""
+          # File extension of objects written by format bytearray, with or
+          # without the leading dot.
+          # Type: string
+          # Required: no
+          format.bytearray.extension: ".bin"
+          # Written after every record by format bytearray. The escapes \n, \r,
+          # \t and \\ are resolved. The separator is not escaped inside
+          # payloads, so a payload that contains it cannot be split back
+          # unambiguously (as with Kafka Connect's ByteArrayFormat); pick a
+          # separator the data cannot contain, or use json or parquet.
+          # Type: string
+          # Required: no
+          format.bytearray.separator: "\n"
           # The directory layout under the prefix. "none" writes every batch to
           # <prefix>/<UnixNano>.<ext>, as earlier versions do. The others
           # reproduce the directories of the Kafka Connect S3 sink's

@@ -29,6 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/destination/format"
 )
 
 // S3FilesWrittenLength defines the number of last filenames an S3 Writer keep
@@ -116,9 +117,21 @@ func NewS3(ctx context.Context, cfg *S3Config) (*S3, error) {
 
 // Write stores the batch on AWS S3 as a file
 func (w *S3) Write(ctx context.Context, batch *Batch) error {
-	batchBytes, err := batch.Bytes()
-	if err != nil {
-		return err
+	// A refused record leaves the bytes of the records before it: store
+	// those, then report the refusal (see Batch.Bytes).
+	batchBytes, refused := batch.Bytes()
+	var re *format.RecordError
+	if refused != nil && !errors.As(refused, &re) {
+		return refused
+	}
+	if len(batchBytes) == 0 {
+		if refused == nil && len(batch.Records) > 0 {
+			// Records that encode to nothing would be acked without being
+			// stored (invariant 1); the format checks make this unreachable,
+			// so it is a bug if it happens.
+			return fmt.Errorf("%d records encoded to an empty object; not writing or acknowledging them", len(batch.Records))
+		}
+		return refused
 	}
 
 	key := fmt.Sprintf(
@@ -151,7 +164,7 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 		input.SSEKMSKeyId = aws.String(w.SSEKMSKeyID)
 	}
 
-	_, err = w.Client.PutObject(ctx, input)
+	_, err := w.Client.PutObject(ctx, input)
 	if err != nil {
 		var apiErr smithy.APIError
 		if w.SSEKMSKeyID != "" && errors.As(err, &apiErr) {
@@ -172,9 +185,12 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 		w.FilesWritten = w.FilesWritten[len(w.FilesWritten)-S3FilesWrittenLength:]
 	}
 
-	w.Position = batch.LastPosition()
+	// Invariant 1: only the records in the object PutObject just confirmed
+	// are reported as written; a refused record and everything after it are
+	// left to the caller to nack (Batch.Written).
+	w.Position = batch.Records[batch.Written(refused)-1].Position
 
-	return nil
+	return refused
 }
 
 // errCodeNoBucketEncryption is the S3 error code of GetBucketEncryption for a

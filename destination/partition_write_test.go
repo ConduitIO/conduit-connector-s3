@@ -16,6 +16,7 @@ package destination
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -168,4 +169,57 @@ func TestWrite_NoPartitionerKeepsOneObjectPerBatch(t *testing.T) {
 	is.Equal(n, 2)
 	is.Equal(len(w.written), 1)
 	is.Equal(w.written[0].Dir, "")
+}
+
+// encodingWriter stores what the real encoder would: the bytes of the group's
+// records before a refused one (Batch.Bytes), and returns the refusal.
+type encodingWriter struct {
+	stored map[string]bool // positions stored
+	dirs   []string
+}
+
+func (w *encodingWriter) Write(_ context.Context, b *writer.Batch) error {
+	_, err := b.Bytes()
+	for _, r := range b.Records[:b.Written(err)] {
+		w.stored[string(r.Position)] = true
+	}
+	w.dirs = append(w.dirs, b.Dir)
+	return err
+}
+
+func (w *encodingWriter) LastPosition() opencdc.Position { return nil }
+
+// A record the format refuses, in a group whose records interleave with
+// another group's, must stop the batch at its own batch index. Here the eu
+// group is [p0, p3, p4] and p4 is refused: a writer-side refusal carries the
+// index into the group (2), and acking 2 records of the batch would ack p1,
+// which is in the us group, never written because the eu write failed first.
+// The check runs in batch order before grouping instead.
+// Regression test for the review of #1053 rebased onto #1054.
+func TestWritePartitioned_FormatRefusalStopsAtItsBatchIndex(t *testing.T) {
+	is := is.New(t)
+	enc, err := format.NewEncoder(format.ByteArray, `\n`, "", "")
+	is.NoErr(err)
+	w := &encodingWriter{stored: map[string]bool{}}
+	// The default partitioner reads metadata only, so the tombstone below is
+	// partitioned like any record and only the format refuses it.
+	f, err := partitioner.New(partitioner.Config{Kind: partitioner.KindDefault})
+	is.NoErr(err)
+	d := &Destination{config: Config{Format: format.ByteArray}, encoder: enc, Writer: w, partition: f, now: time.Now}
+
+	batch := recs("eu", "us", "us", "eu", "eu")
+	for _, r := range batch {
+		var reg map[string]any
+		is.NoErr(json.Unmarshal(r.Payload.After.Bytes(), &reg))
+		r.Metadata[partitioner.MetadataKafkaPartition] = fmt.Sprint(reg["region"])
+	}
+	batch[4].Payload.After = opencdc.RawData{} // a Kafka tombstone after the gRPC hop, in partition eu
+	n, err := d.Write(context.Background(), batch)
+	is.True(err != nil)
+	is.True(strings.Contains(err.Error(), format.CodeNullValue))
+	for _, r := range batch[:n] {
+		is.True(w.stored[string(r.Position)]) // nothing acked that is not stored
+	}
+	is.Equal(n, 4)           // p0 to p3 are stored; p4 is refused
+	is.True(!w.stored["p4"]) // the refused record is not written
 }

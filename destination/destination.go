@@ -23,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/destination/format"
 	"github.com/conduitio/conduit-connector-s3/destination/partitioner"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
 	sdk "github.com/conduitio/conduit-connector-sdk"
@@ -34,8 +35,9 @@ import (
 type Destination struct {
 	sdk.UnimplementedDestination
 
-	config Config
-	Writer writer.Writer
+	config  Config
+	encoder format.Encoder
+	Writer  writer.Writer
 	// partition is nil without partitioning (partitioner "none").
 	partition partitioner.Func
 	// now is the clock of the wallclock timestamp extractor; a field so tests
@@ -54,6 +56,12 @@ func (d *Destination) Config() sdk.DestinationConfig {
 // Open makes sure everything is prepared to receive records.
 func (d *Destination) Open(ctx context.Context) error {
 	d.config.LogEndpointWarnings(ctx)
+
+	enc, err := d.config.Encoder()
+	if err != nil {
+		return err
+	}
+	d.encoder = enc
 
 	// initializing the writer
 	w, err := writer.NewS3(ctx, &writer.S3Config{
@@ -122,11 +130,12 @@ func (d *Destination) checkBucketEncryption(ctx context.Context, w *writer.S3) {
 // stored: the SDK acks exactly those and nacks the rest with the error.
 func (d *Destination) Write(ctx context.Context, records []opencdc.Record) (int, error) {
 	if d.partition == nil {
-		// Invariant 1: ack only after PutObject confirmed the write.
-		if err := d.Writer.Write(ctx, &writer.Batch{Records: records, Format: d.config.Format}); err != nil {
-			return 0, err
-		}
-		return len(records), nil
+		batch := &writer.Batch{Records: records, Format: d.encoder}
+		err := d.Writer.Write(ctx, batch)
+		// Invariant 1: report as written only what the writer stored. A
+		// record the format refuses is nacked together with the records after
+		// it; the records before it are in the object the writer wrote.
+		return batch.Written(err), err
 	}
 	return d.writePartitioned(ctx, records)
 }
@@ -143,22 +152,34 @@ type group struct {
 // directory, in the order in which each directory first appears.
 //
 // The count it returns is the index of the first record that is not stored:
-// the first record of the first group whose write failed, or the record whose
-// partition could not be computed. Every record before that index belongs to a
-// group whose first record comes earlier, and groups are written in that
-// order, so all of them were written. Records after it that are in groups
-// written successfully are written again on retry: a duplicate, never a loss.
+// the first record of the first group whose write failed, or the first record
+// that cannot be partitioned or that the format refuses. Every record before
+// that index belongs to a group whose first record comes earlier, and groups
+// are written in that order, so all of them were written. Records after it
+// that are in groups written successfully are written again on retry: a
+// duplicate, never a loss.
+//
+// The format check runs here, in batch order, and not in the writer: a
+// refusal reported by the writer would carry an index into its group, not
+// into the batch, and acking up to that index would ack records of later
+// groups that were never written.
 func (d *Destination) writePartitioned(ctx context.Context, records []opencdc.Record) (int, error) {
 	now := d.now()
 	var groups []*group
 	byDir := map[string]*group{}
-	limit, partErr := len(records), error(nil)
+	limit, stopErr := len(records), error(nil)
 	for i, r := range records {
+		if err := d.encoder.Check(r); err != nil {
+			// Refused like a record without a partition: everything before
+			// it is still written and acked.
+			limit, stopErr = i, &format.RecordError{Index: i, Position: r.Position, Err: err}
+			break
+		}
 		dir, err := d.partition(r, now)
 		if err != nil {
 			// Records from here on are not written in this call; the
 			// earlier ones still are, so that the ones before i are acked.
-			limit, partErr = i, err
+			limit, stopErr = i, err
 			break
 		}
 		g, ok := byDir[dir]
@@ -171,16 +192,19 @@ func (d *Destination) writePartitioned(ctx context.Context, records []opencdc.Re
 	}
 
 	for _, g := range groups {
-		if err := d.Writer.Write(ctx, &writer.Batch{Records: g.records, Format: d.config.Format, Dir: g.dir}); err != nil {
+		if err := d.Writer.Write(ctx, &writer.Batch{Records: g.records, Format: d.encoder, Dir: g.dir}); err != nil {
 			// Invariant 1: report as written only records whose object
 			// PutObject confirmed. Groups are written in order of their first
-			// record, so everything before g.first is stored.
+			// record, so everything before g.first is stored. This also holds
+			// for a refusal inside the group, which the check above makes
+			// unreachable: part of the group may be stored, but nothing of it
+			// is reported (a duplicate on retry, never a loss).
 			return g.first, fmt.Errorf("writing %d records to %s: %w", len(g.records), g.dir, err)
 		}
 		sdk.Logger(ctx).Debug().Str("dir", g.dir).Int("records", len(g.records)).Msg("wrote object")
 	}
-	if partErr != nil {
-		return limit, partErr
+	if stopErr != nil {
+		return limit, stopErr
 	}
 	return len(records), nil
 }

@@ -31,7 +31,7 @@ type parquetRecord struct {
 	Metadata  map[string]string `parquet:"name=metadata, type=MAP, convertedtype=MAP, keytype=BYTE_ARRAY, keyconvertedtype=UTF8, valuetype=BYTE_ARRAY, valueconvertedtype=UTF8"`
 }
 
-func makeParquetBytes(records []opencdc.Record) ([]byte, error) {
+func makeParquetBytes(records []opencdc.Record, c Compression) ([]byte, error) {
 	var buf bytes.Buffer
 
 	pw, err := writer.NewParquetWriterFromWriter(&buf, new(parquetRecord), int64(len(records)))
@@ -39,7 +39,14 @@ func makeParquetBytes(records []opencdc.Record) ([]byte, error) {
 		return nil, err
 	}
 
-	pw.CompressionType = parquet.CompressionCodec_GZIP
+	switch c {
+	case CompressionNone:
+		pw.CompressionType = parquet.CompressionCodec_UNCOMPRESSED
+	case CompressionSnappy:
+		pw.CompressionType = parquet.CompressionCodec_SNAPPY
+	default:
+		pw.CompressionType = parquet.CompressionCodec_GZIP
+	}
 
 	for _, r := range records {
 		pr := &parquetRecord{
