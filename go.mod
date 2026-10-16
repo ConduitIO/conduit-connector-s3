@@ -15,6 +15,7 @@ require (
 	github.com/rs/zerolog v1.35.1
 	github.com/xitongsys/parquet-go v1.6.2
 	github.com/xitongsys/parquet-go-source v0.0.0-20211228015320-b4f792c43cd0
+	go.uber.org/goleak v1.3.0
 	gopkg.in/tomb.v2 v2.0.0-20161208151619-d5d1b5820637
 )
 
@@ -72,7 +73,6 @@ require (
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/spf13/cast v1.7.0 // indirect
 	github.com/twmb/go-cache v1.4.0 // indirect
-	go.uber.org/goleak v1.3.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20251023183803-a4bb9ffd2546 // indirect
 	golang.org/x/net v0.61.0 // indirect
