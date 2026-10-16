@@ -15,6 +15,7 @@
 package source
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +56,8 @@ func TestConfig_Validate_LookbackPeriod(t *testing.T) {
 		in      time.Duration
 		wantErr bool
 	}{
-		{"zero disables the lookback", 0, false},
+		{"zero is accepted (lossy, warned at Open)", 0, false},
+		{"deprecated short value is accepted (warned at Open)", 10 * time.Second, false},
 		{"default", 5 * time.Minute, false},
 		{"above the warning threshold is accepted", 2 * time.Hour, false},
 		{"exactly the maximum", MaxLookbackPeriod, false},
@@ -64,9 +66,41 @@ func TestConfig_Validate_LookbackPeriod(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)
-			c := Config{LookbackPeriod: tc.in}
+			c := Config{LookbackPeriod: tc.in, MaxEarlyObjects: 2048, MaxTrackedUploads: 256, MaxSettledBytesPerPoll: 1 << 26, MaxPendingUploadAge: MaxLookbackPeriod}
 			err := c.Validate(t.Context())
 			is.Equal(err != nil, tc.wantErr)
+		})
+	}
+}
+
+func TestConfig_Validate_CDCBounds(t *testing.T) {
+	ok := func() Config {
+		return Config{LookbackPeriod: 5 * time.Minute, MaxEarlyObjects: 2048, MaxTrackedUploads: 256, MaxSettledBytesPerPoll: 1 << 26, MaxPendingUploadAge: 24 * time.Hour}
+	}
+	for _, tc := range []struct {
+		name string
+		mut  func(*Config)
+		want string // config key named in the error; "" for valid
+	}{
+		{"defaults", func(*Config) {}, ""},
+		{"settled-only (no early set)", func(c *Config) { c.MaxEarlyObjects = 0 }, ""},
+		{"early set too large", func(c *Config) { c.MaxEarlyObjects = 10001 }, ConfigKeyMaxEarlyObjects},
+		{"negative early set", func(c *Config) { c.MaxEarlyObjects = -1 }, ConfigKeyMaxEarlyObjects},
+		{"tracked set too large", func(c *Config) { c.MaxTrackedUploads = 10001 }, ConfigKeyMaxTrackedUploads},
+		{"zero settled budget", func(c *Config) { c.MaxSettledBytesPerPoll = 0 }, ConfigKeyMaxSettledBytesPerPoll},
+		{"pending age below the lookback", func(c *Config) { c.MaxPendingUploadAge = time.Minute }, ConfigKeyMaxPendingUploadAge},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			is := is.New(t)
+			c := ok()
+			tc.mut(&c)
+			err := c.Validate(t.Context())
+			if tc.want == "" {
+				is.NoErr(err)
+				return
+			}
+			is.True(err != nil)
+			is.True(strings.Contains(err.Error(), tc.want))
 		})
 	}
 }
