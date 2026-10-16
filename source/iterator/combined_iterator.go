@@ -17,7 +17,6 @@ package iterator
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -32,60 +31,80 @@ const (
 	MetadataContentType    = "contentType"
 )
 
+// CombinedConfig configures a CombinedIterator.
+type CombinedConfig struct {
+	Bucket, Prefix         string
+	PollingPeriod          time.Duration
+	Lookback               time.Duration
+	MultipartHold          bool
+	MaxTrackedUploads      int
+	MaxPendingUploadAge    time.Duration
+	MaxEarlyObjects        int
+	MaxSettledBytesPerPoll int64
+}
+
+// CombinedIterator runs the snapshot, then change capture.
+//
+// Every snapshot record carries a snapshot position. When the snapshot listing
+// is exhausted (in this run, or right away when resuming from the position of
+// the last snapshot record), the iterator switches to change capture from the
+// snapshot cut. There is no look-ahead: a snapshot record never carries a
+// change capture position (design N5).
 type CombinedIterator struct {
 	snapshotIterator *SnapshotIterator
 	cdcIterator      *CDCIterator
 
-	bucket        string
-	prefix        string
-	pollingPeriod time.Duration
-	lookback      time.Duration
-	client        *s3.Client
-	log           *zerolog.Logger
+	cfg    CombinedConfig
+	client *s3.Client
+	log    *zerolog.Logger
 	// failed is a handoff failure. It is sticky so that a retry cannot skip
 	// the record that was in hand when the handoff failed.
 	failed error
 }
 
-func NewCombinedIterator(
-	ctx context.Context,
-	bucket, prefix string,
-	pollingPeriod, lookback time.Duration,
-	client *s3.Client,
-	p position.Position,
-) (*CombinedIterator, error) {
-	var err error
-	c := &CombinedIterator{
-		bucket:        bucket,
-		prefix:        prefix,
-		pollingPeriod: pollingPeriod,
-		lookback:      lookback,
-		client:        client,
-		log:           sdk.Logger(ctx),
+func NewCombinedIterator(ctx context.Context, cfg CombinedConfig, client *s3.Client, rp opencdc.Position) (*CombinedIterator, error) {
+	c := &CombinedIterator{cfg: cfg, client: client, log: sdk.Logger(ctx)}
+	parsed, err := position.Parse(rp)
+	if err != nil {
+		return nil, err
 	}
-
-	switch p.Type {
-	case position.TypeSnapshot:
-		if len(p.Key) != 0 {
-			sdk.Logger(ctx).
-				Warn().
-				Str("position", string(p.ToRecordPosition())).
-				Msg("previous snapshot did not complete successfully. snapshot will be restarted for consistency.")
-		}
-		p = position.Position{} // always start snapshot from the beginning, so position is nil
-		c.snapshotIterator, err = NewSnapshotIterator(bucket, prefix, lookback, client, p, c.log)
-		if err != nil {
-			return nil, fmt.Errorf("could not create the snapshot iterator: %w", err)
-		}
-	case position.TypeCDC:
-		c.cdcIterator, err = NewCDCIterator(bucket, prefix, pollingPeriod, lookback, client, p.Timestamp, c.log)
-		if err != nil {
-			return nil, fmt.Errorf("could not create the CDC iterator: %w", err)
-		}
+	switch {
+	case parsed.V2 != nil && parsed.V2.Snapshot != nil:
+		c.snapshotIterator = NewSnapshotIterator(c.snapshotConfig(), client, parsed.V2.Snapshot, c.log)
+	case parsed.V2 != nil:
+		c.cdcIterator = NewCDCIterator(c.cdcConfig(), client, *parsed.V2.CDC, c.log)
+	case parsed.V1 != nil && parsed.V1.Type == position.TypeCDC:
+		c.log.Warn().Str("code", "s3.source.position_upgraded").Str("position", string(rp)).
+			Msg("resuming from a change capture position written by an earlier version: the lookback window is delivered once more; positions from now on resume exactly")
+		c.cdcIterator = NewCDCIteratorFromV1(c.cdcConfig(), client, *parsed.V1, c.log)
 	default:
-		return nil, fmt.Errorf("invalid position type (%d)", p.Type)
+		if parsed.V1 != nil {
+			// A v1 snapshot position holds no snapshot cut, so the snapshot
+			// cannot be resumed exactly; it starts over once, as v1 itself
+			// did on every restart.
+			c.log.Warn().Str("code", "s3.source.position_upgraded").Str("position", string(rp)).
+				Msg("resuming from a snapshot position written by an earlier version: the snapshot starts over once; positions from now on resume exactly")
+		}
+		c.snapshotIterator = NewSnapshotIterator(c.snapshotConfig(), client, nil, c.log)
 	}
 	return c, nil
+}
+
+func (c *CombinedIterator) snapshotConfig() SnapshotConfig {
+	return SnapshotConfig{
+		Bucket: c.cfg.Bucket, Prefix: c.cfg.Prefix, Lookback: c.cfg.Lookback,
+		MultipartHold: c.cfg.MultipartHold, MaxTrackedUploads: c.cfg.MaxTrackedUploads,
+		MaxPendingUploadAge: c.cfg.MaxPendingUploadAge,
+	}
+}
+
+func (c *CombinedIterator) cdcConfig() CDCConfig {
+	return CDCConfig{
+		Bucket: c.cfg.Bucket, Prefix: c.cfg.Prefix, PollingPeriod: c.cfg.PollingPeriod, Lookback: c.cfg.Lookback,
+		MultipartHold: c.cfg.MultipartHold, MaxTrackedUploads: c.cfg.MaxTrackedUploads,
+		MaxPendingUploadAge: c.cfg.MaxPendingUploadAge, MaxEarlyObjects: c.cfg.MaxEarlyObjects,
+		MaxSettledBytesPerPoll: c.cfg.MaxSettledBytesPerPoll,
+	}
 }
 
 func (c *CombinedIterator) HasNext(ctx context.Context) bool {
@@ -94,15 +113,15 @@ func (c *CombinedIterator) HasNext(ctx context.Context) bool {
 	}
 	switch {
 	case c.snapshotIterator != nil:
-		// case of empty bucket or end of bucket
-		if !c.snapshotIterator.HasNext(ctx) {
-			if err := c.switchToCDCIterator(); err != nil {
-				c.failed = err
-				return true
-			}
-			return false
+		if c.snapshotIterator.HasNext(ctx) {
+			return true
 		}
-		return true
+		// The listing is exhausted (a failure would have returned true).
+		if err := c.switchToCDCIterator(); err != nil {
+			c.failed = err
+			return true
+		}
+		return false
 	case c.cdcIterator != nil:
 		return c.cdcIterator.HasNext(ctx)
 	default:
@@ -117,29 +136,13 @@ func (c *CombinedIterator) Next(ctx context.Context) (opencdc.Record, error) {
 	switch {
 	case c.snapshotIterator != nil:
 		r, err := c.snapshotIterator.Next(ctx)
-		if err != nil {
-			return opencdc.Record{}, err
-		}
-		if !c.snapshotIterator.HasNext(ctx) {
-			// The last snapshot record carries the CDC position. It must hold
-			// the handoff watermark, not the snapshot's max LastModified, or a
-			// restart right after the handoff would skip what the snapshot
-			// missed. It is built from the record's key, not parsed back from
-			// the position, so there is no error path that could drop the
-			// record after the snapshot iterator already consumed it.
-			cdcPos := position.Position{
-				Key:       string(r.Key.Bytes()),
-				Timestamp: c.handoffTimestamp(),
-				Type:      position.TypeCDC,
-			}
+		if errors.Is(err, sdk.ErrBackoffRetry) {
 			if err := c.switchToCDCIterator(); err != nil {
-				c.failed = err // sticky: the record in hand is not lost silently
+				c.failed = err
 				return opencdc.Record{}, err
 			}
-			r.Position = cdcPos.ToRecordPosition()
 		}
-		return r, nil
-
+		return r, err
 	case c.cdcIterator != nil:
 		return c.cdcIterator.Next(ctx)
 	default:
@@ -153,30 +156,16 @@ func (c *CombinedIterator) Stop() {
 	}
 }
 
-// handoffTimestamp is the position CDC resumes from after a snapshot: the
-// newest LastModified among the objects that existed when the snapshot started
-// (see SnapshotIterator.anchor; zero for an empty bucket, which makes CDC
-// select everything). The CDC iterator selects from this minus lookbackPeriod,
-// so objects written while the snapshot ran, which the snapshot may have listed
-// past, are covered however long the snapshot took.
-//
-// Redelivery this causes is bounded by lookbackPeriod plus the writes during the
-// snapshot (at-least-once permits that).
-func (c *CombinedIterator) handoffTimestamp() time.Time {
-	return c.snapshotIterator.anchor
-}
-
-// switchToCDCIterator hands over from the snapshot to CDC. The CDC iterator
-// starts with what the snapshot delivered inside its window as already
-// delivered, so a run without failures delivers each object once (#1040).
-// After a restart from the CDC position that seed is gone and the window is
-// delivered again (at-least-once, documented).
+// switchToCDCIterator starts change capture from the snapshot cut: S = (C0,
+// +inf), E empty, R = R0. The snapshot delivered exactly the settled objects
+// at or below C0 (except tracked uploads), so this is exact (design
+// "Snapshot", handoff).
 func (c *CombinedIterator) switchToCDCIterator() error {
-	timestamp := c.handoffTimestamp()
-	cdc := newCDCIterator(c.bucket, c.prefix, c.lookback, c.client, timestamp, c.log)
-	cdc.seedDelivered(c.snapshotIterator.delivered)
-	cdc.start(c.pollingPeriod)
-	c.cdcIterator = cdc
+	cut, tracked := c.snapshotIterator.Cut()
+	c.cdcIterator = NewCDCIterator(c.cdcConfig(), c.client, position.CDCV2{
+		S:       position.Tuple{Time: cut.UTC().Truncate(time.Millisecond), Inf: true},
+		Tracked: tracked,
+	}, c.log)
 	c.snapshotIterator = nil
 	return nil
 }

@@ -84,9 +84,11 @@ func TestSource_SuccessfulSnapshot(t *testing.T) {
 		lastPosition = rec.Position
 	}
 
-	// assert last position from snapshot has a CDC type
-	pos, _ := position.ParseRecordPosition(lastPosition)
-	is.Equal(pos.Type, position.TypeCDC)
+	// The objects were written after Open, so they are newer than the
+	// snapshot cut and arrive from change capture, with v2 CDC positions.
+	pos, err := position.ParseV2(lastPosition)
+	is.NoErr(err)
+	is.True(pos.CDC != nil)
 
 	_, err = underTest.Read(ctx)
 	is.True(errors.Is(err, sdk.ErrBackoffRetry))
@@ -163,8 +165,9 @@ func TestSource_StartCDCAfterEmptyBucket(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pos, _ := position.ParseRecordPosition(obj.Position)
-	is.Equal(pos.Type, position.TypeCDC)
+	pos, err := position.ParseV2(obj.Position)
+	is.NoErr(err)
+	is.True(pos.CDC != nil)
 
 	_ = underTest.Teardown(ctx)
 }
@@ -367,7 +370,7 @@ func TestSource_CDC_EmptyBucketWithDeletedObjects(t *testing.T) {
 	is.NoErr(err) // couldn't create a versioned bucket
 
 	// add one file
-	testFiles := addObjectsToBucket(ctx, t, testBucket, "", client, 1)
+	addObjectsToBucket(ctx, t, testBucket, "", client, 1)
 
 	// delete the added file
 	testFileName := "file0000"
@@ -377,12 +380,6 @@ func TestSource_CDC_EmptyBucketWithDeletedObjects(t *testing.T) {
 		Key:    aws.String(testFileName),
 	})
 	is.NoErr(err)
-
-	// read and assert: the snapshot is empty, so the source moves to CDC
-	for _, file := range testFiles {
-		_, err := readAndAssert(ctx, t, underTest, file)
-		is.True(errors.Is(err, sdk.ErrBackoffRetry)) // unexpected error
-	}
 
 	// The delete happened after Open, so CDC must report it. (This test used
 	// to assert the opposite, which encoded #1032: anything written between
@@ -591,11 +588,32 @@ func TestSource_MinIO(t *testing.T) {
 
 	testFiles := addObjectsToBucket(ctx, t, bucket, "", client, 3)
 
-	// read and assert the objects are read back from MinIO
-	for _, file := range testFiles {
-		_, err := readAndAssert(ctx, t, underTest, file)
-		is.NoErr(err) // unexpected error
+	// Read the objects back from MinIO. They were written after Open, so
+	// they are newer than the snapshot cut and arrive from change capture
+	// after a poll, not from the first Read (design: ConduitIO/conduit
+	// 20261015-s3-source-exact-resume.md, "Behavior change for recent
+	// objects").
+	want := map[string]Object{}
+	for _, f := range testFiles {
+		want[f.key] = f
 	}
+	deadline := time.Now().Add(waitBudget)
+	for len(want) > 0 && time.Now().Before(deadline) {
+		rec, err := readWithTimeout(ctx, underTest, 5*time.Second)
+		if err != nil {
+			continue
+		}
+		f, ok := want[string(rec.Key.Bytes())]
+		if !ok {
+			t.Fatalf("unexpected or repeated record %q", rec.Key.Bytes())
+		}
+		is.Equal(string(rec.Payload.After.Bytes()), f.content)
+		for k, v := range f.metadata {
+			is.Equal(rec.Metadata[k], v)
+		}
+		delete(want, f.key)
+	}
+	is.Equal(len(want), 0) // every object was delivered
 
 	_, err = underTest.Read(ctx)
 	is.True(errors.Is(err, sdk.ErrBackoffRetry))
@@ -604,15 +622,32 @@ func TestSource_MinIO(t *testing.T) {
 	is.NoErr(err)
 }
 
+// envAllowRealAWS opts in to running the integration tests against real AWS
+// S3 with the AWS_* credentials of the environment. Without it they run only
+// against MinIO (MINIO_ENDPOINT), so that credentials that happen to be in the
+// environment never make a test touch a real account by accident.
+const envAllowRealAWS = "S3_ALLOW_REAL_AWS"
+
 func prepareIntegrationTest(t *testing.T) (*s3.Client, map[string]string) {
 	cfg, err := parseIntegrationConfig()
 	if err != nil {
 		t.Skip(err)
 	}
 
-	client, err := newS3Client(cfg)
-	if err != nil {
-		t.Fatalf("could not create S3 client: %v", err)
+	var client *s3.Client
+	if endpoint := os.Getenv(envMinIOEndpoint); endpoint != "" {
+		requireNoSDKEndpointEnv(t)
+		cfg[config.ConfigKeyAWSEndpoint] = endpoint
+		cfg[config.ConfigKeyAWSPathStyle] = "true"
+		client = newEndpointS3Client(t, cfg)
+	} else {
+		if os.Getenv(envAllowRealAWS) != "1" {
+			t.Skipf("neither %s (MinIO) nor %s=1 (real AWS) is set", envMinIOEndpoint, envAllowRealAWS)
+		}
+		client, err = newS3Client(cfg)
+		if err != nil {
+			t.Fatalf("could not create S3 client: %v", err)
+		}
 	}
 
 	bucket := "conduit-s3-source-test-" + uuid.NewString()
@@ -901,8 +936,17 @@ func readUntil(ctx context.Context, source *source.Source, timeout time.Duration
 
 // readAndAssert will read the next record and assert that the returned record is
 // the same as the wanted object.
+// readAndAssert reads the next record and checks it is want. Objects written
+// after Open arrive from change capture after a poll, so it waits while the
+// source reports ErrBackoffRetry, up to waitBudget.
 func readAndAssert(ctx context.Context, t *testing.T, source *source.Source, want Object) (opencdc.Record, error) {
+	t.Helper()
+	deadline := time.Now().Add(waitBudget)
 	got, err := source.Read(ctx)
+	for errors.Is(err, sdk.ErrBackoffRetry) && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		got, err = source.Read(ctx)
+	}
 	if err != nil {
 		return got, err
 	}

@@ -25,7 +25,6 @@ import (
 	"github.com/conduitio/conduit-commons/lang"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
-	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
@@ -99,15 +98,17 @@ func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
 		return err
 	}
 
-	// parse position to start from
-	p, err := position.ParseRecordPosition(rp)
-	if err != nil {
-		return err
-	}
-
-	s.iterator, err = iterator.NewCombinedIterator(
-		ctx, s.config.AWSBucket, s.config.Prefix, s.config.PollingPeriod, s.config.LookbackPeriod, s.client, p,
-	)
+	s.iterator, err = iterator.NewCombinedIterator(ctx, iterator.CombinedConfig{
+		Bucket:                 s.config.AWSBucket,
+		Prefix:                 s.config.Prefix,
+		PollingPeriod:          s.config.PollingPeriod,
+		Lookback:               s.config.LookbackPeriod,
+		MultipartHold:          true,
+		MaxTrackedUploads:      iterator.DefaultMaxTrackedUploads,
+		MaxPendingUploadAge:    iterator.DefaultMaxPendingUploadAge,
+		MaxEarlyObjects:        iterator.DefaultMaxEarlyObjects,
+		MaxSettledBytesPerPoll: iterator.DefaultMaxSettledBytesPerPoll,
+	}, s.client, rp)
 	if err != nil {
 		return fmt.Errorf("couldn't create a combined iterator: %w", err)
 	}
