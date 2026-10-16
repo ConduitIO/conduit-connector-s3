@@ -76,6 +76,7 @@ func (d *Destination) Open(ctx context.Context) error {
 		// defines, so the conversion cannot produce an unknown mode.
 		ServerSideEncryption: types.ServerSideEncryption(d.config.ServerSideEncryption),
 		SSEKMSKeyID:          d.config.SSEKMSKeyID,
+		ConditionalWrites:    d.config.ConditionalWrites,
 	})
 	if err != nil {
 		return err
