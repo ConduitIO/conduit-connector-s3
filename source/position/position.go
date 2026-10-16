@@ -52,6 +52,10 @@ func ParseRecordPosition(p opencdc.Position) (Position, error) {
 	if index == -1 {
 		return Position{}, errors.New("invalid position format, no '_' found")
 	}
+	if index+2 > len(s) {
+		// A position ending in '_' made the slicing below panic.
+		return Position{}, errors.New("invalid position format, nothing after '_'")
+	}
 	seconds, err := strconv.ParseInt(s[index+2:], 10, 64)
 	if err != nil {
 		return Position{}, fmt.Errorf("could not parse the position timestamp: %w", err)
