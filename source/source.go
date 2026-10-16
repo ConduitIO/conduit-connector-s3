@@ -99,13 +99,15 @@ func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
 	}
 
 	s.iterator, err = iterator.NewCombinedIterator(ctx, iterator.CombinedConfig{
-		Bucket:              s.config.AWSBucket,
-		Prefix:              s.config.Prefix,
-		PollingPeriod:       s.config.PollingPeriod,
-		Lookback:            s.config.LookbackPeriod,
-		MultipartHold:       true,
-		MaxTrackedUploads:   iterator.DefaultMaxTrackedUploads,
-		MaxPendingUploadAge: iterator.DefaultMaxPendingUploadAge,
+		Bucket:                 s.config.AWSBucket,
+		Prefix:                 s.config.Prefix,
+		PollingPeriod:          s.config.PollingPeriod,
+		Lookback:               s.config.LookbackPeriod,
+		MultipartHold:          true,
+		MaxTrackedUploads:      iterator.DefaultMaxTrackedUploads,
+		MaxPendingUploadAge:    iterator.DefaultMaxPendingUploadAge,
+		MaxEarlyObjects:        iterator.DefaultMaxEarlyObjects,
+		MaxSettledBytesPerPoll: iterator.DefaultMaxSettledBytesPerPoll,
 	}, s.client, rp)
 	if err != nil {
 		return fmt.Errorf("couldn't create a combined iterator: %w", err)

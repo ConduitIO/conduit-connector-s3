@@ -46,6 +46,17 @@ func r6proxy(t *testing.T, endpoint string, lmFor func(key string) (time.Time, b
 	target, _ := url.Parse(endpoint)
 	rp := httputil.NewSingleHostReverseProxy(target)
 	rp.ModifyResponse = func(resp *http.Response) error {
+		// A real store reports the same LastModified in a listing and on
+		// GetObject (the source checks it), so the GetObject header is
+		// rewritten with the listing.
+		if lmFor != nil && resp.Header.Get("Last-Modified") != "" && resp.Request != nil {
+			parts := strings.SplitN(strings.TrimPrefix(resp.Request.URL.Path, "/"), "/", 2)
+			if len(parts) == 2 {
+				if ts, ok := lmFor(parts[1]); ok {
+					resp.Header.Set("Last-Modified", ts.UTC().Format(http.TimeFormat))
+				}
+			}
+		}
 		if !strings.Contains(resp.Header.Get("Content-Type"), "xml") {
 			return nil
 		}

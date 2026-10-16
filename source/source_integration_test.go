@@ -85,9 +85,10 @@ func TestSource_SuccessfulSnapshot(t *testing.T) {
 	}
 
 	// The objects were written after Open, so they are newer than the
-	// snapshot cut and arrive from change capture.
-	pos, _ := position.ParseRecordPosition(lastPosition)
-	is.Equal(pos.Type, position.TypeCDC)
+	// snapshot cut and arrive from change capture, with v2 CDC positions.
+	pos, err := position.ParseV2(lastPosition)
+	is.NoErr(err)
+	is.True(pos.CDC != nil)
 
 	_, err = underTest.Read(ctx)
 	is.True(errors.Is(err, sdk.ErrBackoffRetry))
@@ -164,8 +165,9 @@ func TestSource_StartCDCAfterEmptyBucket(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pos, _ := position.ParseRecordPosition(obj.Position)
-	is.Equal(pos.Type, position.TypeCDC)
+	pos, err := position.ParseV2(obj.Position)
+	is.NoErr(err)
+	is.True(pos.CDC != nil)
 
 	_ = underTest.Teardown(ctx)
 }
