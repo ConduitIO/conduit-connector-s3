@@ -87,6 +87,30 @@ func TestV2_RoundTrip(t *testing.T) {
 	}
 }
 
+// A position with more early entries than the old 10000 limit round-trips: the
+// bound is 16384 (the SDK acceptance suite's maximum batch of 10000 plus the
+// objects already in flight can exceed 10000).
+func TestV2_RoundTrip_MoreThan10000EarlyEntries(t *testing.T) {
+	c := CDCV2{S: Tuple{Time: ms(0), Inf: true}}
+	for i := 0; i < 10001; i++ {
+		c.Early = append(c.Early, EarlyEntry{
+			Modified: ms(time.Duration(i+1) * time.Millisecond),
+			Hash:     Hash{byte(i), byte(i >> 8)},
+		})
+	}
+	p, err := c.ToRecordPosition()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseV2(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.CDC.Early) != len(c.Early) {
+		t.Fatalf("got %d early entries, want %d", len(got.CDC.Early), len(c.Early))
+	}
+}
+
 // normSnap and normCDC put times in UTC and empty slices to nil, as the parser
 // returns them.
 func normSnap(s SnapshotV2) SnapshotV2 {

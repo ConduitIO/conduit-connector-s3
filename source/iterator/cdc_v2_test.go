@@ -122,6 +122,45 @@ func TestCDC_EarlyBoundOfOne(t *testing.T) {
 	requireExactlyOnce(t, d.finish(), m.deletes)
 }
 
+// SRC-02 regression: the acceptance suite writes 1 + 100 + MaxBatchSize
+// (10000) objects to one running source. With the old default early bound
+// (2048), the 10000-object burst overflowed E, so the source deferred the
+// excess to settle within lookbackPeriod and the suite read them before they
+// were delivered. The default bound must deliver the whole burst at once,
+// exactly once.
+func TestCDC_BurstOfMaxBatchDeliveredAtOnce(t *testing.T) {
+	is := is.New(t)
+	m := newAWSModel(tNow, false)
+	d := newDriver(t, m, CDCConfig{MaxEarlyObjects: DefaultMaxEarlyObjects}, startState(m))
+
+	m.put("snapshot", 0)
+	m.advance(time.Second)
+	is.Equal(len(d.poll()), 1)
+	for i := 0; i < 100; i++ {
+		m.put(fmt.Sprintf("create-%03d", i), 0)
+	}
+	m.advance(time.Second)
+	is.Equal(len(d.poll()), 100)
+
+	const burst = 10000
+	for i := 0; i < burst; i++ {
+		m.put(fmt.Sprintf("burst-%05d", i), 0)
+	}
+	m.advance(time.Second)
+	// The whole burst is delivered in this poll: nothing waits to settle.
+	is.Equal(len(d.poll()), burst)
+
+	// While the burst is still within the lookback, no record comes again and
+	// nothing else is delivered.
+	for i := 0; i < 3; i++ {
+		m.advance(time.Second)
+		is.Equal(len(d.poll()), 0)
+	}
+	all := d.finish()
+	requireExactlyOnce(t, all, m.deletes)
+	is.Equal(len(all), 1+100+burst)
+}
+
 // B1: a multipart upload that runs longer than the lookback on an idle bucket
 // is stamped with its initiation time when it completes; it is tracked in R
 // and delivered once, also across a kill.
@@ -359,8 +398,10 @@ func TestCDC_UpgradeFromV1(t *testing.T) {
 	m.advance(-2 * time.Hour)
 	held := m.startUpload("held")
 	m.advance(2 * time.Hour)
-	cfg := CDCConfig{Bucket: "b", Lookback: lb, MultipartHold: true, MaxTrackedUploads: 0, MaxPendingUploadAge: 24 * time.Hour,
-		MaxEarlyObjects: 16, MaxSettledBytesPerPoll: 1 << 20, Now: m.clock, PollingPeriod: time.Hour}
+	cfg := CDCConfig{
+		Bucket: "b", Lookback: lb, MultipartHold: true, MaxTrackedUploads: 0, MaxPendingUploadAge: 24 * time.Hour,
+		MaxEarlyObjects: 16, MaxSettledBytesPerPoll: 1 << 20, Now: m.clock, PollingPeriod: time.Hour,
+	}
 	w := NewCDCIteratorFromV1(cfg, m.client(), position.Position{Key: "x", Timestamp: tNow.Add(-10 * time.Second), Type: position.TypeCDC}, nil)
 	w.Stop()
 	w2 := newCDCIterator(cfg, m.client(), w.State(), nil)

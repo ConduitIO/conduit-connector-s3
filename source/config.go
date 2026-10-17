@@ -44,8 +44,15 @@ const (
 	// for. Values from 1s up to it are deprecated (accepted with a warning,
 	// rejected two minor releases later); 0 is accepted and lossy.
 	MinExactLookback = 30 * time.Second
-	// maxBound is the format limit of the early and tracked sets.
-	maxBound = 10000
+	// maxEarlyBound is the largest cdc.maxEarlyObjects the position format
+	// holds (position.MaxEarlyEntries). It is the SDK acceptance suite's
+	// maximum batch (10000) rounded up to the next power of two, so a full
+	// burst plus the objects already in flight fits without being deferred
+	// for lookbackPeriod.
+	maxEarlyBound = 16384
+	// maxTrackedBound is the largest cdc.maxTrackedUploads the position
+	// format holds (position.MaxTrackedUploads).
+	maxTrackedBound = 10000
 )
 
 // Config represents source configuration with S3 configurations
@@ -74,8 +81,10 @@ type Config struct {
 	// written faster than cdc.maxEarlyObjects / lookbackPeriod gets the excess
 	// up to lookbackPeriod later. Memory: positions take up to records in
 	// flight x (80 + key length + 20 x this) bytes. 0 delivers everything only
-	// once settled. At most 10000.
-	MaxEarlyObjects int `json:"cdc.maxEarlyObjects" default:"2048"`
+	// once settled. At most 16384. The default delivers a burst of the SDK
+	// acceptance suite's maximum batch (10000) at once instead of deferring
+	// it for lookbackPeriod.
+	MaxEarlyObjects int `json:"cdc.maxEarlyObjects" default:"16384"`
 	// The memory budget, in bytes, for the settled objects one poll delivers
 	// (a catch-up after downtime continues on the next poll).
 	MaxSettledBytesPerPoll int `json:"cdc.maxSettledBytesPerPoll" default:"67108864"`
@@ -110,11 +119,11 @@ func (c *Config) Validate(ctx context.Context) error {
 	if c.LookbackPeriod > MaxLookbackPeriod {
 		return fmt.Errorf("%s: %v is above the maximum of %v; use a smaller value", ConfigKeyLookbackPeriod, c.LookbackPeriod, MaxLookbackPeriod)
 	}
-	if c.MaxEarlyObjects < 0 || c.MaxEarlyObjects > maxBound {
-		return fmt.Errorf("%s: %d is outside 0 to %d", ConfigKeyMaxEarlyObjects, c.MaxEarlyObjects, maxBound)
+	if c.MaxEarlyObjects < 0 || c.MaxEarlyObjects > maxEarlyBound {
+		return fmt.Errorf("%s: %d is outside 0 to %d", ConfigKeyMaxEarlyObjects, c.MaxEarlyObjects, maxEarlyBound)
 	}
-	if c.MaxTrackedUploads < 0 || c.MaxTrackedUploads > maxBound {
-		return fmt.Errorf("%s: %d is outside 0 to %d", ConfigKeyMaxTrackedUploads, c.MaxTrackedUploads, maxBound)
+	if c.MaxTrackedUploads < 0 || c.MaxTrackedUploads > maxTrackedBound {
+		return fmt.Errorf("%s: %d is outside 0 to %d", ConfigKeyMaxTrackedUploads, c.MaxTrackedUploads, maxTrackedBound)
 	}
 	if c.MaxSettledBytesPerPoll < 1 {
 		return fmt.Errorf("%s: must be positive, got %d", ConfigKeyMaxSettledBytesPerPoll, c.MaxSettledBytesPerPoll)
