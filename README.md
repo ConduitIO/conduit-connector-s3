@@ -277,6 +277,52 @@ layout can notice:
 `builtin:kafka` does not set `kafka.partition` yet, so `partitioner: default`
 needs it set by a processor until it does.<!-- /readmegen:description -->
 
+## Authentication
+
+There are two ways to authenticate.
+
+**Static keys.** Set both `aws.accessKeyId` and `aws.secretAccessKey` in the
+pipeline. They work with any `aws.endpoint`, as before. Setting only one of the
+two is an error (`connector.credentials_incomplete`); it never falls back to
+the host's identity.
+
+**Ambient credentials (the AWS default credential chain).** Leave both keys
+unset and the connector uses the Conduit host's AWS identity: environment
+variables, shared config and SSO, web identity (IRSA on EKS), the ECS task role
+or the EC2 instance role. Because a pipeline would then act as the Conduit host,
+this only works when the Conduit operator allows it in `conduit.yaml`:
+
+```yaml
+connectors:
+  ambient-credentials:
+    enabled: true
+    allow-resources: ["acme-ingest-prod"]            # exact bucket names, required
+    allow-endpoints: ["https://minio.internal:9000"] # only if aws.endpoint (or AWS_ENDPOINT_URL*) is set
+```
+
+Rules under ambient credentials:
+
+- The pipeline must use the built-in connector, `builtin:s3`. A standalone or
+  registry-installed copy of this connector gets no operator policy and refuses.
+- `aws.bucket` must be listed exactly. Access-point ARNs and aliases
+  (`arn:...`, `-s3alias`, `--ol-s3`, `--op-s3`, `--x-s3`, `.mrap`) are refused.
+- A custom endpoint, from `aws.endpoint`, `AWS_ENDPOINT_URL_S3`,
+  `AWS_ENDPOINT_URL` or a shared-config profile, must be https and listed
+  exactly. With no custom endpoint, the SDK's regional AWS endpoint is used.
+- Redirects to another host or to http are refused; link-local and metadata
+  addresses (for example `169.254.169.254`) are never dialed.
+- `aws.region` must contain only lower-case letters, digits and dashes.
+- AWS error text shown in the pipeline has role ARNs and account IDs removed;
+  the full text is in the Conduit log.
+
+Without the operator setting, a pipeline with no keys fails at configure time
+with `connector.ambient_credentials_disabled` and no AWS call is made.
+Credentials from the chain are resolved on the first request: a host with no
+credentials fails at `Open` (source) or on the first write (destination), and
+nothing is acknowledged. Scope the host role's IAM policy to the listed buckets;
+the allowlist does not replace it. See Conduit's
+[ambient credentials runbook](https://github.com/ConduitIO/conduit/blob/main/docs/operations/ambient-credentials.md).
+
 ## Source Configuration Parameters
 
 <!-- readmegen:source.parameters.yaml -->
@@ -290,10 +336,6 @@ pipelines:
         plugin: "s3"
         type: source
         settings:
-          # AWS access key id.
-          # Type: string
-          # Required: yes
-          aws.accessKeyId: ""
           # the AWS S3 bucket name.
           # Type: string
           # Required: yes
@@ -302,10 +344,17 @@ pipelines:
           # Type: string
           # Required: yes
           aws.region: ""
-          # AWS secret access key.
+          # AWS access key id. Optional, but must be set together with
+          # aws.secretAccessKey. When both are unset the connector uses the
+          # Conduit host's ambient AWS identity (the AWS SDK default credential
+          # chain: environment, shared config and SSO, web identity/IRSA, ECS
+          # and EC2 roles), but only if the Conduit operator enabled
+          # connectors.ambient-credentials and listed the bucket, and only as
+          # the built-in connector (builtin:s3). Otherwise the connector refuses
+          # with connector.ambient_credentials_disabled.
           # Type: string
-          # Required: yes
-          aws.secretAccessKey: ""
+          # Required: no
+          aws.accessKeyId: ""
           # The endpoint to connect to. Set this when using an S3-compatible
           # object store such as MinIO (for example http://localhost:9000).
           # Leave empty to use the default AWS endpoints. The AWS_ENDPOINT_URL
@@ -329,6 +378,11 @@ pipelines:
           # Type: bool
           # Required: no
           aws.pathStyle: "false"
+          # AWS secret access key. Optional, but must be set together with
+          # aws.accessKeyId. See aws.accessKeyId for ambient credentials.
+          # Type: string
+          # Required: no
+          aws.secretAccessKey: ""
           # The largest number of new objects delivered before they settle (the
           # early set kept in every position, about 20 bytes per object). A
           # bucket written faster than cdc.maxEarlyObjects / lookbackPeriod gets
@@ -448,10 +502,6 @@ pipelines:
         plugin: "s3"
         type: destination
         settings:
-          # AWS access key id.
-          # Type: string
-          # Required: yes
-          aws.accessKeyId: ""
           # the AWS S3 bucket name.
           # Type: string
           # Required: yes
@@ -460,10 +510,6 @@ pipelines:
           # Type: string
           # Required: yes
           aws.region: ""
-          # AWS secret access key.
-          # Type: string
-          # Required: yes
-          aws.secretAccessKey: ""
           # The destination format: "json" (one OpenCDC-shaped JSON object per
           # line), "parquet", or "bytearray" (the payload bytes of every record
           # followed by format.bytearray.separator; Kafka Connect's
@@ -476,6 +522,17 @@ pipelines:
           # Type: string
           # Required: yes
           format: ""
+          # AWS access key id. Optional, but must be set together with
+          # aws.secretAccessKey. When both are unset the connector uses the
+          # Conduit host's ambient AWS identity (the AWS SDK default credential
+          # chain: environment, shared config and SSO, web identity/IRSA, ECS
+          # and EC2 roles), but only if the Conduit operator enabled
+          # connectors.ambient-credentials and listed the bucket, and only as
+          # the built-in connector (builtin:s3). Otherwise the connector refuses
+          # with connector.ambient_credentials_disabled.
+          # Type: string
+          # Required: no
+          aws.accessKeyId: ""
           # The endpoint to connect to. Set this when using an S3-compatible
           # object store such as MinIO (for example http://localhost:9000).
           # Leave empty to use the default AWS endpoints. The AWS_ENDPOINT_URL
@@ -499,6 +556,11 @@ pipelines:
           # Type: bool
           # Required: no
           aws.pathStyle: "false"
+          # AWS secret access key. Optional, but must be set together with
+          # aws.accessKeyId. See aws.accessKeyId for ambient credentials.
+          # Type: string
+          # Required: no
+          aws.secretAccessKey: ""
           # Server-side encryption to request for every object written: AES256
           # (SSE-S3), aws:kms (SSE-KMS) or aws:kms:dsse (DSSE-KMS). Leave empty
           # to send no encryption header, so the bucket's default encryption

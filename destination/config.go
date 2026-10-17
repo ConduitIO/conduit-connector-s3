@@ -164,7 +164,8 @@ func (c *Config) Encoder() (format.Encoder, error) {
 
 // Validate implements sdk.Validatable: the SDK calls it automatically after
 // configuration parsing. It runs the middleware validations and the ones the
-// parameter specifications cannot express, such as the aws.endpoint URL shape.
+// parameter specifications cannot express, such as the aws.endpoint URL shape and
+// the both-or-neither rule for the static AWS credentials.
 func (c *Config) Validate(ctx context.Context) error {
 	if err := c.DefaultDestinationMiddleware.Validate(ctx); err != nil {
 		return err
@@ -178,7 +179,10 @@ func (c *Config) Validate(ctx context.Context) error {
 	if _, err := c.Encoder(); err != nil {
 		return err
 	}
-	return c.validateEncryption()
+	if err := c.validateEncryption(); err != nil {
+		return err
+	}
+	return c.ValidateAuth(ctx)
 }
 
 // validateEncryption checks aws.serverSideEncryption and aws.sseKmsKeyId. A

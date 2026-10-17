@@ -98,7 +98,8 @@ type Config struct {
 
 // Validate implements sdk.Validatable: the SDK calls it automatically after
 // configuration parsing. It runs the middleware validations and the ones the
-// parameter specifications cannot express, such as the aws.endpoint URL shape.
+// parameter specifications cannot express, such as the aws.endpoint URL shape and
+// the both-or-neither rule for the static AWS credentials.
 func (c *Config) Validate(ctx context.Context) error {
 	if err := c.DefaultSourceMiddleware.Validate(ctx); err != nil {
 		return err
@@ -122,5 +123,8 @@ func (c *Config) Validate(ctx context.Context) error {
 		return fmt.Errorf("%s: %v is below %s (%v); an upload younger than the lookback must always be tracked, so raise %s",
 			ConfigKeyMaxPendingUploadAge, c.MaxPendingUploadAge, ConfigKeyLookbackPeriod, c.LookbackPeriod, ConfigKeyMaxPendingUploadAge)
 	}
-	return config.ValidateEndpoint(c.AWSEndpoint)
+	if err := config.ValidateEndpoint(c.AWSEndpoint); err != nil {
+		return err
+	}
+	return c.ValidateAuth(ctx)
 }

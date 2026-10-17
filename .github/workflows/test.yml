@@ -62,3 +62,9 @@ jobs:
       - name: Stop MinIO
         if: always()
         run: docker compose -f test/docker-compose.yml down
+
+      # Ambient credentials (AWS default chain under the Conduit operator
+      # policy) against a separate TLS MinIO on an ephemeral port. The script
+      # brings its own compose project up and down; no AWS account is used.
+      - name: Test ambient credentials against TLS MinIO
+        run: make test-integration-ambient

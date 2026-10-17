@@ -1,0 +1,25 @@
+# MinIO over TLS for the ambient-credentials integration tests
+# (ambient_minio_test.go). Ambient credentials only ever sign requests to an
+# https endpoint, so this instance serves TLS with a throwaway certificate that
+# scripts/test-integration-ambient.sh generates into $AMBIENT_CERTS_DIR. The
+# host port is ephemeral (the script reads it back with `docker compose port`)
+# so the job never collides with the plain MinIO on 9000 or another run.
+# Same image pin as test/docker-compose.yml.
+services:
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372
+    ports:
+      - "127.0.0.1::9000"
+    environment:
+      MINIO_ROOT_USER: conduitminio
+      MINIO_ROOT_PASSWORD: conduitminiosecret
+      MINIO_KMS_SECRET_KEY: my-minio-key:OSMM+vkKUTCvQs9YL/CVMIMt43HFhkTiqZC7QkYYkYI=
+    command: server /data --certs-dir /certs
+    volumes:
+      - ${AMBIENT_CERTS_DIR:?set AMBIENT_CERTS_DIR}:/certs:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fk", "https://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s

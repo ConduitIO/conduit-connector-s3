@@ -36,6 +36,14 @@ test-integration-s3:
 		MINIO_ENDPOINT=http://localhost:9000 \
 		go test -race -count=1 -p 1 -run '^(TestS3MinIO.*|TestS3Parquet|TestSource_.*|TestMinIO_.*)$$' ./destination ./source
 
+# test-integration-ambient runs the ambient-credentials tests (AWS default
+# credential chain under the Conduit operator policy) against a TLS MinIO on an
+# ephemeral port, with a mocked IMDS and a mocked STS web-identity endpoint.
+# No AWS account is needed. See scripts/test-integration-ambient.sh.
+.PHONY: test-integration-ambient
+test-integration-ambient:
+	scripts/test-integration-ambient.sh
+
 .PHONY: lint
 lint:
 	golangci-lint run

@@ -21,6 +21,9 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	cconfig "github.com/conduitio/conduit-commons/config"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -62,10 +65,18 @@ var ErrInvalidParameterValue = cconfig.ErrInvalidParameterValue
 
 // Config represents configuration needed for S3
 type Config struct {
-	// AWS access key id.
-	AWSAccessKeyID string `json:"aws.accessKeyId" validate:"required"`
-	// AWS secret access key.
-	AWSSecretAccessKey string `json:"aws.secretAccessKey" validate:"required"`
+	// AWS access key id. Optional, but must be set together with
+	// aws.secretAccessKey. When both are unset the connector uses the Conduit
+	// host's ambient AWS identity (the AWS SDK default credential chain:
+	// environment, shared config and SSO, web identity/IRSA, ECS and EC2
+	// roles), but only if the Conduit operator enabled
+	// connectors.ambient-credentials and listed the bucket, and only as the
+	// built-in connector (builtin:s3). Otherwise the connector refuses with
+	// connector.ambient_credentials_disabled.
+	AWSAccessKeyID string `json:"aws.accessKeyId"`
+	// AWS secret access key. Optional, but must be set together with
+	// aws.accessKeyId. See aws.accessKeyId for ambient credentials.
+	AWSSecretAccessKey string `json:"aws.secretAccessKey"`
 	// the AWS S3 bucket region
 	AWSRegion string `json:"aws.region" validate:"required"`
 	// the AWS S3 bucket name.
@@ -90,6 +101,38 @@ type Config struct {
 	AWSPathStyle bool `json:"aws.pathStyle" default:"false"`
 	// the S3 key prefix.
 	Prefix string
+}
+
+// ValidateAuth checks the credential configuration at configure time: exactly
+// one static key is an error; no static keys runs every ambient-credentials
+// check (operator policy, region, bucket allowlist, proxy, resolved endpoint)
+// without making a request. It is called from the Validate methods of the
+// destination and source configs, so a pipeline the policy refuses fails when
+// it is created or validated, not on the first record.
+func (c Config) ValidateAuth(ctx context.Context) error {
+	_, _, err := NewS3Client(ctx, c.ClientParams(), PurposeValidate)
+	return err
+}
+
+// LoadAWSConfig builds the AWS SDK configuration shared by the source and the
+// destination. With a non-empty accessKeyID and secretAccessKey it pins a
+// static credentials provider (sessionToken may be empty). With both empty it
+// installs no provider, so the SDK default credential chain applies:
+// environment variables, shared config and credentials files, web identity
+// (IRSA), then the ECS or EC2 instance role. Credentials are resolved lazily
+// by the SDK on the first request, not here.
+func LoadAWSConfig(ctx context.Context, region, accessKeyID, secretAccessKey, sessionToken string) (aws.Config, error) {
+	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
+	if accessKeyID != "" || secretAccessKey != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken),
+		))
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("load AWS configuration: %w", err)
+	}
+	return cfg, nil
 }
 
 // ValidateEndpoint validates the aws.endpoint configuration: it must be a URL
