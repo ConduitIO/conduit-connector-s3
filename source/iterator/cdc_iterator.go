@@ -35,7 +35,14 @@ import (
 
 // Defaults of the change capture bounds (design "Settings").
 const (
-	DefaultMaxEarlyObjects        = 2048
+	// DefaultMaxEarlyObjects bounds the early set E kept in every position.
+	// It is the SDK acceptance suite's maximum batch (10000) rounded up to
+	// the next power of two, so that a full burst plus the objects already in
+	// flight is delivered at once instead of being deferred for
+	// lookbackPeriod. Memory: an entry is about 20 bytes in every in-flight
+	// position, so the full bound costs about 330 KiB per position (see the
+	// config reference for the formula).
+	DefaultMaxEarlyObjects        = 16384
 	DefaultMaxSettledBytesPerPoll = 64 << 20
 )
 

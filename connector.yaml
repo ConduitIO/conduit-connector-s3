@@ -349,9 +349,11 @@ specification:
           written faster than cdc.maxEarlyObjects / lookbackPeriod gets the excess
           up to lookbackPeriod later. Memory: positions take up to records in
           flight x (80 + key length + 20 x this) bytes. 0 delivers everything only
-          once settled. At most 10000.
+          once settled. At most 16384. The default delivers a burst of the SDK
+          acceptance suite's maximum batch (10000) at once instead of deferring
+          it for lookbackPeriod.
         type: int
-        default: "2048"
+        default: "16384"
         validations: []
       - name: cdc.maxPendingUploadAge
         description: |-

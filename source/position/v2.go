@@ -58,8 +58,9 @@ const (
 	MaxKeyBytes = 1024
 	// MaxEarlyEntries and MaxTrackedUploads are hard limits of the format,
 	// above any configurable bound, so a corrupt length cannot make the
-	// parser allocate without limit.
-	MaxEarlyEntries   = 10000
+	// parser allocate without limit. MaxEarlyEntries is the SDK acceptance
+	// suite's maximum batch (10000) rounded up to the next power of two.
+	MaxEarlyEntries   = 16384
 	MaxTrackedUploads = 10000
 )
 
@@ -452,11 +453,11 @@ func (r *reader) count(limit uint64) int {
 	if r.err != nil {
 		return 0
 	}
-	if n > limit || n > MaxEarlyEntries || n > MaxTrackedUploads {
+	if n > limit {
 		r.fail("too many entries")
 		return 0
 	}
-	return int(n) // bounded by the format limits just above
+	return int(n) //nolint:gosec // bounded by the limit check just above
 }
 
 func (r *reader) early(s Tuple) []EarlyEntry {

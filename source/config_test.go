@@ -91,9 +91,9 @@ func TestConfig_Validate_CDCBounds(t *testing.T) {
 	}{
 		{"defaults", func(*Config) {}, ""},
 		{"settled-only (no early set)", func(c *Config) { c.MaxEarlyObjects = 0 }, ""},
-		{"early set too large", func(c *Config) { c.MaxEarlyObjects = 10001 }, ConfigKeyMaxEarlyObjects},
+		{"early set too large", func(c *Config) { c.MaxEarlyObjects = maxEarlyBound + 1 }, ConfigKeyMaxEarlyObjects},
 		{"negative early set", func(c *Config) { c.MaxEarlyObjects = -1 }, ConfigKeyMaxEarlyObjects},
-		{"tracked set too large", func(c *Config) { c.MaxTrackedUploads = 10001 }, ConfigKeyMaxTrackedUploads},
+		{"tracked set too large", func(c *Config) { c.MaxTrackedUploads = maxTrackedBound + 1 }, ConfigKeyMaxTrackedUploads},
 		{"zero settled budget", func(c *Config) { c.MaxSettledBytesPerPoll = 0 }, ConfigKeyMaxSettledBytesPerPoll},
 		{"pending age below the lookback", func(c *Config) { c.MaxPendingUploadAge = time.Minute }, ConfigKeyMaxPendingUploadAge},
 	} {
