@@ -457,7 +457,7 @@ func (r *reader) count(limit uint64) int {
 		r.fail("too many entries")
 		return 0
 	}
-	return int(n) // bounded by limit just above
+	return int(n) //nolint:gosec // bounded by the limit check just above
 }
 
 func (r *reader) early(s Tuple) []EarlyEntry {
