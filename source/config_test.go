@@ -66,7 +66,10 @@ func TestConfig_Validate_LookbackPeriod(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			is := is.New(t)
+			// Static keys, so only the lookback rule is under test (no keys and
+			// no operator policy is refused by the credentials check).
 			c := Config{LookbackPeriod: tc.in, MaxEarlyObjects: 2048, MaxTrackedUploads: 256, MaxSettledBytesPerPoll: 1 << 26, MaxPendingUploadAge: MaxLookbackPeriod}
+			c.AWSAccessKeyID, c.AWSSecretAccessKey = "id", "secret"
 			err := c.Validate(t.Context())
 			is.Equal(err != nil, tc.wantErr)
 		})
@@ -75,7 +78,11 @@ func TestConfig_Validate_LookbackPeriod(t *testing.T) {
 
 func TestConfig_Validate_CDCBounds(t *testing.T) {
 	ok := func() Config {
-		return Config{LookbackPeriod: 5 * time.Minute, MaxEarlyObjects: 2048, MaxTrackedUploads: 256, MaxSettledBytesPerPoll: 1 << 26, MaxPendingUploadAge: 24 * time.Hour}
+		// Static keys, so the CDC bounds are what is under test (no keys and
+		// no operator policy is refused by the credentials check).
+		c := Config{LookbackPeriod: 5 * time.Minute, MaxEarlyObjects: 2048, MaxTrackedUploads: 256, MaxSettledBytesPerPoll: 1 << 26, MaxPendingUploadAge: 24 * time.Hour}
+		c.AWSAccessKeyID, c.AWSSecretAccessKey = "id", "secret"
+		return c
 	}
 	for _, tc := range []struct {
 		name string

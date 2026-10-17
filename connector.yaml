@@ -282,13 +282,6 @@ specification:
   author: Meroxa, Inc.
   source:
     parameters:
-      - name: aws.accessKeyId
-        description: AWS access key id.
-        type: string
-        default: ""
-        validations:
-          - type: required
-            value: ""
       - name: aws.bucket
         description: the AWS S3 bucket name.
         type: string
@@ -303,13 +296,19 @@ specification:
         validations:
           - type: required
             value: ""
-      - name: aws.secretAccessKey
-        description: AWS secret access key.
+      - name: aws.accessKeyId
+        description: |-
+          AWS access key id. Optional, but must be set together with
+          aws.secretAccessKey. When both are unset the connector uses the Conduit
+          host's ambient AWS identity (the AWS SDK default credential chain:
+          environment, shared config and SSO, web identity/IRSA, ECS and EC2
+          roles), but only if the Conduit operator enabled
+          connectors.ambient-credentials and listed the bucket, and only as the
+          built-in connector (builtin:s3). Otherwise the connector refuses with
+          connector.ambient_credentials_disabled.
         type: string
         default: ""
-        validations:
-          - type: required
-            value: ""
+        validations: []
       - name: aws.endpoint
         description: |-
           The endpoint to connect to. Set this when using an S3-compatible object
@@ -335,6 +334,13 @@ specification:
           MinIO answers with a 400 MalformedXML. Leave false for AWS S3.
         type: bool
         default: "false"
+        validations: []
+      - name: aws.secretAccessKey
+        description: |-
+          AWS secret access key. Optional, but must be set together with
+          aws.accessKeyId. See aws.accessKeyId for ambient credentials.
+        type: string
+        default: ""
         validations: []
       - name: cdc.maxEarlyObjects
         description: |-
@@ -469,13 +475,6 @@ specification:
             value: avro
   destination:
     parameters:
-      - name: aws.accessKeyId
-        description: AWS access key id.
-        type: string
-        default: ""
-        validations:
-          - type: required
-            value: ""
       - name: aws.bucket
         description: the AWS S3 bucket name.
         type: string
@@ -485,13 +484,6 @@ specification:
             value: ""
       - name: aws.region
         description: the AWS S3 bucket region
-        type: string
-        default: ""
-        validations:
-          - type: required
-            value: ""
-      - name: aws.secretAccessKey
-        description: AWS secret access key.
         type: string
         default: ""
         validations:
@@ -515,6 +507,19 @@ specification:
             value: ""
           - type: inclusion
             value: parquet,json,bytearray
+      - name: aws.accessKeyId
+        description: |-
+          AWS access key id. Optional, but must be set together with
+          aws.secretAccessKey. When both are unset the connector uses the Conduit
+          host's ambient AWS identity (the AWS SDK default credential chain:
+          environment, shared config and SSO, web identity/IRSA, ECS and EC2
+          roles), but only if the Conduit operator enabled
+          connectors.ambient-credentials and listed the bucket, and only as the
+          built-in connector (builtin:s3). Otherwise the connector refuses with
+          connector.ambient_credentials_disabled.
+        type: string
+        default: ""
+        validations: []
       - name: aws.endpoint
         description: |-
           The endpoint to connect to. Set this when using an S3-compatible object
@@ -540,6 +545,13 @@ specification:
           MinIO answers with a 400 MalformedXML. Leave false for AWS S3.
         type: bool
         default: "false"
+        validations: []
+      - name: aws.secretAccessKey
+        description: |-
+          AWS secret access key. Optional, but must be set together with
+          aws.accessKeyId. See aws.accessKeyId for ambient credentials.
+        type: string
+        default: ""
         validations: []
       - name: aws.serverSideEncryption
         description: |-

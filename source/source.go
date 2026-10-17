@@ -21,12 +21,11 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsConfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
 	"github.com/conduitio/conduit-commons/lang"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -44,6 +43,7 @@ type Source struct {
 	config   Config
 	iterator Iterator
 	client   *s3.Client
+	auth     config.Auth
 }
 
 func NewSource() sdk.Source {
@@ -73,32 +73,16 @@ func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
 		return err
 	}
 
-	awsCredsProvider := credentials.NewStaticCredentialsProvider(
-		s.config.AWSAccessKeyID,
-		s.config.AWSSecretAccessKey,
-		"",
-	)
-
-	s3Config, err := awsConfig.LoadDefaultConfig(
-		ctx,
-		awsConfig.WithRegion(s.config.AWSRegion),
-		awsConfig.WithCredentialsProvider(awsCredsProvider),
-	)
+	client, auth, err := config.NewS3Client(ctx, s.config.ClientParams(), config.PurposeOpen)
 	if err != nil {
 		return err
 	}
-
-	s.client = s3.NewFromConfig(s3Config, func(o *s3.Options) {
-		if s.config.AWSEndpoint != "" {
-			o.BaseEndpoint = aws.String(s.config.AWSEndpoint)
-		}
-		o.UsePathStyle = s.config.AWSPathStyle
-	})
+	s.client, s.auth = client, auth
 
 	// check if bucket exists
 	err = s.bucketExists(ctx, s.config.AWSBucket)
 	if err != nil {
-		return err
+		return s.auth.Scrub(ctx, err)
 	}
 	if err := s.probeListings(ctx); err != nil {
 		return err
@@ -116,7 +100,9 @@ func (s *Source) Open(ctx context.Context, rp opencdc.Position) error {
 		MaxSettledBytesPerPoll: int64(s.config.MaxSettledBytesPerPoll),
 	}, s.client, rp)
 	if err != nil {
-		return fmt.Errorf("couldn't create a combined iterator: %w", err)
+		// The iterator lists the bucket at creation, so this can carry AWS
+		// identity details (AccessDenied with the assumed-role ARN).
+		return fmt.Errorf("couldn't create a combined iterator: %w", s.auth.Scrub(ctx, err))
 	}
 	return nil
 }
@@ -128,7 +114,7 @@ func (s *Source) Read(ctx context.Context) (opencdc.Record, error) {
 	}
 	r, err := s.iterator.Next(ctx)
 	if err != nil {
-		return opencdc.Record{}, err
+		return opencdc.Record{}, s.auth.Scrub(ctx, err)
 	}
 	return r, nil
 }

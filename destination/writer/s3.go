@@ -28,12 +28,11 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/conduitio/conduit-commons/opencdc"
+	s3config "github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/format"
 )
 
@@ -49,6 +48,7 @@ type S3 struct {
 	Error        error
 	FilesWritten []string
 	Client       *s3.Client
+	auth         s3config.Auth
 
 	// ServerSideEncryption is sent with every PutObject when not empty.
 	ServerSideEncryption types.ServerSideEncryption
@@ -88,6 +88,8 @@ var _ Writer = (*S3)(nil)
 
 // S3Config is a type used to initialize an S3 Writer
 type S3Config struct {
+	// AccessKeyID and SecretAccessKey are static credentials. Leave both empty
+	// to use the AWS SDK default credential chain.
 	AccessKeyID     string
 	SecretAccessKey string
 	SessionToken    string
@@ -117,19 +119,19 @@ type S3Config struct {
 	ConditionalWrites bool
 }
 
-// NewS3 takes an S3Config reference and produces an S3 Writer
+// NewS3 takes an S3Config reference and produces an S3 Writer. The client is
+// built by s3config.NewS3Client, the same path the source uses, so credential
+// selection and the ambient-credentials policy cannot drift between them.
 func NewS3(ctx context.Context, cfg *S3Config) (*S3, error) {
-	awsCredsProvider := credentials.NewStaticCredentialsProvider(
-		cfg.AccessKeyID,
-		cfg.SecretAccessKey,
-		cfg.SessionToken,
-	)
-
-	awsConfig, err := config.LoadDefaultConfig(
-		ctx,
-		config.WithRegion(cfg.Region),
-		config.WithCredentialsProvider(awsCredsProvider),
-	)
+	client, auth, err := s3config.NewS3Client(ctx, s3config.ClientParams{
+		AccessKeyID:     cfg.AccessKeyID,
+		SecretAccessKey: cfg.SecretAccessKey,
+		SessionToken:    cfg.SessionToken,
+		Region:          cfg.Region,
+		Bucket:          cfg.Bucket,
+		Endpoint:        cfg.Endpoint,
+		PathStyle:       cfg.PathStyle,
+	}, s3config.PurposeOpen)
 	if err != nil {
 		return nil, err
 	}
@@ -149,12 +151,8 @@ func NewS3(ctx context.Context, cfg *S3Config) (*S3, error) {
 
 		ServerSideEncryption: cfg.ServerSideEncryption,
 		SSEKMSKeyID:          cfg.SSEKMSKeyID,
-		Client: s3.NewFromConfig(awsConfig, func(o *s3.Options) {
-			if cfg.Endpoint != "" {
-				o.BaseEndpoint = aws.String(cfg.Endpoint)
-			}
-			o.UsePathStyle = cfg.PathStyle
-		}),
+		Client:               client,
+		auth:                 auth,
 	}, nil
 }
 
@@ -211,18 +209,23 @@ func (w *S3) Write(ctx context.Context, batch *Batch) error {
 
 	_, err := w.Client.PutObject(ctx, input)
 	if err != nil {
+		// Invariant 1: the error is returned, so the batch is not acked. A
+		// refused redirect or dial is a refused write, not a dropped record.
+		// Under ambient credentials, w.auth.Scrub removes AWS identity details
+		// from the text the pipeline author sees; with static keys it is a
+		// no-op.
 		if err := w.conditionalWriteError(err, key); err != nil {
-			return err
+			return w.auth.Scrub(ctx, err)
 		}
 		var apiErr smithy.APIError
 		if w.SSEKMSKeyID != "" && errors.As(err, &apiErr) {
 			// KMS problems (unknown key, key in another region, no
 			// kms:GenerateDataKey permission) come back from S3 as plain API
 			// errors; name the setting so the fix is findable.
-			return fmt.Errorf("PutObject with server-side encryption %s and KMS key %q (config aws.sseKmsKeyId) failed; if the error concerns the key, check that it exists in the bucket's region and that these credentials may use it: %w",
-				w.ServerSideEncryption, w.SSEKMSKeyID, err)
+			return w.auth.Scrub(ctx, fmt.Errorf("PutObject with server-side encryption %s and KMS key %q (config aws.sseKmsKeyId) failed; if the error concerns the key, check that it exists in the bucket's region and that these credentials may use it: %w",
+				w.ServerSideEncryption, w.SSEKMSKeyID, err))
 		}
-		return err
+		return w.auth.Scrub(ctx, err)
 	}
 
 	// Log written file names in here so we could access those files in tests.
