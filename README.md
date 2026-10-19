@@ -675,11 +675,11 @@ pipelines:
           # destination.
           # Type: duration
           # Required: no
-          sdk.batch.delay: "0"
+          sdk.batch.delay: "1s"
           # Maximum size of batch before it gets written to the destination.
           # Type: int
           # Required: no
-          sdk.batch.size: "0"
+          sdk.batch.size: "1000"
           # Allow bursts of at most X records (0 or less means that bursts are
           # not limited). Only takes effect if a rate limit per second is set.
           # Note that if `sdk.batch.size` is bigger than `sdk.rate.burst`, the
