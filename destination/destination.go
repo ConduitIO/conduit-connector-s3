@@ -29,6 +29,23 @@ import (
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
+// Default batching: the destination buffers records and writes them as one
+// object per batch. With no batching, every record is its own PutObject, so
+// the per-object HTTP round trip and AWS SDK request setup are paid per record
+// (measured at ~1.5 ms/record against a local MinIO, ~360x slower than a batch
+// of 1000). The reference S3 sink (Kafka Connect) batches by default
+// (flush.size); this connector used not to, so the default was one object per
+// record. BatchDelay bounds the latency of an incomplete batch on a slow
+// pipeline: a record is flushed at most this long after it arrives.
+//
+// Batching never weakens Invariant 1: the SDK acks a record only after the
+// PutObject of its batch succeeded, and a batch that is not yet flushed is
+// redelivered on restart (at-least-once).
+const (
+	defaultBatchSize  = 1000
+	defaultBatchDelay = 1 * time.Second
+)
+
 // Destination S3 Connector persists records to an S3 storage. The records are usually
 // buffered and written in batches for performance reasons. The buffer size is
 // determined by config.
@@ -46,7 +63,21 @@ type Destination struct {
 }
 
 func NewDestination() sdk.Destination {
-	return sdk.DestinationWithMiddleware(&Destination{})
+	// The batching defaults are set on the config before the SDK parses it, so
+	// they become the defaults of sdk.batch.size and sdk.batch.delay (the SDK's
+	// own default is 0, i.e. batching off: one PutObject per record). A user can
+	// still override them, or set sdk.batch.size to 0 to disable batching.
+	d := &Destination{
+		config: Config{
+			DefaultDestinationMiddleware: sdk.DefaultDestinationMiddleware{
+				DestinationWithBatch: sdk.DestinationWithBatch{
+					BatchSize:  defaultBatchSize,
+					BatchDelay: defaultBatchDelay,
+				},
+			},
+		},
+	}
+	return sdk.DestinationWithMiddleware(d)
 }
 
 func (d *Destination) Config() sdk.DestinationConfig {

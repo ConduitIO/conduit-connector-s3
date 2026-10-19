@@ -134,12 +134,15 @@ writing to S3.
 
 ### Writes and delivery
 
-Every batch the SDK hands to the destination (`sdk.batch.size` records, or
-fewer after `sdk.batch.delay`; one record per batch by default) is written
-with one `PutObject` per object, and the records are acknowledged only after
-`PutObject` succeeded. Delivery is at-least-once: a batch that is retried
-after a failure or a restart is written again as a new object, so a reader
-can see a record twice, never zero times. Object names are
+The SDK buffers records into batches of `sdk.batch.size` records (default
+1000), flushed after `sdk.batch.delay` (default 1s) when a batch is still
+incomplete, and the destination writes each batch with one `PutObject` per
+object. Records are acknowledged only after `PutObject` succeeded. In
+v0.11.0 and earlier batching was off by default (`sdk.batch.size: 0`), so
+every record became its own object; set `sdk.batch.size` to 0 to keep that
+behavior. Delivery is at-least-once: a batch that is retried after a
+failure or a restart is written again as a new object, so a reader can see a
+record twice, never zero times. Object names are
 `<UnixNano>-<writer id>-<counter>.<ext>`: the write time in nanoseconds (so
 objects still sort by write time), a random 16-hex-character id per
 destination instance, and that instance's write counter. They are unique by
@@ -675,11 +678,11 @@ pipelines:
           # destination.
           # Type: duration
           # Required: no
-          sdk.batch.delay: "0"
+          sdk.batch.delay: "1s"
           # Maximum size of batch before it gets written to the destination.
           # Type: int
           # Required: no
-          sdk.batch.size: "0"
+          sdk.batch.size: "1000"
           # Allow bursts of at most X records (0 or less means that bursts are
           # not limited). Only takes effect if a rate limit per second is set.
           # Note that if `sdk.batch.size` is bigger than `sdk.rate.burst`, the
