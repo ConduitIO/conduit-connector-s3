@@ -340,3 +340,43 @@ func TestCDC_ThirdSameSecondUploadCompletesAfterTheBaseline(t *testing.T) {
 		})
 	}
 }
+
+// A tracked upload completes between the uploads listing and the versions
+// listing, and its own version is delivered while the upload is still listed.
+// The entry must go with that delivery: kept, it would be missing its baseline
+// after a kill, and the version would be delivered again.
+func TestCDC_UploadCompletesBetweenTheListingsThenKill(t *testing.T) {
+	for _, versioned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("versioned=%v", versioned), func(t *testing.T) {
+			is := is.New(t)
+			m := newAWSModel(tNow, versioned)
+			d := newDriver(t, m, CDCConfig{}, startState(m))
+			u := m.startUpload("big")
+			for i := 0; i < 8; i++ {
+				m.advance(time.Minute)
+				d.poll()
+			}
+			is.Equal(len(d.it.State().Tracked), 1)
+			fired := false
+			m.onUploadsPage = func(int) {
+				if !fired {
+					fired = true
+					m.complete(u)
+				}
+			}
+			m.advance(time.Minute)
+			got := d.poll()
+			m.onUploadsPage = nil
+			is.Equal(keysOf(got), []string{"big"})
+			is.Equal(len(d.it.State().Tracked), 0) // the upload ended: its entry goes
+			d.kill(len(d.run))
+			for i := 0; i < 4; i++ {
+				m.advance(time.Minute)
+				d.poll()
+			}
+			all := d.finish()
+			requireExactlyOnce(t, all, m.deletes)
+			is.Equal(countKey(all, "big"), 1)
+		})
+	}
+}
