@@ -402,10 +402,12 @@ pipelines:
           # early set kept in every position, about 20 bytes per object). A
           # bucket written faster than cdc.maxEarlyObjects / lookbackPeriod gets
           # the excess up to lookbackPeriod later. Memory: positions take up to
-          # records in flight x (80 + key length + 20 x this) bytes. 0 delivers
-          # everything only once settled. At most 16384. The default delivers a
-          # burst of the SDK acceptance suite's maximum batch (10000) at once
-          # instead of deferring it for lookbackPeriod.
+          # records in flight x (80 + key length + 20 x this + 41 x R + 16 x B)
+          # bytes, where R is the number of tracked multipart uploads (at most
+          # cdc.maxTrackedUploads) and B the versions in their baselines
+          # (usually 0). 0 delivers everything only once settled. At most 16384.
+          # The default delivers a burst of the SDK acceptance suite's maximum
+          # batch (10000) at once instead of deferring it for lookbackPeriod.
           # Type: int
           # Required: no
           cdc.maxEarlyObjects: "16384"

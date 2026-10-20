@@ -576,13 +576,21 @@ func runExactProp(t *testing.T, seed int64) { //nolint:gocyclo // a randomized s
 }
 
 // R6 memory test (connector side only): 10,000 records in flight, each with a
-// full early set, take about N x (80 + |key| + 20 x K) bytes of positions.
+// full early set and R tracked uploads with B baseline versions between them,
+// take about N x (80 + |key| + 20 x K + 41 x R + 16 x B) bytes of positions.
 func TestCDC_PositionMemoryWithinTheFormula(t *testing.T) {
 	is := is.New(t)
-	const n, k = 10000, 2048
+	const n, k, r, b = 10000, 2048, 256, 64
 	state := position.CDCV2{S: position.Tuple{Time: tNow, Key: "dir/key-000000", VersionID: "null"}}
 	for i := 0; i < k; i++ {
 		state.Early = append(state.Early, position.EarlyEntry{Modified: tNow.Add(time.Duration(i+1) * time.Millisecond), Hash: position.VersionHash(fmt.Sprint(i), "null", "e", tNow)})
+	}
+	for i := 0; i < r; i++ {
+		u := position.TrackedUpload{KeyHash: position.KeyHash(fmt.Sprint("up", i)), Initiated: tNow.Add(-time.Duration(i+1) * time.Hour), UploadHash: position.UploadID(fmt.Sprint(i)), Verified: true}
+		if i < b {
+			u.Baseline = []position.Hash{position.VersionHash("k", "null", "e", tNow)}
+		}
+		state.Tracked = append(state.Tracked, u)
 	}
 	total := 0
 	for i := 0; i < n; i++ {
@@ -590,7 +598,7 @@ func TestCDC_PositionMemoryWithinTheFormula(t *testing.T) {
 		is.NoErr(err)
 		total += cap(p)
 	}
-	formula := n * (80 + len(state.S.Key) + 20*k)
+	formula := n * (80 + len(state.S.Key) + 20*k + 41*r + 16*b)
 	if total > formula*11/10 {
 		t.Fatalf("positions take %d bytes for %d records, formula %d (+10%%)", total, n, formula)
 	}
