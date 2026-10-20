@@ -41,7 +41,11 @@ func sampleCDC() CDCV2 {
 			{Modified: ms(0), Hash: VersionHash("dir/obj-z", "null", `"e"`, ms(0))}, // same ms as S, key above
 			{Modified: ms(time.Minute), Hash: VersionHash("a", "v1", `"e2"`, ms(time.Minute))},
 		},
-		Tracked: []TrackedUpload{{KeyHash: KeyHash("big/upload"), Initiated: ms(-time.Hour)}},
+		Tracked: []TrackedUpload{
+			{KeyHash: KeyHash("big/upload"), Initiated: ms(-time.Hour), UploadHash: UploadID("up1"), Verified: true},
+			{KeyHash: KeyHash("big/other"), Initiated: ms(-2 * time.Hour), UploadHash: UploadID("up2"), Verified: true, Baseline: []Hash{{1}, {2}}},
+			{KeyHash: KeyHash("big/legacy"), Initiated: ms(-3 * time.Hour)},
+		},
 	}
 }
 
@@ -171,7 +175,7 @@ func TestParseV2_RejectsMalformed(t *testing.T) {
 
 	cases := map[string]opencdc.Position{
 		"empty-ish":      {0x00},
-		"bad version":    func() opencdc.Position { b := body(good); b[1] = 0x03; return reseal(b) }(),
+		"bad version":    func() opencdc.Position { b := body(good); b[1] = 0x04; return reseal(b) }(),
 		"unknown type":   func() opencdc.Position { b := body(good); b[2] = 'x'; return reseal(b) }(),
 		"no terminator":  good[:len(good)-1],
 		"bad terminator": append(append(opencdc.Position(nil), good[:len(good)-1]...), 0x01),

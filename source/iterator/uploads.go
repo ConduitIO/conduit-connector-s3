@@ -95,7 +95,10 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 	perSlotAll := uploadsPerSlot(old, uploads, existing, tu, time.Duration(1<<62))
 
 	for _, u := range old {
-		e := position.TrackedUpload{KeyHash: position.KeyHash(aws.ToString(u.Key)), Initiated: u.Initiated.UTC().Truncate(time.Millisecond)}
+		e := position.TrackedUpload{
+			KeyHash: position.KeyHash(aws.ToString(u.Key)), Initiated: u.Initiated.UTC().Truncate(time.Millisecond),
+			UploadHash: position.UploadID(aws.ToString(u.UploadId)),
+		}
 		if _, ok := known[idOf(e)]; ok {
 			continue
 		}
@@ -110,7 +113,7 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 			}
 			continue
 		}
-		ambiguous := false
+		ambiguous, checked := false, false
 		if stampSecond(*u.Initiated).After(o.Settled) {
 			ambiguous = perSlot[slotOf(e)] > 1
 			if !ambiguous && len(tracked) < o.MaxTracked && o.Conflict != nil {
@@ -118,9 +121,14 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 				if ambiguous, err = o.Conflict(u, false); err != nil {
 					return time.Time{}, nil, err
 				}
+				checked = true
 			}
 		}
 		if len(tracked) < o.MaxTracked && !ambiguous {
+			// Verified: nothing else of the key was in the second when the
+			// upload was probed, so its baseline is empty. Without the probe
+			// the caller verifies the entry against the listing.
+			e.Verified = checked
 			tracked = append(tracked, e)
 			known[idOf(e)] = struct{}{}
 			continue
@@ -313,13 +321,9 @@ func idOf(u position.TrackedUpload) trackedID { return trackedID{u.KeyHash, u.In
 // tracked upload: same key, LastModified equal to the initiation time at the
 // second (as AWS reports it), and a multipart ETag ("<hex>-<parts>"), so that a
 // plain PUT of the same key in the same second does not match.
-func matchesTracked(tracked []position.TrackedUpload, key string, modified time.Time, etag string) bool {
-	if len(tracked) == 0 || !isMultipartETag(etag) {
-		return false
-	}
-	h := position.KeyHash(key)
+func matchesTracked(tracked []position.TrackedUpload, key, versionID string, modified time.Time, etag string) bool {
 	for _, u := range tracked {
-		if u.KeyHash == h && u.Initiated.Unix() == modified.Unix() {
+		if entryMatches(u, key, versionID, modified, etag) {
 			return true
 		}
 	}
@@ -422,42 +426,43 @@ func uploadInProgress(ctx context.Context, client *s3.Client, bucket, key, uploa
 	}
 }
 
-// baselines holds, per tracked upload, the multipart versions of its key that
-// were stamped in the upload's second while the upload was known to be in
-// progress. Such a version predates the upload's object, so it must never be
-// taken for it. Present with an empty list is a verified entry with nothing in
-// its second. It lives in memory only (positions do not carry it) and is
-// rebuilt after a restart for every entry whose upload is still listed.
-type baselines map[trackedID][]position.Hash
-
-// excludes reports whether the version is in the entry's baseline.
-func (b baselines) excludes(id trackedID, key, versionID string, modified time.Time, etag string) bool {
-	hs := b[id]
-	if len(hs) == 0 {
+// entryMatches reports whether a listed version is the completed object of
+// the tracked upload u: same key, LastModified equal to the initiation time at
+// the second (as AWS reports it), and a multipart ETag ("<hex>-<parts>"), so
+// that a plain PUT of the same key in the same second does not match. For a
+// verified entry the version must also not be in its baseline: the multipart
+// versions of the key in that second that predate the upload. versionID is
+// empty where the listing has none (the snapshot's).
+func entryMatches(u position.TrackedUpload, key, versionID string, modified time.Time, etag string) bool {
+	if u.KeyHash != position.KeyHash(key) || u.Initiated.Unix() != modified.Unix() || !isMultipartETag(etag) {
 		return false
 	}
-	vh := position.VersionHash(key, versionID, etag, modified)
-	for _, h := range hs {
-		if h == vh {
-			return true
+	if u.Verified && len(u.Baseline) > 0 {
+		vh := position.VersionHash(key, versionID, etag, modified)
+		for _, b := range u.Baseline {
+			if b == vh {
+				return false
+			}
 		}
 	}
-	return false
+	return true
 }
 
-// verify gives the entries of r that have no baseline yet one, when their
-// upload is still listed: the upload is in progress, so its object does not
-// exist yet and every multipart version of the key in its second predates it.
-// The uploads are listed again after the versions: an upload that completed in
-// between would put its own object in the baseline. An entry whose upload is
-// gone stays unverified: its object may be listed already, so it keeps
-// matching by key and second until it resolves.
-func (b baselines) verify(ctx context.Context, client *s3.Client, bucket string, uploads []types.MultipartUpload, r []position.TrackedUpload) error {
-	for _, e := range r {
-		id := idOf(e)
-		if _, ok := b[id]; ok {
+// verifyEntries gives the entries of r that are not verified an identity and a
+// baseline, when their upload is still listed: the upload is in progress, so
+// its object does not exist yet and every multipart version of the key in its
+// second predates it. That covers entries read from 0x02 positions (v0.11.x)
+// and entries tracked because S had passed their second. The uploads are
+// listed again after the versions: an upload that completed in between would
+// put its own object in the baseline. An entry whose upload is gone stays
+// unverified: its object may be listed already, so it keeps matching by key
+// and second until it resolves. r is changed in place.
+func verifyEntries(ctx context.Context, client *s3.Client, bucket string, uploads []types.MultipartUpload, r []position.TrackedUpload, log *zerolog.Logger) error {
+	for i, e := range r {
+		if e.Verified {
 			continue
 		}
+		id := idOf(e)
 		var up *types.MultipartUpload
 		for j := range uploads {
 			u := &uploads[j]
@@ -470,7 +475,7 @@ func (b baselines) verify(ctx context.Context, client *s3.Client, bucket string,
 			continue
 		}
 		key := aws.ToString(up.Key)
-		base := []position.Hash{}
+		var base []position.Hash
 		err := listKeyVersions(ctx, client, bucket, key, func(v keyVersion) bool {
 			if !v.deleteMarker && stampSecond(v.modified).Equal(stampSecond(e.Initiated)) && isMultipartETag(v.etag) {
 				base = append(base, position.VersionHash(key, v.versionID, v.etag, v.modified))
@@ -484,22 +489,17 @@ func (b baselines) verify(ctx context.Context, client *s3.Client, bucket string,
 		if err != nil {
 			return err
 		}
-		if still {
-			b[id] = base
+		if !still {
+			continue
 		}
+		if len(base) > position.MaxBaseline {
+			log.Warn().Str("code", "s3.source.upload_identity_unavailable").Str("key", key).Int("versions_in_second", len(base)).
+				Msg("more multipart versions of this key share the initiation second of a tracked upload than a position can hold: the upload keeps matching by key and second")
+			continue
+		}
+		r[i].UploadHash = position.UploadID(aws.ToString(up.UploadId))
+		r[i].Verified = true
+		r[i].Baseline = base
 	}
 	return nil
-}
-
-// prune forgets the baselines of entries that are no longer in r.
-func (b baselines) prune(r []position.TrackedUpload) {
-	live := make(map[trackedID]struct{}, len(r))
-	for _, e := range r {
-		live[idOf(e)] = struct{}{}
-	}
-	for id := range b {
-		if _, ok := live[id]; !ok {
-			delete(b, id)
-		}
-	}
 }

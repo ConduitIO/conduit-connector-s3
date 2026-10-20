@@ -30,7 +30,7 @@ import (
 // v2"):
 //
 //	byte 0      0x00          marker: v1 positions start with an S3 key, which cannot contain NUL
-//	byte 1      0x02          format version
+//	byte 1      0x03          format version (0x02 is read, never written)
 //	byte 2      's' or 'c'    type
 //	payload                   see encodeSnapshot / encodeCDC
 //	4 bytes     CRC-32C (Castagnoli, big endian) over bytes 0 .. end of payload
@@ -40,9 +40,12 @@ import (
 // '_', from indexing past the end on a rollback: a v2 position never ends in
 // '_'. The CRC rejects truncated or corrupted positions.
 const (
-	v2Marker     byte = 0x00
-	v2Version    byte = 0x02
-	v2Terminator byte = 0x00
+	v2Marker byte = 0x00
+	// v2Version is the version written. v2VersionLegacy is read as well: the
+	// positions of v0.11.0 to v0.11.2, whose tracked uploads carry no identity.
+	v2Version       byte = 0x03
+	v2VersionLegacy byte = 0x02
+	v2Terminator    byte = 0x00
 
 	v2TypeSnapshot byte = 's'
 	v2TypeCDC      byte = 'c'
@@ -62,6 +65,9 @@ const (
 	// suite's maximum batch (10000) rounded up to the next power of two.
 	MaxEarlyEntries   = 16384
 	MaxTrackedUploads = 10000
+	// MaxBaseline is the most versions a tracked upload's baseline holds. A
+	// legacy entry with more versions in its second stays unverified.
+	MaxBaseline = 16
 )
 
 // ErrInvalid is the stable error code of a position that cannot be parsed.
@@ -156,10 +162,26 @@ type EarlyEntry struct {
 
 // TrackedUpload is one multipart upload in progress whose initiation time is
 // below the cut (the set R).
+//
+// An entry identifies the upload (KeyHash, Initiated and, from format 0x03,
+// UploadHash) and says which listed versions are its completed object: a
+// version of the key, stamped in the second of Initiated, with a multipart
+// ETag, that is not in Baseline. Verified is true when Baseline is exact: the
+// versions of the key in that second that existed while the upload was known to
+// be in progress. A new entry has an empty baseline (an upload that would
+// share its second with another version of the key is not tracked). An entry
+// read from a 0x02 position is not Verified: its upload may already have
+// completed, and it matches by key and second only, as v0.11.x did.
 type TrackedUpload struct {
-	KeyHash   Hash
-	Initiated time.Time
+	KeyHash    Hash
+	Initiated  time.Time
+	UploadHash Hash // UploadID hashes the S3 upload id; zero when unknown
+	Verified   bool
+	Baseline   []Hash // VersionHash of the versions that predate the upload
 }
+
+// UploadID hashes an S3 multipart upload id for a tracked entry.
+func UploadID(id string) Hash { return KeyHash("upload:" + id) }
 
 // SnapshotV2 is the state of a snapshot in progress: the snapshot cut C0, the
 // last key delivered, and the uploads tracked at snapshot start (R0).
@@ -278,8 +300,21 @@ func appendTracked(buf []byte, tracked []TrackedUpload) ([]byte, error) {
 		if err := checkTime(u.Initiated); err != nil {
 			return nil, err
 		}
+		if len(u.Baseline) > MaxBaseline || (!u.Verified && len(u.Baseline) > 0) {
+			return nil, fmt.Errorf("%w: bad baseline of a tracked upload", ErrInvalid)
+		}
 		buf = append(buf, u.KeyHash[:]...)
 		buf = binary.AppendVarint(buf, u.Initiated.UnixMilli())
+		buf = append(buf, u.UploadHash[:]...)
+		if !u.Verified {
+			buf = append(buf, 0)
+			continue
+		}
+		buf = append(buf, 1)
+		buf = binary.AppendUvarint(buf, uint64(len(u.Baseline)))
+		for _, h := range u.Baseline {
+			buf = append(buf, h[:]...)
+		}
 	}
 	return buf, nil
 }
@@ -299,9 +334,10 @@ func ParseV2(p opencdc.Position) (V2, error) {
 	if len(p) < headerLen+trailerLen {
 		return V2{}, invalid(p, "too short")
 	}
-	if p[0] != v2Marker || p[1] != v2Version {
+	if p[0] != v2Marker || (p[1] != v2Version && p[1] != v2VersionLegacy) {
 		return V2{}, invalid(p, "unknown marker or version")
 	}
+	legacy := p[1] == v2VersionLegacy
 	if p[len(p)-1] != v2Terminator {
 		return V2{}, invalid(p, "missing terminator")
 	}
@@ -317,7 +353,7 @@ func ParseV2(p opencdc.Position) (V2, error) {
 		s := &SnapshotV2{}
 		s.Cut = r.time()
 		s.LastKey = r.string(MaxKeyBytes)
-		s.Tracked = r.tracked()
+		s.Tracked = r.tracked(legacy)
 		out.Snapshot = s
 	case v2TypeCDC:
 		c := &CDCV2{}
@@ -335,7 +371,7 @@ func ParseV2(p opencdc.Position) (V2, error) {
 			r.fail("an infinite S carries no key")
 		}
 		c.Early = r.early(c.S)
-		c.Tracked = r.tracked()
+		c.Tracked = r.tracked(legacy)
 		out.CDC = c
 	default:
 		return V2{}, invalid(p, "unknown type")
@@ -497,7 +533,7 @@ func (r *reader) early(s Tuple) []EarlyEntry {
 	return out
 }
 
-func (r *reader) tracked() []TrackedUpload {
+func (r *reader) tracked(legacy bool) []TrackedUpload {
 	n := r.count(MaxTrackedUploads)
 	if n == 0 {
 		return nil
@@ -511,6 +547,21 @@ func (r *reader) tracked() []TrackedUpload {
 	for i := 0; i < n && r.err == nil; i++ {
 		h := r.hash()
 		t := r.time()
+		u := TrackedUpload{KeyHash: h, Initiated: t}
+		if !legacy {
+			u.UploadHash = r.hash()
+			switch r.byte() {
+			case 0:
+			case 1:
+				u.Verified = true
+				m := r.count(MaxBaseline)
+				for j := 0; j < m && r.err == nil; j++ {
+					u.Baseline = append(u.Baseline, r.hash())
+				}
+			default:
+				r.fail("bad verified flag")
+			}
+		}
 		if r.err != nil {
 			break
 		}
@@ -520,7 +571,7 @@ func (r *reader) tracked() []TrackedUpload {
 			break
 		}
 		seen[k] = struct{}{}
-		out = append(out, TrackedUpload{KeyHash: h, Initiated: t})
+		out = append(out, u)
 	}
 	return out
 }

@@ -105,13 +105,11 @@ type CDCIterator struct {
 	sameSecond map[trackedID]struct{}
 	holds      *holdWarner
 	// staleClean remembers uploads past maxPendingUploadAge that share their
-	// second with nothing; base is the in-memory baseline of tracked uploads
-	// (see baselines); listed is the set of uploads of the current poll.
+	// second with nothing.
 	staleClean map[trackedID]struct{}
-	// pending are the entries of this poll whose upload is listed but has no
-	// baseline (it could not be trusted); they match nothing in this poll.
+	// pending are the entries of this poll whose upload is listed but is not
+	// verified (it could not be trusted); they match nothing in this poll.
 	pending map[trackedID]struct{}
-	base    baselines
 	listed  map[trackedID]struct{}
 	// upgradeFloor is set when resuming from a v1 position: the first poll
 	// lowers S below any old upload that cannot be tracked (design "Upgrade").
@@ -166,7 +164,6 @@ func newCDCIterator(cfg CDCConfig, client *s3.Client, state position.CDCV2, log 
 		holds:      newHoldWarner(),
 		staleClean: map[trackedID]struct{}{},
 		pending:    map[trackedID]struct{}{},
-		base:       baselines{},
 		listed:     map[trackedID]struct{}{},
 		buffer:     make(chan opencdc.Record, 1),
 		tomb:       &tomb.Tomb{},
@@ -495,7 +492,11 @@ func (w *CDCIterator) dropTrackedFor(c candidate) {
 			// third upload of the key stamped it in the same second). Keep the
 			// entry for the upload's own version, and remember c so that it
 			// does not match again.
-			w.base[id] = append(w.base[id], position.VersionHash(c.key, c.versionID, c.etag, c.modified))
+			for i := range w.r {
+				if idOf(w.r[i]) == id && len(w.r[i].Baseline) < position.MaxBaseline {
+					w.r[i].Baseline = append(w.r[i].Baseline, position.VersionHash(c.key, c.versionID, c.etag, c.modified))
+				}
+			}
 			continue
 		}
 		w.dropTracked(id)
@@ -503,13 +504,12 @@ func (w *CDCIterator) dropTrackedFor(c candidate) {
 }
 
 // entryMatches reports whether c is the completed object of the tracked
-// upload u: matchesTracked's rule, minus the versions in u's baseline.
+// upload u (see entryMatches).
 func (w *CDCIterator) entryMatches(u position.TrackedUpload, c candidate) bool {
 	if _, pending := w.pending[idOf(u)]; pending {
 		return false
 	}
-	return matchesTracked([]position.TrackedUpload{u}, c.key, c.modified, c.etag) &&
-		!w.base.excludes(idOf(u), c.key, c.versionID, c.modified, c.etag)
+	return entryMatches(u, c.key, c.versionID, c.modified, c.etag)
 }
 
 func (w *CDCIterator) matchesTracked(c candidate) bool {
@@ -604,10 +604,6 @@ func (w *CDCIterator) cutFor(ctx context.Context, uploads []types.MultipartUploa
 			w.sameSecond[id] = struct{}{}
 		case stale:
 			w.staleClean[id] = struct{}{}
-		default:
-			// Tracked right away (or held for lack of room): nothing of the
-			// key was in the upload's second, so its baseline is empty.
-			w.base[id] = []position.Hash{}
 		}
 		return found, err
 	}
@@ -631,10 +627,9 @@ func (w *CDCIterator) cutFor(ctx context.Context, uploads []types.MultipartUploa
 	// Entries of v0.11.x positions, and entries tracked because S had already
 	// passed their second, get their baseline now, before this poll matches
 	// any version against them.
-	if err := w.base.verify(ctx, w.client, w.cfg.Bucket, uploads, w.r); err != nil {
+	if err := verifyEntries(ctx, w.client, w.cfg.Bucket, uploads, w.r, w.log); err != nil {
 		return time.Time{}, err
 	}
-	w.base.prune(w.r)
 	w.markPending()
 	cut = cut.UTC().Truncate(time.Millisecond)
 	if w.upgradeFloor {
@@ -663,7 +658,7 @@ func (w *CDCIterator) markPending() {
 		if _, listed := w.listed[id]; !listed {
 			continue
 		}
-		if _, ok := w.base[id]; !ok {
+		if !e.Verified {
 			w.pending[id] = struct{}{}
 		}
 	}
