@@ -111,12 +111,8 @@ type CDCIterator struct {
 	// pending are the entries of this poll whose upload is listed but has no
 	// baseline (it could not be trusted); they match nothing in this poll.
 	pending map[trackedID]struct{}
-	// listedUp maps the listed uploads to their ids; running caches, per poll,
-	// whether a listed upload is still in progress (see checkRunning).
-	listedUp map[trackedID]string
-	running  map[trackedID]bool
-	base     baselines
-	listed   map[trackedID]struct{}
+	base    baselines
+	listed  map[trackedID]struct{}
 	// upgradeFloor is set when resuming from a v1 position: the first poll
 	// lowers S below any old upload that cannot be tracked (design "Upgrade").
 	upgradeFloor bool
@@ -170,8 +166,6 @@ func newCDCIterator(cfg CDCConfig, client *s3.Client, state position.CDCV2, log 
 		holds:      newHoldWarner(),
 		staleClean: map[trackedID]struct{}{},
 		pending:    map[trackedID]struct{}{},
-		listedUp:   map[trackedID]string{},
-		running:    map[trackedID]bool{},
 		base:       baselines{},
 		listed:     map[trackedID]struct{}{},
 		buffer:     make(chan opencdc.Record, 1),
@@ -403,9 +397,6 @@ func (w *CDCIterator) step(ctx context.Context, emit func(opencdc.Record) error)
 // emits the record. A version that changed or disappeared after the listing is
 // skipped without touching the state (its successor is a later candidate).
 func (w *CDCIterator) deliver(ctx context.Context, c candidate, emit func(opencdc.Record) error, apply func()) (bool, error) {
-	if err := w.checkRunning(ctx, c); err != nil {
-		return false, err
-	}
 	var body []byte
 	var meta opencdc.Metadata
 	if c.operation != opencdc.OperationDelete {
@@ -499,7 +490,7 @@ func (w *CDCIterator) dropTrackedFor(c candidate) {
 			continue
 		}
 		id := idOf(u)
-		if _, listed := w.listed[id]; listed && w.running[id] {
+		if _, listed := w.listed[id]; listed {
 			// The upload is still in progress, so c is not its object (a
 			// third upload of the key stamped it in the same second). Keep the
 			// entry for the upload's own version, and remember c so that it
@@ -509,32 +500,6 @@ func (w *CDCIterator) dropTrackedFor(c candidate) {
 		}
 		w.dropTracked(id)
 	}
-}
-
-// checkRunning finds out, before c is delivered, whether the uploads whose
-// entries c matches are still in progress. They were listed at Tu, but one may
-// have completed since: c is then its own object and its entry goes (dropTrackedFor).
-// Still running, the entry stays and c joins its baseline.
-func (w *CDCIterator) checkRunning(ctx context.Context, c candidate) error {
-	if c.operation == opencdc.OperationDelete {
-		return nil
-	}
-	for _, u := range w.r {
-		id := idOf(u)
-		upload, listed := w.listedUp[id]
-		if !listed || !w.entryMatches(u, c) {
-			continue
-		}
-		if _, done := w.running[id]; done {
-			continue
-		}
-		in, err := uploadInProgress(ctx, w.client, w.cfg.Bucket, c.key, upload)
-		if err != nil {
-			return err
-		}
-		w.running[id] = in
-	}
-	return nil
 }
 
 // entryMatches reports whether c is the completed object of the tracked
@@ -612,13 +577,9 @@ func (w *CDCIterator) cutFor(ctx context.Context, uploads []types.MultipartUploa
 	// maxPendingUploadAge, which is not tracked unless it conflicts, a negative
 	// answer is remembered too, or every poll would probe it again.
 	w.listed = make(map[trackedID]struct{}, len(uploads))
-	w.listedUp = make(map[trackedID]string, len(uploads))
-	w.running = map[trackedID]bool{}
 	for _, u := range uploads {
 		if u.Key != nil && u.Initiated != nil {
-			id := idOf(position.TrackedUpload{KeyHash: position.KeyHash(*u.Key), Initiated: u.Initiated.UTC().Truncate(time.Millisecond)})
-			w.listed[id] = struct{}{}
-			w.listedUp[id] = aws.ToString(u.UploadId)
+			w.listed[idOf(position.TrackedUpload{KeyHash: position.KeyHash(*u.Key), Initiated: u.Initiated.UTC().Truncate(time.Millisecond)})] = struct{}{}
 		}
 	}
 	for _, m := range []map[trackedID]struct{}{w.sameSecond, w.staleClean} {
