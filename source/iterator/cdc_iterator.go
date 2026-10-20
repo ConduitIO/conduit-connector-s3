@@ -635,21 +635,7 @@ func (w *CDCIterator) cutFor(ctx context.Context, uploads []types.MultipartUploa
 		return time.Time{}, err
 	}
 	w.base.prune(w.r)
-	// An entry whose upload was listed at Tu but got no baseline (the upload
-	// ended while the baseline was taken) must not match anything in this poll:
-	// the tip of its key may be an earlier version. Next poll it either gets a
-	// baseline or resolves under the old rule, when its upload's version is the
-	// tip.
-	w.pending = map[trackedID]struct{}{}
-	for _, e := range w.r {
-		id := idOf(e)
-		if _, listed := w.listed[id]; !listed {
-			continue
-		}
-		if _, ok := w.base[id]; !ok {
-			w.pending[id] = struct{}{}
-		}
-	}
+	w.markPending()
 	cut = cut.UTC().Truncate(time.Millisecond)
 	if w.upgradeFloor {
 		// Upgrade from v1: S may not lie above an old upload that could not
@@ -663,6 +649,24 @@ func (w *CDCIterator) cutFor(ctx context.Context, uploads []types.MultipartUploa
 		cut = w.s.Time
 	}
 	return cut, nil
+}
+
+// markPending finds the entries whose upload was listed at Tu but got no
+// baseline (the upload ended while the baseline was taken): they match nothing
+// in this poll, because the tip of their key may be an earlier version. Next
+// poll they either get a baseline or resolve under the old rule, when their
+// upload's version is the tip.
+func (w *CDCIterator) markPending() {
+	w.pending = map[trackedID]struct{}{}
+	for _, e := range w.r {
+		id := idOf(e)
+		if _, listed := w.listed[id]; !listed {
+			continue
+		}
+		if _, ok := w.base[id]; !ok {
+			w.pending[id] = struct{}{}
+		}
+	}
 }
 
 // resolved lists the R entries whose upload is gone (completed or aborted
