@@ -184,10 +184,10 @@ func TestCDC_BaselineSurvivesARestartThatSpansTheEndOfTheUpload(t *testing.T) {
 	}
 }
 
-// More same-second versions than a baseline holds: the entry is dropped and
-// an error is logged, instead of delivering the version again on every poll
-// (the still-listed upload is tracked again with a fresh baseline).
-func TestCDC_FullBaselineDropsTheEntry(t *testing.T) {
+// More same-second versions than a baseline holds: the entry is never dropped
+// for that. The overflow is kept in memory, an error is logged once, and the
+// version is not delivered again on every poll.
+func TestCDC_FullBaselineKeepsTheEntry(t *testing.T) {
 	is := is.New(t)
 	m := newAWSModel(tNow, false)
 	_, y := sameSecondSetup(m)
@@ -206,6 +206,96 @@ func TestCDC_FullBaselineDropsTheEntry(t *testing.T) {
 		m.advance(time.Minute)
 		d.poll()
 	}
-	is.True(strings.Contains(buf.String(), "s3.source.upload_identity_unavailable"))
-	is.Equal(countKey(d.finish(), "k"), 1) // once, not on every poll
+	is.Equal(strings.Count(buf.String(), "s3.source.upload_identity_unavailable"), 1)
+	is.Equal(len(d.it.State().Tracked), 1) // kept
+	is.Equal(countKey(d.run, "k"), 1)      // once, not on every poll
+	m.complete(y)
+	for i := 0; i < 3; i++ {
+		m.advance(time.Minute)
+		d.poll()
+	}
+	is.Equal(lastBody(d.finish(), "k"), tipBody(m, "k")) // Y's own version arrives
+}
+
+// K1: a tracked upload completes between the uploads listing and the versions
+// listing; its own version is delivered while it is still listed. After a kill
+// the version must not come again: the entry goes with that delivery, because
+// the version is the newest multipart version of the key in its second.
+func TestCDC_UploadCompletesBetweenTheListingsThenKill(t *testing.T) {
+	for _, versioned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("versioned=%v", versioned), func(t *testing.T) {
+			is := is.New(t)
+			m := newAWSModel(tNow, versioned)
+			d := newDriver(t, m, CDCConfig{}, startState(m))
+			u := m.startUpload("big")
+			for i := 0; i < 8; i++ {
+				m.advance(time.Minute)
+				d.poll()
+			}
+			is.Equal(len(d.it.State().Tracked), 1)
+			fired := false
+			m.onUploadsPage = func(int) {
+				if !fired {
+					fired = true
+					m.complete(u)
+				}
+			}
+			m.advance(time.Minute)
+			is.Equal(keysOf(d.poll()), []string{"big"})
+			m.onUploadsPage = nil
+			is.Equal(len(d.it.State().Tracked), 0)
+			d.kill(len(d.run))
+			for i := 0; i < 4; i++ {
+				m.advance(time.Minute)
+				d.poll()
+			}
+			all := d.finish()
+			requireExactlyOnce(t, all, m.deletes)
+			is.Equal(countKey(all, "big"), 1)
+		})
+	}
+}
+
+// R1: legacy Y (baseline taken) and a third same-second upload Z that
+// completed before a poll. Y completes during that poll, after the main
+// listing (which shows Z as the tip) and before Z is delivered. Y has ended,
+// but Z's version is not the newest multipart version in the second any more
+// (Y's is), so Y's entry stays and Z's version joins its baseline; Y's own
+// version is then delivered.
+func TestCDC_OtherUploadEndsWhileDelivering(t *testing.T) {
+	for _, versioned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("versioned=%v", versioned), func(t *testing.T) {
+			m := newAWSModel(tNow, versioned)
+			m.advance(100 * time.Millisecond)
+			x := m.startUpload("k")
+			m.advance(100 * time.Millisecond)
+			y := m.startUpload("k")
+			m.advance(100 * time.Millisecond)
+			z := m.startUpload("k")
+			m.advance(100 * time.Millisecond)
+			m.complete(x)
+			m.advance(lb + time.Minute)
+			d := newDriver(t, m, CDCConfig{}, legacyState(m, y))
+			for i := 0; i < 3; i++ {
+				d.poll()
+				m.advance(time.Minute)
+			}
+			m.complete(z)
+			base := m.versionsPages
+			fired := false
+			m.onVersionsPage = func(n int) {
+				if !fired && n > base {
+					fired = true
+					m.complete(y) // after the main listing page that shows Z as the tip
+				}
+			}
+			d.poll()
+			m.onVersionsPage = nil
+			for i := 0; i < 4; i++ {
+				m.advance(time.Minute)
+				d.poll()
+			}
+			requireFinalOnce(t, m, d, "k")
+		})
+	}
 }

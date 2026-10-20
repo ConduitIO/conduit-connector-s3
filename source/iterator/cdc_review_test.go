@@ -166,7 +166,7 @@ func TestCDC_UploadCompletesAfterTheProbe(t *testing.T) {
 		}
 	}
 	d.poll()
-	is.Equal(m.versionsPages-base, 4) // page 1, probe, pages 2 and 3
+	is.Equal(m.versionsPages-base, 5) // page 1, probe, pages 2 and 3, the check of the delivered version
 	m.onVersionsPage = nil
 	m.pageSize = 1000
 	for i := 0; i < 4; i++ {

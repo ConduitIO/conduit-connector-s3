@@ -403,6 +403,22 @@ func versionInSecond(ctx context.Context, client *s3.Client, bucket, key string,
 	return found, err
 }
 
+// newestMultipartInSecond returns the hash of the newest version of key with a
+// multipart ETag stamped in the second of at (the versions listing is newest
+// first); false if there is none.
+func newestMultipartInSecond(ctx context.Context, client *s3.Client, bucket, key string, at time.Time) (position.Hash, bool, error) {
+	var h position.Hash
+	found := false
+	err := listKeyVersions(ctx, client, bucket, key, func(v keyVersion) bool {
+		if v.deleteMarker || !isMultipartETag(v.etag) || !stampSecond(v.modified).Equal(stampSecond(at)) {
+			return false
+		}
+		h, found = position.VersionHash(key, v.versionID, v.etag, v.modified), true
+		return true
+	})
+	return h, found, err
+}
+
 // uploadInProgress reports whether the upload with the given id is listed.
 func uploadInProgress(ctx context.Context, client *s3.Client, bucket, key, uploadID string) (bool, error) {
 	in := &s3.ListMultipartUploadsInput{Bucket: aws.String(bucket), Prefix: aws.String(key)}
