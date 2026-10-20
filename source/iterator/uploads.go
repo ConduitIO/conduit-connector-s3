@@ -15,11 +15,14 @@
 package iterator
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	"github.com/rs/zerolog"
@@ -34,16 +37,29 @@ import (
 //     is released with a WARN: the README's lifecycle rule aborts such uploads
 //     before they can complete;
 //   - other old uploads are tracked (kept in existing, or added) while
-//     len(tracked) < maxTracked;
+//     len(tracked) < maxTracked, unless tracking would be ambiguous (below);
 //   - the oldest old upload that could not be tracked holds the cut below its
 //     initiation time.
+//
+// A tracked upload is recognized by its key and the second of its initiation
+// (matchesTracked). That is only sound when nothing else of the key can carry
+// that second. So an old upload is not tracked, and holds the cut like an
+// overflowing one, when another in-progress or tracked upload of the key was
+// initiated in the same second, or when conflict reports that the store
+// already lists a version of the key stamped in that second. Its completed
+// object is then delivered like any other version, above S, whichever way the
+// store stamps it: AWS with the initiation second, MinIO with the completion
+// time. The hold needs S below that second; settled (the second of S, zero for
+// a new snapshot) says whether it is, and an upload that cannot be held is
+// tracked as before.
 //
 // existing is the tracked set carried over (nil for a new snapshot). Entries of
 // existing whose upload is no longer listed are kept: resolving them needs the
 // versions listing (change capture does that).
 func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []types.MultipartUpload,
-	existing []position.TrackedUpload, maxTracked int, maxAge time.Duration, log *zerolog.Logger,
-) (time.Time, []position.TrackedUpload) {
+	existing []position.TrackedUpload, settled time.Time, maxTracked int, maxAge time.Duration,
+	conflict func(types.MultipartUpload) (bool, error), log *zerolog.Logger,
+) (time.Time, []position.TrackedUpload, error) {
 	cut := t.Add(-lookback)
 	tracked := append([]position.TrackedUpload(nil), existing...)
 	known := make(map[trackedID]struct{}, len(tracked))
@@ -64,6 +80,8 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 	}
 	sort.Slice(old, func(i, j int) bool { return old[i].Initiated.Before(*old[j].Initiated) })
 
+	perSlot := uploadsPerSlot(old, uploads, existing, tu, maxAge)
+
 	for _, u := range old {
 		if tu.Sub(*u.Initiated) > maxAge {
 			log.Warn().Str("code", "s3.source.stale_upload_ignored").
@@ -76,7 +94,17 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 		if _, ok := known[idOf(e)]; ok {
 			continue
 		}
-		if len(tracked) < maxTracked {
+		ambiguous := false
+		if stampSecond(*u.Initiated).After(settled) {
+			ambiguous = perSlot[slotOf(e)] > 1
+			if !ambiguous && len(tracked) < maxTracked && conflict != nil {
+				var err error
+				if ambiguous, err = conflict(u); err != nil {
+					return time.Time{}, nil, err
+				}
+			}
+		}
+		if len(tracked) < maxTracked && !ambiguous {
 			tracked = append(tracked, e)
 			known[idOf(e)] = struct{}{}
 			continue
@@ -87,13 +115,56 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 		if hold.Before(cut) {
 			cut = hold
 		}
+		if ambiguous {
+			log.Warn().Str("code", "s3.source.cut_held_same_second").
+				Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+				Time("initiated", *u.Initiated).
+				Msg("a multipart upload shares its initiation second with another object of the same key: it cannot be recognized when it completes, so it holds the settled cut until it ends")
+			break
+		}
 		log.Warn().Str("code", "s3.source.cut_held").
 			Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
 			Time("initiated", *u.Initiated).Int("max_tracked_uploads", maxTracked).
 			Msg("more long-running multipart uploads than cdc.maxTrackedUploads: this one holds the settled cut, so objects wait longer before they settle")
 		break // older ones were handled; the hold is the oldest untracked
 	}
-	return cut, tracked
+	return cut, tracked, nil
+}
+
+// slot is a key and a second of initiation: what matchesTracked identifies an
+// upload by.
+type slot struct {
+	h   position.Hash
+	sec int64
+}
+
+func slotOf(e position.TrackedUpload) slot { return slot{e.KeyHash, e.Initiated.Unix()} }
+
+// uploadsPerSlot counts the uploads that share each slot: the old ones still
+// within maxAge, plus the tracked ones that are no longer listed.
+func uploadsPerSlot(old, listed []types.MultipartUpload, existing []position.TrackedUpload, tu time.Time, maxAge time.Duration) map[slot]int {
+	perSlot := map[slot]int{}
+	for _, u := range old {
+		if tu.Sub(*u.Initiated) <= maxAge {
+			perSlot[slot{position.KeyHash(aws.ToString(u.Key)), u.Initiated.Unix()}]++
+		}
+	}
+	for _, e := range existing {
+		if !isListed(listed, e) {
+			perSlot[slotOf(e)]++
+		}
+	}
+	return perSlot
+}
+
+// isListed reports whether the tracked entry e is an upload of the listing.
+func isListed(uploads []types.MultipartUpload, e position.TrackedUpload) bool {
+	for _, u := range uploads {
+		if u.Key != nil && u.Initiated != nil && position.KeyHash(*u.Key) == e.KeyHash && u.Initiated.UTC().Truncate(time.Millisecond).Equal(e.Initiated) {
+			return true
+		}
+	}
+	return false
 }
 
 // nullVersionID is the version id S3 lists for objects in an unversioned
@@ -130,4 +201,45 @@ func matchesTracked(tracked []position.TrackedUpload, key string, modified time.
 
 func isMultipartETag(etag string) bool {
 	return strings.Contains(strings.Trim(etag, `"`), "-")
+}
+
+// versionInSecond reports whether the store lists a version or delete marker
+// of key, in any state, stamped in the second of at. It lists the key's own
+// versions only (prefix = key; the key's versions come first, so the walk ends
+// at the first other key).
+func versionInSecond(ctx context.Context, client *s3.Client, bucket, key string, at time.Time) (bool, error) {
+	sec := stampSecond(at)
+	in := &s3.ListObjectVersionsInput{Bucket: aws.String(bucket), Prefix: aws.String(key)}
+	for {
+		out, err := client.ListObjectVersions(ctx, in)
+		if err != nil {
+			return false, fmt.Errorf("couldn't list the versions of %q: %w", key, err)
+		}
+		past := false
+		for _, v := range out.Versions {
+			if aws.ToString(v.Key) != key {
+				past = true
+				break
+			}
+			if v.LastModified != nil && stampSecond(*v.LastModified).Equal(sec) {
+				return true, nil
+			}
+		}
+		for _, v := range out.DeleteMarkers {
+			if aws.ToString(v.Key) != key {
+				past = true
+				break
+			}
+			if v.LastModified != nil && stampSecond(*v.LastModified).Equal(sec) {
+				return true, nil
+			}
+		}
+		if past || !aws.ToBool(out.IsTruncated) {
+			return false, nil
+		}
+		if aws.ToString(out.NextKeyMarker) == "" && aws.ToString(out.NextVersionIdMarker) == "" {
+			return false, fmt.Errorf("couldn't list the versions of %q: the listing is truncated but has no next marker", key)
+		}
+		in.KeyMarker, in.VersionIdMarker = out.NextKeyMarker, out.NextVersionIdMarker
+	}
 }

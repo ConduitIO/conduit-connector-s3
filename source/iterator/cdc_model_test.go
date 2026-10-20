@@ -31,17 +31,27 @@ import (
 	"github.com/conduitio/conduit-connector-s3/source/position"
 )
 
-// awsModel is an in-process S3 that behaves like AWS for change capture:
+// awsModel is an in-process S3 that behaves like AWS (or, with minio set, like
+// MinIO) for change capture:
+//
+//   - AWS stamps every version at one-second resolution, and stamps the object
+//     of a completed multipart upload with the INITIATION time; MinIO stamps
+//     at millisecond resolution and stamps a completed upload with the
+//     COMPLETION time (minio field);
 //
 //   - ListObjectVersions in key order (newest version first per key), paged,
 //     with a Date header from the store clock (rounded down to the second);
+//
 //   - versions become visible at visibleAt, which can be later than their
 //     LastModified (late visibility, A1);
+//
 //   - multipart uploads are listed while in progress (with Prefix, paged) and,
 //     when completed, produce a version stamped with the INITIATION time and a
 //     multipart ETag ("<hex>-<parts>"), visible from completion (A2);
+//
 //   - GetObject by VersionId, or by If-Match on the latest version (412 on a
 //     mismatch), with Last-Modified of what it returns;
+//
 //   - hooks to advance the clock between listing pages (slow listings, R1/B4)
 //     and to make GetObject see a different version than the listing (R8).
 type awsModel struct {
@@ -49,10 +59,12 @@ type awsModel struct {
 	mu        sync.Mutex
 	now       time.Time
 	versioned bool
-	keys      map[string][]*mVersion // oldest first
-	uploads   []*mUpload
-	seq       int
-	pageSize  int
+	// minio switches the stamping from AWS's to MinIO's (see the type doc).
+	minio    bool
+	keys     map[string][]*mVersion // oldest first
+	uploads  []*mUpload
+	seq      int
+	pageSize int
 	// tickPerPage advances the clock after each listing page.
 	tickPerPage time.Duration
 	// denyUploads makes ListMultipartUploads answer AccessDenied.
@@ -62,7 +74,10 @@ type awsModel struct {
 	// onUploadsPage runs after each ListMultipartUploads page (1-based).
 	onUploadsPage func(n int)
 	uploadsPages  int
-	deletes       map[string]int
+	// onVersionsPage runs after each ListObjectVersions page (1-based).
+	onVersionsPage func(n int)
+	versionsPages  int
+	deletes        map[string]int
 }
 
 type mVersion struct {
@@ -115,7 +130,11 @@ func (m *awsModel) addVersion(key string, modified, visible time.Time, deleted b
 	if etag == "" && !deleted {
 		etag = fmt.Sprintf(`"%032x"`, m.seq)
 	}
-	v := &mVersion{id: id, etag: etag, modified: modified.UTC().Truncate(time.Millisecond), visibleAt: visible, deleted: deleted, body: fmt.Sprintf("%s#%d", key, m.seq)}
+	stamp := modified.UTC().Truncate(time.Millisecond)
+	if !m.minio {
+		stamp = stamp.Truncate(time.Second)
+	}
+	v := &mVersion{id: id, etag: etag, modified: stamp, visibleAt: visible, deleted: deleted, body: fmt.Sprintf("%s#%d", key, m.seq)}
 	if !m.versioned {
 		m.keys[key] = []*mVersion{v} // an overwrite replaces the null version
 	} else {
@@ -144,13 +163,18 @@ func (m *awsModel) startUpload(key string) *mUpload {
 	return u
 }
 
-// complete finishes an upload: AWS stamps the object with the initiation time.
+// complete finishes an upload: AWS stamps the object with the initiation time
+// (truncated to the second by addVersion), MinIO with the completion time.
 func (m *awsModel) complete(u *mUpload) *mVersion {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.removeUpload(u)
 	m.seq++
-	return m.addVersion(u.key, u.initiated, m.now, false, fmt.Sprintf(`"%032x-3"`, m.seq))
+	stamp := u.initiated
+	if m.minio {
+		stamp = m.now
+	}
+	return m.addVersion(u.key, stamp, m.now, false, fmt.Sprintf(`"%032x-3"`, m.seq))
 }
 
 func (m *awsModel) abort(u *mUpload) {
@@ -225,10 +249,17 @@ func (m *awsModel) serveUploads(r *http.Request) *http.Response {
 
 func (m *awsModel) serve(r *http.Request) *http.Response {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if r.URL.Query().Has("versions") {
-		return m.listVersions(r)
+		resp := m.listVersions(r)
+		m.versionsPages++
+		n, hook := m.versionsPages, m.onVersionsPage
+		m.mu.Unlock()
+		if hook != nil {
+			hook(n)
+		}
+		return resp
 	}
+	defer m.mu.Unlock()
 	key := keyOf(r)
 	vs := m.visible(key)
 	if len(vs) == 0 || vs[len(vs)-1].deleted {
@@ -287,8 +318,12 @@ func (m *awsModel) listVersions(r *http.Request) *http.Response {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+	prefix := r.URL.Query().Get("prefix")
 	var all []mEntry
 	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
 		vs := m.visible(k)
 		for i := len(vs) - 1; i >= 0; i-- { // newest first, as S3 lists
 			all = append(all, mEntry{k, vs[i], i == len(vs)-1})

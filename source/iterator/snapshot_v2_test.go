@@ -89,6 +89,26 @@ func (s *snapStore) serveUploads(*http.Request) *http.Response {
 func (s *snapStore) serve(r *http.Request) *http.Response {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if r.URL.Query().Has("versions") {
+		// the versions of the objects under a prefix (the store is unversioned:
+		// one null version each), as the same-second probe asks for them
+		prefix := r.URL.Query().Get("prefix")
+		keys := make([]string, 0, len(s.objects))
+		for k := range s.objects {
+			if strings.HasPrefix(k, prefix) {
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		var b strings.Builder
+		b.WriteString(`<?xml version="1.0"?><ListVersionsResult><IsTruncated>false</IsTruncated>`)
+		for _, k := range keys {
+			o := s.objects[k]
+			fmt.Fprintf(&b, `<Version><Key>%s</Key><VersionId>null</VersionId><IsLatest>true</IsLatest><LastModified>%s</LastModified><ETag>%s</ETag></Version>`, k, o.modified.UTC().Format(ms3), o.etag)
+		}
+		b.WriteString(`</ListVersionsResult>`)
+		return xmlResp(200, b.String(), "Date", s.listDate.UTC().Format(http.TimeFormat))
+	}
 	if isList(r) {
 		keys := make([]string, 0, len(s.objects))
 		for k := range s.objects {
@@ -260,6 +280,7 @@ func TestSnapshot_CutIsCappedAtTheHostClock(t *testing.T) {
 func TestSnapshot_TracksOldUploadsAndHoldsOnOverflow(t *testing.T) {
 	is := is.New(t)
 	st := newSnapStore(tNow)
+	st.pageSize = 1
 	st.uploads = []snapUpload{
 		{"stale", tNow.Add(-48 * time.Hour)},
 		{"u1", tNow.Add(-3 * time.Hour)},
@@ -268,19 +289,59 @@ func TestSnapshot_TracksOldUploadsAndHoldsOnOverflow(t *testing.T) {
 		{"fresh", tNow.Add(-time.Minute)},
 	}
 	st.put("done-mp", tNow.Add(-3*time.Hour), `"abc-3"`) // a multipart object of an untracked key: delivered
-	st.put("u1", tNow.Add(-3*time.Hour), `"abc-2"`)      // the completed version of tracked u1: left to CDC
-	st.put("u2", tNow.Add(-2*time.Hour), `"plainetag"`)  // a plain PUT of u2's key in u2's second: delivered
+	st.put("z-last", tNow.Add(-3*time.Hour), `"z"`)      // makes the first page truncated
 	cfg := snapCfg()
 	cfg.MaxTrackedUploads = 2
 	cfg.Now = func() time.Time { return tNow }
 	it := NewSnapshotIterator(cfg, st.client(), nil, nil)
-	keys, _ := drainSnap(t, it)
+	ctx := context.Background()
+	first, err := it.Next(ctx) // starts the snapshot: first page, cut, R0
+	is.NoErr(err)
+	// u1 and u2 complete while the snapshot runs
+	st.put("u1", tNow.Add(-3*time.Hour), `"abc-2"`)     // the completed version of tracked u1: left to CDC
+	st.put("u2", tNow.Add(-2*time.Hour), `"plainetag"`) // a plain PUT of u2's key in u2's second: delivered
+	keys := []string{string(first.Key.Bytes())}
+	rest, _ := drainSnap(t, it)
+	keys = append(keys, rest...)
 	cut, tracked := it.Cut()
 	is.Equal(len(tracked), 2) // u1, u2
 	is.Equal(tracked[0].KeyHash, position.KeyHash("u1"))
 	is.Equal(tracked[1].KeyHash, position.KeyHash("u2"))
 	is.Equal(cut, tNow.Add(-time.Hour-time.Second)) // u3 did not fit: it holds the cut
-	is.Equal(keys, []string{"done-mp", "u2"})
+	is.Equal(keys, []string{"done-mp", "u2", "z-last"})
+}
+
+// An old upload whose key already has a version stamped in the upload's second
+// cannot be recognized when it completes (the version would match its entry
+// instead): it holds the cut and is not tracked. Two uploads of a key in one
+// second are held the same way.
+func TestSnapshot_SameSecondUploadsAreHeldNotTracked(t *testing.T) {
+	is := is.New(t)
+	st := newSnapStore(tNow)
+	st.uploads = []snapUpload{
+		{"has-version", tNow.Add(-3*time.Hour + 500*time.Millisecond)},
+		{"twice", tNow.Add(-2*time.Hour + 100*time.Millisecond)},
+		{"twice", tNow.Add(-2*time.Hour + 900*time.Millisecond)},
+	}
+	st.put("has-version", tNow.Add(-3*time.Hour), `"abc-2"`) // an earlier multipart object of the key, same second
+	cfg := snapCfg()
+	cfg.Now = func() time.Time { return tNow }
+	it := NewSnapshotIterator(cfg, st.client(), nil, nil)
+	keys, _ := drainSnap(t, it)
+	cut, tracked := it.Cut()
+	is.Equal(len(tracked), 0)
+	is.Equal(cut, tNow.Add(-3*time.Hour-time.Second))
+	is.Equal(len(keys), 0) // the object is above the cut: change capture delivers it
+
+	// without the version, the first upload is tracked and the same-second pair holds
+	st2 := newSnapStore(tNow)
+	st2.uploads = st.uploads
+	it2 := NewSnapshotIterator(cfg, st2.client(), nil, nil)
+	drainSnap(t, it2)
+	cut2, tracked2 := it2.Cut()
+	is.Equal(len(tracked2), 1)
+	is.Equal(tracked2[0].KeyHash, position.KeyHash("has-version"))
+	is.Equal(cut2, tNow.Add(-2*time.Hour-time.Second))
 }
 
 // R8 for the snapshot: the fetched object must be the listed version. A

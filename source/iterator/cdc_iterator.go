@@ -100,6 +100,9 @@ type CDCIterator struct {
 	early []position.EarlyEntry
 	inE   map[position.Hash]struct{}
 	r     []position.TrackedUpload
+	// sameSecond remembers the uploads that share their initiation second
+	// with a listed version of their key (see cutFor).
+	sameSecond map[trackedID]struct{}
 	// upgradeFloor is set when resuming from a v1 position: the first poll
 	// lowers S below any old upload that cannot be tracked (design "Upgrade").
 	upgradeFloor bool
@@ -146,11 +149,12 @@ func newCDCIterator(cfg CDCConfig, client *s3.Client, state position.CDCV2, log 
 	}
 	w := &CDCIterator{
 		cfg: cfg, client: client, log: log,
-		s:      state.S,
-		r:      append([]position.TrackedUpload(nil), state.Tracked...),
-		inE:    make(map[position.Hash]struct{}, len(state.Early)),
-		buffer: make(chan opencdc.Record, 1),
-		tomb:   &tomb.Tomb{},
+		s:          state.S,
+		r:          append([]position.TrackedUpload(nil), state.Tracked...),
+		inE:        make(map[position.Hash]struct{}, len(state.Early)),
+		sameSecond: map[trackedID]struct{}{},
+		buffer:     make(chan opencdc.Record, 1),
+		tomb:       &tomb.Tomb{},
 	}
 	for _, e := range state.Early {
 		w.addEarly(e)
@@ -340,6 +344,7 @@ func (w *CDCIterator) step(ctx context.Context, emit func(opencdc.Record) error)
 		if _, err := w.deliver(ctx, c, emit, func() {
 			w.s = position.Tuple{Time: c.modified, Key: c.key, VersionID: c.versionID}
 			w.pruneEarly()
+			w.dropTrackedFor(c) // an upload that completed between the two listings
 		}); err != nil {
 			return err
 		}
@@ -359,6 +364,7 @@ func (w *CDCIterator) step(ctx context.Context, emit func(opencdc.Record) error)
 		}
 		if _, err := w.deliver(ctx, c, emit, func() {
 			w.addEarly(position.EarlyEntry{Modified: c.modified, Hash: position.VersionHash(c.key, c.versionID, c.etag, c.modified)})
+			w.dropTrackedFor(c)
 		}); err != nil {
 			return err
 		}
@@ -452,7 +458,17 @@ func (w *CDCIterator) dropTracked(id trackedID) {
 	w.r = keep
 }
 
+// dropTrackedFor drops the R entry that c, a version about to be delivered, is
+// the completed object of. Every delivery path calls it: if an upload
+// completes between the uploads listing and the versions listing, its object
+// is delivered as a settled or early version while its entry is still in R,
+// and once S passes it the entry would match it again (a duplicate). The
+// entry is dropped in the same state step as the delivery, so the position of
+// the record already excludes it.
 func (w *CDCIterator) dropTrackedFor(c candidate) {
+	if c.operation == opencdc.OperationDelete || !isMultipartETag(c.etag) {
+		return
+	}
 	h := position.KeyHash(c.key)
 	for _, u := range w.r {
 		if u.KeyHash == h && u.Initiated.Unix() == c.modified.Unix() {
@@ -475,7 +491,11 @@ func (w *CDCIterator) plan(ctx context.Context, uploads []types.MultipartUpload,
 			return pollPlan{}, fmt.Errorf("couldn't list object versions: %w", err)
 		}
 		if first {
-			pl.p.cut = w.cutFor(uploads, tu, responseDate(out.ResultMetadata, host, w.log), host)
+			cut, err := w.cutFor(ctx, uploads, tu, responseDate(out.ResultMetadata, host, w.log), host)
+			if err != nil {
+				return pollPlan{}, err
+			}
+			pl.p.cut = cut
 		}
 		for i := range out.Versions {
 			col.version(&out.Versions[i])
@@ -505,9 +525,40 @@ func (w *CDCIterator) plan(ctx context.Context, uploads []types.MultipartUpload,
 // updates R with newly tracked uploads, and applies the v1 upgrade floor. The
 // cut never moves S backwards (a host clock that jumped back): settling then
 // pauses until it catches up.
-func (w *CDCIterator) cutFor(uploads []types.MultipartUpload, tu, tv, host time.Time) time.Time {
+func (w *CDCIterator) cutFor(ctx context.Context, uploads []types.MultipartUpload, tu, tv, host time.Time) (time.Time, error) {
+	// Uploads that share their initiation second with another object of the
+	// key hold the cut instead of being tracked (see cutAndTrack). A positive
+	// answer cannot turn negative while the upload runs, so it is remembered;
+	// a negative one is not, because the upload is tracked right away or, when
+	// R is full, is probed again next poll.
+	inList := make(map[trackedID]struct{}, len(uploads))
+	for _, u := range uploads {
+		if u.Key != nil && u.Initiated != nil {
+			inList[idOf(position.TrackedUpload{KeyHash: position.KeyHash(*u.Key), Initiated: u.Initiated.UTC().Truncate(time.Millisecond)})] = struct{}{}
+		}
+	}
+	for id := range w.sameSecond {
+		if _, ok := inList[id]; !ok {
+			delete(w.sameSecond, id)
+		}
+	}
+	conflict := func(u types.MultipartUpload) (bool, error) {
+		id := idOf(position.TrackedUpload{KeyHash: position.KeyHash(*u.Key), Initiated: u.Initiated.UTC().Truncate(time.Millisecond)})
+		if _, ok := w.sameSecond[id]; ok {
+			return true, nil
+		}
+		found, err := versionInSecond(ctx, w.client, w.cfg.Bucket, aws.ToString(u.Key), *u.Initiated)
+		if found {
+			w.sameSecond[id] = struct{}{}
+		}
+		return found, err
+	}
 	var cut time.Time
-	cut, w.r = cutAndTrack(earliest(tu, tv, host), w.cfg.Lookback, tu, uploads, w.r, w.cfg.MaxTrackedUploads, w.cfg.MaxPendingUploadAge, w.sampled)
+	cut, r, err := cutAndTrack(earliest(tu, tv, host), w.cfg.Lookback, tu, uploads, w.r, w.s.Time, w.cfg.MaxTrackedUploads, w.cfg.MaxPendingUploadAge, conflict, w.sampled)
+	if err != nil {
+		return time.Time{}, err
+	}
+	w.r = r
 	cut = cut.UTC().Truncate(time.Millisecond)
 	if w.upgradeFloor {
 		// Upgrade from v1: S may not lie above an old upload that could not
@@ -520,7 +571,7 @@ func (w *CDCIterator) cutFor(uploads []types.MultipartUpload, tu, tv, host time.
 	if cut.Before(w.s.Time) {
 		cut = w.s.Time
 	}
-	return cut
+	return cut, nil
 }
 
 // resolved lists the R entries whose upload is gone (completed or aborted
