@@ -107,8 +107,8 @@ github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDk
 github.com/colinmarc/hdfs/v2 v2.1.1/go.mod h1:M3x+k8UKKmxtFu++uAZ0OtDU8jR3jnaZIAc6yK4Ue0c=
 github.com/conduitio/conduit-commons v0.10.0 h1:b6SaTom8XS3tAWTjRBn4Quv6/sGQie3hy2sQ4h4l5ss=
 github.com/conduitio/conduit-commons v0.10.0/go.mod h1:I5BjvJ7rZzNbELaqR2rbls4Tu2o88cOcSMewLKM8pQw=
-github.com/conduitio/conduit-connector-protocol v0.10.0 h1:CuwYiz30XR8PgRE2cRUBZX+9JIYEVseQXvt1KhdB7OA=
-github.com/conduitio/conduit-connector-protocol v0.10.0/go.mod h1:n0EmTGr0Us9OuBAMbexa44pUld5ZA+9aQy2V7RveWVg=
+github.com/conduitio/conduit-connector-protocol v0.11.0 h1:YNHw6LCQ7noFLdfEp5IZoAMwwFPI17FueMjDhxUjLt8=
+github.com/conduitio/conduit-connector-protocol v0.11.0/go.mod h1:Fiy2/VeW5vp9TC3Ynno8zXwtiCZsIcMcZ/OtI+Fiz+c=
 github.com/conduitio/conduit-connector-sdk v0.16.1 h1:2QfFdYyL3/uuZ76X1YdkesX4nGd9XaomPxn2AB+lZ/4=
 github.com/conduitio/conduit-connector-sdk v0.16.1/go.mod h1:OQpCZ5wveCpFdsvWzkH8mfVrm/y22nE2zaPjgtf9MeU=
 github.com/conduitio/evolviconf v0.1.1 h1:IKacjKLc8r0h0Epi0Eo1O4/aoZLb4Z7JFb3xKd6gCTw=
