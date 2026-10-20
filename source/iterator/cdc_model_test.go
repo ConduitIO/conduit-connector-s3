@@ -78,6 +78,8 @@ type awsModel struct {
 	onVersionsPage func(n int)
 	versionsPages  int
 	deletes        map[string]int
+	// versionCalls counts the ListObjectVersions requests per prefix.
+	versionCalls map[string]int
 }
 
 type mVersion struct {
@@ -96,7 +98,7 @@ type mUpload struct {
 }
 
 func newAWSModel(now time.Time, versioned bool) *awsModel {
-	m := &awsModel{now: now, versioned: versioned, keys: map[string][]*mVersion{}, pageSize: 1000, deletes: map[string]int{}}
+	m := &awsModel{now: now, versioned: versioned, keys: map[string][]*mVersion{}, pageSize: 1000, deletes: map[string]int{}, versionCalls: map[string]int{}}
 	m.handler = m.serve
 	m.fakeStore.uploads = m.serveUploads
 	return m
@@ -250,6 +252,7 @@ func (m *awsModel) serveUploads(r *http.Request) *http.Response {
 func (m *awsModel) serve(r *http.Request) *http.Response {
 	m.mu.Lock()
 	if r.URL.Query().Has("versions") {
+		m.versionCalls[r.URL.Query().Get("prefix")]++
 		resp := m.listVersions(r)
 		m.versionsPages++
 		n, hook := m.versionsPages, m.onVersionsPage
