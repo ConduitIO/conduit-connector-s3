@@ -103,6 +103,7 @@ type CDCIterator struct {
 	// sameSecond remembers the uploads that share their initiation second
 	// with a listed version of their key (see cutFor).
 	sameSecond map[trackedID]struct{}
+	holds      *holdWarner
 	// upgradeFloor is set when resuming from a v1 position: the first poll
 	// lowers S below any old upload that cannot be tracked (design "Upgrade").
 	upgradeFloor bool
@@ -153,6 +154,7 @@ func newCDCIterator(cfg CDCConfig, client *s3.Client, state position.CDCV2, log 
 		r:          append([]position.TrackedUpload(nil), state.Tracked...),
 		inE:        make(map[position.Hash]struct{}, len(state.Early)),
 		sameSecond: map[trackedID]struct{}{},
+		holds:      newHoldWarner(),
 		buffer:     make(chan opencdc.Record, 1),
 		tomb:       &tomb.Tomb{},
 	}
@@ -553,8 +555,12 @@ func (w *CDCIterator) cutFor(ctx context.Context, uploads []types.MultipartUploa
 		}
 		return found, err
 	}
+	now := w.cfg.Now()
+	w.holds.begin()
+	held := func(u types.MultipartUpload) { w.holds.hold(now, u, w.log) }
 	var cut time.Time
-	cut, r, err := cutAndTrack(earliest(tu, tv, host), w.cfg.Lookback, tu, uploads, w.r, w.s.Time, w.cfg.MaxTrackedUploads, w.cfg.MaxPendingUploadAge, conflict, w.sampled)
+	cut, r, err := cutAndTrack(earliest(tu, tv, host), w.cfg.Lookback, tu, uploads, w.r, w.s.Time, w.cfg.MaxTrackedUploads, w.cfg.MaxPendingUploadAge, conflict, held, w.sampled)
+	w.holds.end(now)
 	if err != nil {
 		return time.Time{}, err
 	}

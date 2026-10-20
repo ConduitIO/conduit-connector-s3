@@ -157,7 +157,7 @@ func (w *SnapshotIterator) start(ctx context.Context) error {
 	conflict := func(u types.MultipartUpload) (bool, error) {
 		return versionInSecond(ctx, w.client, w.cfg.Bucket, aws.ToString(u.Key), *u.Initiated)
 	}
-	cut, tracked, err := cutAndTrack(t0, w.cfg.Lookback, tu, uploads, nil, time.Time{}, w.cfg.MaxTrackedUploads, w.cfg.MaxPendingUploadAge, conflict, w.log)
+	cut, tracked, err := cutAndTrack(t0, w.cfg.Lookback, tu, uploads, nil, time.Time{}, w.cfg.MaxTrackedUploads, w.cfg.MaxPendingUploadAge, conflict, nil, w.log)
 	if err != nil {
 		return err
 	}

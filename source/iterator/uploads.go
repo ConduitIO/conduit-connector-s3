@@ -58,7 +58,7 @@ import (
 // versions listing (change capture does that).
 func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []types.MultipartUpload,
 	existing []position.TrackedUpload, settled time.Time, maxTracked int, maxAge time.Duration,
-	conflict func(types.MultipartUpload) (bool, error), log *zerolog.Logger,
+	conflict func(types.MultipartUpload) (bool, error), held func(types.MultipartUpload), log *zerolog.Logger,
 ) (time.Time, []position.TrackedUpload, error) {
 	cut := t.Add(-lookback)
 	tracked := append([]position.TrackedUpload(nil), existing...)
@@ -116,10 +116,14 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 			cut = hold
 		}
 		if ambiguous {
-			log.Warn().Str("code", "s3.source.cut_held_same_second").
-				Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
-				Time("initiated", *u.Initiated).
-				Msg("a multipart upload shares its initiation second with another object of the same key: it cannot be recognized when it completes, so it holds the settled cut until it ends")
+			if held != nil {
+				held(u)
+			} else {
+				log.Warn().Str("code", "s3.source.cut_held_same_second").
+					Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+					Time("initiated", *u.Initiated).
+					Msg(sameSecondHoldMsg)
+			}
 			break
 		}
 		log.Warn().Str("code", "s3.source.cut_held").
@@ -129,6 +133,71 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 		break // older ones were handled; the hold is the oldest untracked
 	}
 	return cut, tracked, nil
+}
+
+const sameSecondHoldMsg = "a multipart upload shares its initiation second with another object of the same key: it cannot be recognized when it completes, so it holds the settled cut until it ends"
+
+// Defaults of the same-second hold warning: how long a hold lasts before it is
+// reported, and the minimum time between two reports for one key.
+const (
+	holdWarnAfter = 15 * time.Minute
+	holdWarnEvery = 15 * time.Minute
+)
+
+// holdWarner reports same-second holds (see cutAndTrack) that keep the settled
+// cut back for longer than holdWarnAfter: one WARN per key per holdWarnEvery,
+// naming the key and how long the hold has lasted. A hold is first seen when
+// its poll first reports it; the age restarts when the upload ends or stops
+// holding. Not safe for concurrent use: the poll goroutine owns it.
+type holdWarner struct {
+	first  map[trackedID]time.Time // holds seen this or a previous poll
+	seen   map[trackedID]struct{}  // holds seen in the current poll
+	warned map[string]time.Time    // last warning per key
+}
+
+func newHoldWarner() *holdWarner {
+	return &holdWarner{first: map[trackedID]time.Time{}, seen: map[trackedID]struct{}{}, warned: map[string]time.Time{}}
+}
+
+// begin starts a poll.
+func (h *holdWarner) begin() { h.seen = map[trackedID]struct{}{} }
+
+// hold records that u holds the cut at now.
+func (h *holdWarner) hold(now time.Time, u types.MultipartUpload, log *zerolog.Logger) {
+	id := idOf(position.TrackedUpload{KeyHash: position.KeyHash(aws.ToString(u.Key)), Initiated: u.Initiated.UTC().Truncate(time.Millisecond)})
+	h.seen[id] = struct{}{}
+	first, ok := h.first[id]
+	if !ok {
+		h.first[id] = now
+		return
+	}
+	key := aws.ToString(u.Key)
+	age := now.Sub(first)
+	if age <= holdWarnAfter {
+		return
+	}
+	if last, ok := h.warned[key]; ok && now.Sub(last) < holdWarnEvery {
+		return
+	}
+	h.warned[key] = now
+	log.Warn().Str("code", "s3.source.cut_held_same_second").
+		Str("key", key).Str("upload_id", aws.ToString(u.UploadId)).
+		Time("initiated", *u.Initiated).Dur("hold_age", age).
+		Msg(sameSecondHoldMsg + "; the hold has lasted longer than " + holdWarnAfter.String() + ", so objects wait longer than usual before they settle (abort the upload, or add an AbortIncompleteMultipartUpload lifecycle rule)")
+}
+
+// end finishes a poll: holds that were not seen are over.
+func (h *holdWarner) end(now time.Time) {
+	for id := range h.first {
+		if _, ok := h.seen[id]; !ok {
+			delete(h.first, id)
+		}
+	}
+	for k, t := range h.warned {
+		if now.Sub(t) >= holdWarnEvery {
+			delete(h.warned, k)
+		}
+	}
 }
 
 // slot is a key and a second of initiation: what matchesTracked identifies an
