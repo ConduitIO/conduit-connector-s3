@@ -154,7 +154,15 @@ func (w *SnapshotIterator) start(ctx context.Context) error {
 	}
 	tl := responseDate(first.ResultMetadata, host, w.log)
 	t0 := earliest(tu, tl, host)
-	w.cut, w.tracked = cutAndTrack(t0, w.cfg.Lookback, tu, uploads, nil, w.cfg.MaxTrackedUploads, w.cfg.MaxPendingUploadAge, w.log)
+	conflict := func(u types.MultipartUpload, _ bool) (bool, error) {
+		return versionInSecond(ctx, w.client, w.cfg.Bucket, aws.ToString(u.Key), *u.Initiated)
+	}
+	cut, tracked, err := cutAndTrack(t0, w.cfg.Lookback, tu, uploads, nil,
+		trackOpts{MaxTracked: w.cfg.MaxTrackedUploads, MaxAge: w.cfg.MaxPendingUploadAge, Conflict: conflict}, w.log)
+	if err != nil {
+		return err
+	}
+	w.cut, w.tracked = cut, tracked
 	w.started = true
 	return w.acceptPage(first)
 }

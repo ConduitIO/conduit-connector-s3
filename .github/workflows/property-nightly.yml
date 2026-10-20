@@ -1,0 +1,34 @@
+name: property-nightly
+
+# The randomized exact-resume model test (source/iterator,
+# TestCDC_PropertyExactResume) at a seed count too large for every PR. The
+# per-PR run uses 40 seeds plus the pinned seeds of past bugs; this job runs
+# 2000 each night, so a bug that needs a rarer schedule shows up within a day.
+# A failure names the seed: S3_PROP_SEEDS=<n> go test ./source/iterator -run
+# TestCDC_PropertyExactResume reproduces it; pin it in
+# TestCDC_PropertyPinnedSeeds with the fix.
+on:
+  schedule:
+    - cron: '15 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: 'Number of seeds'
+        default: '2000'
+
+jobs:
+  property:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Property test
+        env:
+          S3_PROP_SEEDS: ${{ github.event.inputs.seeds || '2000' }}
+        run: go test -count=1 -timeout 55m -run '^TestCDC_PropertyExactResume$' ./source/iterator

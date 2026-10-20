@@ -104,6 +104,21 @@ The connector goes through two modes.
     when newer objects were seen in the meantime (multipart uploads carry
     their initiation time);
   * replica buckets whose replication lag exceeds `lookbackPeriod`;
+  * a multipart upload that shares its initiation second with another object
+    of the same key (a version already listed, or a second upload) is not
+    tracked: it holds the settled cut instead (log code
+    `s3.source.cut_held_same_second`, a warning every 15 minutes once the
+    hold is older than that). New objects are delivered early until
+    `cdc.maxEarlyObjects` is full and the rest wait, for as long as the
+    upload runs, up to `cdc.maxPendingUploadAge`; after that the hold is
+    released and the upload is tracked. Nothing is lost, only latency
+    grows;
+  * a multipart upload that is older than `cdc.maxPendingUploadAge` when
+    the source first sees it, and shares its second with nothing, is not
+    tracked (log code `s3.source.stale_upload_ignored`, error level): if it
+    completes later its object can be missed. Abort such uploads, or add an
+    AbortIncompleteMultipartUpload lifecycle rule with DaysAfterInitiation
+    at most `cdc.maxPendingUploadAge`;
   * an identical re-put of an object within the same second is not seen as a
     change;
   * in an unversioned bucket an overwrite is reported as a create (there is

@@ -413,11 +413,18 @@ func TestCDC_UpgradeFromV1(t *testing.T) {
 }
 
 // The randomized property test: writes (some visible late within the
-// lookback), overwrites, multipart uploads (some longer than the lookback),
-// aborts, and kills at random records. Every acked version is delivered at
-// most once, and every key's final state is the last thing delivered for it.
+// lookback), overwrites, multipart uploads (some longer than the lookback, and
+// several of one key in one second), aborts, and kills at random records, in a
+// store that stamps like AWS or like MinIO (see awsModel). Every acked version
+// is delivered at most once, and every key's final state is the last thing
+// delivered for it.
+//
+// The seed count is S3_PROP_SEEDS (default 40, 5 with -short). The nightly
+// workflow runs 2000. Seeds that once exposed a bug are pinned in
+// TestCDC_PropertyPinnedSeeds so that the per-PR run catches a regression
+// whatever the default count.
 func TestCDC_PropertyExactResume(t *testing.T) {
-	seeds := 20
+	seeds := 40
 	if v, err := strconv.Atoi(os.Getenv("S3_PROP_SEEDS")); err == nil {
 		seeds = v
 	} else if testing.Short() {
@@ -428,9 +435,36 @@ func TestCDC_PropertyExactResume(t *testing.T) {
 	}
 }
 
+// Seeds that exposed a bug in the exact-resume stack (v0.11.0, v0.11.1), kept
+// so that every PR runs them whatever the default seed count. A seed's
+// schedule changes when the generator or the model changes, so a change to
+// either re-derives the list: run S3_PROP_SEEDS=2000 against the code with
+// the fix reverted and pin the seeds that fail.
+var pinnedSeeds = []struct {
+	bug   string
+	seeds []int64
+}{
+	// The settled heap evicted a large candidate, then admitted a smaller one
+	// above it: S moved past the evicted record and it was never delivered.
+	{"settled eviction skips records", []int64{610, 924, 1270, 1357}},
+	// A tracked upload was matched by key and second only: an earlier version
+	// of the key, or another upload of it, took the entry (a version delivered
+	// on every poll, or the final version lost).
+	{"tracked upload matched by key and second", []int64{55, 103, 121, 155, 176, 179, 255, 327, 396}},
+}
+
+func TestCDC_PropertyPinnedSeeds(t *testing.T) {
+	for _, p := range pinnedSeeds {
+		for _, seed := range p.seeds {
+			t.Run(fmt.Sprintf("%s/%d", p.bug, seed), func(t *testing.T) { runExactProp(t, seed) })
+		}
+	}
+}
+
 func runExactProp(t *testing.T, seed int64) { //nolint:gocyclo // a randomized schedule reads best as one function
 	r := rand.New(rand.NewSource(seed))
 	m := newAWSModel(tNow, r.Intn(2) == 0)
+	m.minio = r.Intn(2) == 0
 	cfg := CDCConfig{
 		MaxEarlyObjects:        1 + r.Intn(6),
 		MaxTrackedUploads:      1 + r.Intn(3),
@@ -442,6 +476,12 @@ func runExactProp(t *testing.T, seed int64) { //nolint:gocyclo // a randomized s
 	}
 	var uploads []*mUpload
 	keys := []string{"a", "b", "c", "d", "e", "f"}
+	trace := func(format string, args ...any) {
+		if os.Getenv("S3_PROP_TRACE") != "" {
+			t.Logf("%7.1fs "+format, append([]any{m.clock().Sub(tNow).Seconds()}, args...)...)
+		}
+	}
+	trace("versioned=%v minio=%v cfg=%+v", m.versioned, m.minio, cfg)
 	for step := 0; step < 400; step++ {
 		switch op := r.Intn(10); {
 		case op < 4:
@@ -449,24 +489,51 @@ func runExactProp(t *testing.T, seed int64) { //nolint:gocyclo // a randomized s
 			if r.Intn(4) == 0 {
 				delay = time.Duration(r.Intn(int(lb/time.Second)-30)) * time.Second // late, within the lookback
 			}
-			m.put(keys[r.Intn(len(keys))], delay)
+			k := keys[r.Intn(len(keys))]
+			v := m.put(k, delay)
+			trace("put %s %s stamp=%s delay=%v", k, v.body, v.modified.Format("05.000"), delay)
 		case op == 4 && m.versioned:
-			m.del(keys[r.Intn(len(keys))])
+			k := keys[r.Intn(len(keys))]
+			m.del(k)
+			trace("del %s", k)
 		case op == 5:
-			uploads = append(uploads, m.startUpload("mp-"+keys[r.Intn(len(keys))]))
+			// half of the uploads share their key with plain writes
+			k := keys[r.Intn(len(keys))]
+			if r.Intn(2) == 0 {
+				k = "mp-" + k
+			}
+			u := m.startUpload(k)
+			uploads = append(uploads, u)
+			trace("start upload %s init=%s", k, u.initiated.Format("04:05.000"))
 		case op == 6 && len(uploads) > 0:
 			i := r.Intn(len(uploads))
 			if r.Intn(5) == 0 {
 				m.abort(uploads[i])
+				trace("abort upload %s init=%s", uploads[i].key, uploads[i].initiated.Format("04:05.000"))
 			} else {
-				m.complete(uploads[i])
+				v := m.complete(uploads[i])
+				trace("complete upload %s init=%s %s stamp=%s", uploads[i].key, uploads[i].initiated.Format("04:05.000"), v.body, v.modified.Format("04:05.000"))
 			}
 			uploads = append(uploads[:i], uploads[i+1:]...)
 		}
-		m.advance(time.Duration(1+r.Intn(40)) * time.Second)
-		d.poll()
+		if r.Intn(3) == 0 {
+			m.advance(time.Duration(r.Intn(900)) * time.Millisecond) // same second as the last step
+		} else {
+			m.advance(time.Duration(1+r.Intn(40)) * time.Second)
+		}
+		got := d.poll()
+		for _, rec := range got {
+			trace("  emit %s", body(rec))
+		}
+		var rs []string
+		for _, u := range d.it.State().Tracked {
+			rs = append(rs, u.Initiated.Format("04:05.000"))
+		}
+		trace("  poll: S=%v |E|=%d R=%v", d.it.State().S, len(d.it.State().Early), rs)
 		if r.Intn(15) == 0 {
-			d.kill(r.Intn(len(d.run) + 1))
+			n := r.Intn(len(d.run) + 1)
+			trace("  KILL keeping %d of %d", n, len(d.run))
+			d.kill(n)
 		}
 	}
 	for _, u := range uploads {

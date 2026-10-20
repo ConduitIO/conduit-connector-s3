@@ -100,6 +100,19 @@ type CDCIterator struct {
 	early []position.EarlyEntry
 	inE   map[position.Hash]struct{}
 	r     []position.TrackedUpload
+	// sameSecond remembers the uploads that share their initiation second
+	// with a listed version of their key (see cutFor).
+	sameSecond map[trackedID]struct{}
+	holds      *holdWarner
+	// staleClean remembers uploads past maxPendingUploadAge that share their
+	// second with nothing; base is the in-memory baseline of tracked uploads
+	// (see baselines); listed is the set of uploads of the current poll.
+	staleClean map[trackedID]struct{}
+	// pending are the entries of this poll whose upload is listed but has no
+	// baseline (it could not be trusted); they match nothing in this poll.
+	pending map[trackedID]struct{}
+	base    baselines
+	listed  map[trackedID]struct{}
 	// upgradeFloor is set when resuming from a v1 position: the first poll
 	// lowers S below any old upload that cannot be tracked (design "Upgrade").
 	upgradeFloor bool
@@ -146,11 +159,17 @@ func newCDCIterator(cfg CDCConfig, client *s3.Client, state position.CDCV2, log 
 	}
 	w := &CDCIterator{
 		cfg: cfg, client: client, log: log,
-		s:      state.S,
-		r:      append([]position.TrackedUpload(nil), state.Tracked...),
-		inE:    make(map[position.Hash]struct{}, len(state.Early)),
-		buffer: make(chan opencdc.Record, 1),
-		tomb:   &tomb.Tomb{},
+		s:          state.S,
+		r:          append([]position.TrackedUpload(nil), state.Tracked...),
+		inE:        make(map[position.Hash]struct{}, len(state.Early)),
+		sameSecond: map[trackedID]struct{}{},
+		holds:      newHoldWarner(),
+		staleClean: map[trackedID]struct{}{},
+		pending:    map[trackedID]struct{}{},
+		base:       baselines{},
+		listed:     map[trackedID]struct{}{},
+		buffer:     make(chan opencdc.Record, 1),
+		tomb:       &tomb.Tomb{},
 	}
 	for _, e := range state.Early {
 		w.addEarly(e)
@@ -340,6 +359,7 @@ func (w *CDCIterator) step(ctx context.Context, emit func(opencdc.Record) error)
 		if _, err := w.deliver(ctx, c, emit, func() {
 			w.s = position.Tuple{Time: c.modified, Key: c.key, VersionID: c.versionID}
 			w.pruneEarly()
+			w.dropTrackedFor(c) // an upload that completed between the two listings
 		}); err != nil {
 			return err
 		}
@@ -359,6 +379,7 @@ func (w *CDCIterator) step(ctx context.Context, emit func(opencdc.Record) error)
 		}
 		if _, err := w.deliver(ctx, c, emit, func() {
 			w.addEarly(position.EarlyEntry{Modified: c.modified, Hash: position.VersionHash(c.key, c.versionID, c.etag, c.modified)})
+			w.dropTrackedFor(c)
 		}); err != nil {
 			return err
 		}
@@ -452,14 +473,52 @@ func (w *CDCIterator) dropTracked(id trackedID) {
 	w.r = keep
 }
 
+// dropTrackedFor drops the R entry that c, a version about to be delivered, is
+// the completed object of. Every delivery path calls it: if an upload
+// completes between the uploads listing and the versions listing, its object
+// is delivered as a settled or early version while its entry is still in R,
+// and once S passes it the entry would match it again (a duplicate). The
+// entry is dropped in the same state step as the delivery, so the position of
+// the record already excludes it.
 func (w *CDCIterator) dropTrackedFor(c candidate) {
-	h := position.KeyHash(c.key)
+	if c.operation == opencdc.OperationDelete {
+		return
+	}
+	// Every entry that c matches is settled by this delivery.
+	for _, u := range append([]position.TrackedUpload(nil), w.r...) {
+		if !w.entryMatches(u, c) {
+			continue
+		}
+		id := idOf(u)
+		if _, listed := w.listed[id]; listed {
+			// The upload is still in progress, so c is not its object (a
+			// third upload of the key stamped it in the same second). Keep the
+			// entry for the upload's own version, and remember c so that it
+			// does not match again.
+			w.base[id] = append(w.base[id], position.VersionHash(c.key, c.versionID, c.etag, c.modified))
+			continue
+		}
+		w.dropTracked(id)
+	}
+}
+
+// entryMatches reports whether c is the completed object of the tracked
+// upload u: matchesTracked's rule, minus the versions in u's baseline.
+func (w *CDCIterator) entryMatches(u position.TrackedUpload, c candidate) bool {
+	if _, pending := w.pending[idOf(u)]; pending {
+		return false
+	}
+	return matchesTracked([]position.TrackedUpload{u}, c.key, c.modified, c.etag) &&
+		!w.base.excludes(idOf(u), c.key, c.versionID, c.modified, c.etag)
+}
+
+func (w *CDCIterator) matchesTracked(c candidate) bool {
 	for _, u := range w.r {
-		if u.KeyHash == h && u.Initiated.Unix() == c.modified.Unix() {
-			w.dropTracked(idOf(u))
-			return
+		if w.entryMatches(u, c) {
+			return true
 		}
 	}
+	return false
 }
 
 // plan lists the versions and decides what this poll delivers. It does not
@@ -475,7 +534,11 @@ func (w *CDCIterator) plan(ctx context.Context, uploads []types.MultipartUpload,
 			return pollPlan{}, fmt.Errorf("couldn't list object versions: %w", err)
 		}
 		if first {
-			pl.p.cut = w.cutFor(uploads, tu, responseDate(out.ResultMetadata, host, w.log), host)
+			cut, err := w.cutFor(ctx, uploads, tu, responseDate(out.ResultMetadata, host, w.log), host)
+			if err != nil {
+				return pollPlan{}, err
+			}
+			pl.p.cut = cut
 		}
 		for i := range out.Versions {
 			col.version(&out.Versions[i])
@@ -505,9 +568,74 @@ func (w *CDCIterator) plan(ctx context.Context, uploads []types.MultipartUpload,
 // updates R with newly tracked uploads, and applies the v1 upgrade floor. The
 // cut never moves S backwards (a host clock that jumped back): settling then
 // pauses until it catches up.
-func (w *CDCIterator) cutFor(uploads []types.MultipartUpload, tu, tv, host time.Time) time.Time {
+func (w *CDCIterator) cutFor(ctx context.Context, uploads []types.MultipartUpload, tu, tv, host time.Time) (time.Time, error) {
+	// Uploads that share their initiation second with another object of the
+	// key hold the cut instead of being tracked (see cutAndTrack). A positive
+	// answer cannot turn negative while the upload runs, so it is remembered;
+	// a negative one is not, because the upload is tracked right away or, when
+	// R is full, is probed again next poll. For an upload past
+	// maxPendingUploadAge, which is not tracked unless it conflicts, a negative
+	// answer is remembered too, or every poll would probe it again.
+	w.listed = make(map[trackedID]struct{}, len(uploads))
+	for _, u := range uploads {
+		if u.Key != nil && u.Initiated != nil {
+			w.listed[idOf(position.TrackedUpload{KeyHash: position.KeyHash(*u.Key), Initiated: u.Initiated.UTC().Truncate(time.Millisecond)})] = struct{}{}
+		}
+	}
+	for _, m := range []map[trackedID]struct{}{w.sameSecond, w.staleClean} {
+		for id := range m {
+			if _, ok := w.listed[id]; !ok {
+				delete(m, id)
+			}
+		}
+	}
+	conflict := func(u types.MultipartUpload, stale bool) (bool, error) {
+		id := idOf(position.TrackedUpload{KeyHash: position.KeyHash(*u.Key), Initiated: u.Initiated.UTC().Truncate(time.Millisecond)})
+		if _, ok := w.sameSecond[id]; ok {
+			return true, nil
+		}
+		if _, ok := w.staleClean[id]; ok {
+			return false, nil
+		}
+		found, err := versionInSecond(ctx, w.client, w.cfg.Bucket, aws.ToString(u.Key), *u.Initiated)
+		switch {
+		case err != nil:
+		case found:
+			w.sameSecond[id] = struct{}{}
+		case stale:
+			w.staleClean[id] = struct{}{}
+		default:
+			// Tracked right away (or held for lack of room): nothing of the
+			// key was in the upload's second, so its baseline is empty.
+			w.base[id] = []position.Hash{}
+		}
+		return found, err
+	}
+	now := w.cfg.Now()
+	w.holds.begin()
+	held := func(u types.MultipartUpload) { w.holds.hold(now, u, w.log) }
+	settled := w.s.Time
+	if w.upgradeFloor {
+		// S of a v1 position lies above any upload that is running; the hold
+		// below lowers it (see further down), so it must not count as passed.
+		settled = time.Time{}
+	}
 	var cut time.Time
-	cut, w.r = cutAndTrack(earliest(tu, tv, host), w.cfg.Lookback, tu, uploads, w.r, w.cfg.MaxTrackedUploads, w.cfg.MaxPendingUploadAge, w.sampled)
+	cut, r, err := cutAndTrack(earliest(tu, tv, host), w.cfg.Lookback, tu, uploads, w.r,
+		trackOpts{Settled: settled, MaxTracked: w.cfg.MaxTrackedUploads, MaxAge: w.cfg.MaxPendingUploadAge, Conflict: conflict, Held: held}, w.sampled)
+	w.holds.end(now)
+	if err != nil {
+		return time.Time{}, err
+	}
+	w.r = r
+	// Entries of v0.11.x positions, and entries tracked because S had already
+	// passed their second, get their baseline now, before this poll matches
+	// any version against them.
+	if err := w.base.verify(ctx, w.client, w.cfg.Bucket, uploads, w.r); err != nil {
+		return time.Time{}, err
+	}
+	w.base.prune(w.r)
+	w.markPending()
 	cut = cut.UTC().Truncate(time.Millisecond)
 	if w.upgradeFloor {
 		// Upgrade from v1: S may not lie above an old upload that could not
@@ -520,7 +648,25 @@ func (w *CDCIterator) cutFor(uploads []types.MultipartUpload, tu, tv, host time.
 	if cut.Before(w.s.Time) {
 		cut = w.s.Time
 	}
-	return cut
+	return cut, nil
+}
+
+// markPending finds the entries whose upload was listed at Tu but got no
+// baseline (the upload ended while the baseline was taken): they match nothing
+// in this poll, because the tip of their key may be an earlier version. Next
+// poll they either get a baseline or resolve under the old rule, when their
+// upload's version is the tip.
+func (w *CDCIterator) markPending() {
+	w.pending = map[trackedID]struct{}{}
+	for _, e := range w.r {
+		id := idOf(e)
+		if _, listed := w.listed[id]; !listed {
+			continue
+		}
+		if _, ok := w.base[id]; !ok {
+			w.pending[id] = struct{}{}
+		}
+	}
 }
 
 // resolved lists the R entries whose upload is gone (completed or aborted
@@ -560,18 +706,32 @@ type planner struct {
 	early        *maxHeap
 	room         int
 	matched      map[trackedID]struct{}
+	// evicted is the smallest tuple pushed out of the settled heap this poll.
+	// Invariant 3: the budget is in bytes and candidates differ in size, so a
+	// later, smaller candidate above an evicted one can still fit. Delivering
+	// it would move S past the evicted tuple and skip that record for good, so
+	// nothing at or above the watermark is admitted.
+	evicted *candidate
 }
 
 func (pl *planner) consider(c candidate) {
 	w := pl.w
 	if w.s.Compare(c.modified, c.key, c.versionID) >= 0 {
 		// At or below S: only the completed object of a tracked upload.
-		if c.operation != opencdc.OperationDelete && matchesTracked(w.r, c.key, c.modified, c.etag) {
+		if c.operation != opencdc.OperationDelete && w.matchesTracked(c) {
 			pl.p.tracked = append(pl.p.tracked, c)
-			h := position.KeyHash(c.key)
 			for _, u := range w.r {
-				if u.KeyHash == h && u.Initiated.Unix() == c.modified.Unix() {
-					pl.matched[idOf(u)] = struct{}{}
+				if w.entryMatches(u, c) {
+					id := idOf(u)
+					pl.matched[id] = struct{}{}
+					if _, listed := w.listed[id]; listed {
+						// The upload is still in progress, so this version is not
+						// its object: it should have been in the baseline. Report
+						// it; the delivery is a duplicate at worst.
+						w.sampled.Error().Str("code", "s3.source.tracked_match_while_upload_listed").
+							Str("key", c.key).Str("version_id", c.versionID).
+							Msg("a version at or below S matched a tracked multipart upload that is still in progress; the key's final state should be checked")
+					}
 				}
 			}
 		}
@@ -581,11 +741,18 @@ func (pl *planner) consider(c candidate) {
 		return
 	}
 	if !c.modified.After(pl.p.cut) {
+		if pl.evicted != nil && !c.less(*pl.evicted) {
+			pl.p.deferred = true
+			return
+		}
 		heap.Push(pl.settled, c)
 		pl.settledBytes += c.bytes()
 		for pl.settledBytes > w.cfg.MaxSettledBytesPerPoll && pl.settled.Len() > 1 {
 			d := heap.Pop(pl.settled).(candidate)
 			pl.settledBytes -= d.bytes()
+			if pl.evicted == nil || d.less(*pl.evicted) {
+				pl.evicted = &d
+			}
 			pl.p.deferred = true
 		}
 		return
