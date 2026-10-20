@@ -104,6 +104,12 @@ The connector goes through two modes.
     when newer objects were seen in the meantime (multipart uploads carry
     their initiation time);
   * replica buckets whose replication lag exceeds `lookbackPeriod`;
+  * a multipart upload that shares its initiation second with another object
+    of the same key (a version already listed, or a second upload) is not
+    tracked: it holds the settled cut instead (log code
+    `s3.source.cut_held_same_second`), so objects wait for `lookbackPeriod`
+    longer than usual until the upload ends. Nothing is lost; only latency
+    grows, and only for as long as such an upload runs;
   * an identical re-put of an object within the same second is not seen as a
     change;
   * in an unversioned bucket an overwrite is reported as a create (there is
