@@ -15,15 +15,18 @@
 package iterator
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	"github.com/matryer/is"
+	"github.com/rs/zerolog"
 )
 
 // legacyCDCPosition encodes state the way v0.11.0 to v0.11.2 did (format 0x02):
@@ -179,4 +182,30 @@ func TestCDC_BaselineSurvivesARestartThatSpansTheEndOfTheUpload(t *testing.T) {
 			is.Equal(countKey(all, "k"), want) // the earlier version is not delivered again
 		})
 	}
+}
+
+// More same-second versions than a baseline holds: the entry is dropped and
+// an error is logged, instead of delivering the version again on every poll
+// (the still-listed upload is tracked again with a fresh baseline).
+func TestCDC_FullBaselineDropsTheEntry(t *testing.T) {
+	is := is.New(t)
+	m := newAWSModel(tNow, false)
+	_, y := sameSecondSetup(m)
+	m.advance(lb + time.Minute)
+	d := newDriver(t, m, CDCConfig{}, legacyState(m, y))
+	var buf bytes.Buffer
+	log := zerolog.New(&buf)
+	d.it.log, d.it.sampled = &log, &log
+	d.poll() // verifies the entry
+	is.Equal(len(d.it.State().Tracked), 1)
+	d.it.r[0].Baseline = make([]position.Hash, position.MaxBaseline) // full
+	m.mu.Lock()                                                      // a third same-second multipart version, matching the entry while y runs
+	m.addVersion("k", y.initiated, m.now, false, `"00000000000000000000000000000001-2"`)
+	m.mu.Unlock()
+	for i := 0; i < 4; i++ {
+		m.advance(time.Minute)
+		d.poll()
+	}
+	is.True(strings.Contains(buf.String(), "s3.source.upload_identity_unavailable"))
+	is.Equal(countKey(d.finish(), "k"), 1) // once, not on every poll
 }

@@ -492,12 +492,25 @@ func (w *CDCIterator) dropTrackedFor(c candidate) {
 			// third upload of the key stamped it in the same second). Keep the
 			// entry for the upload's own version, and remember c so that it
 			// does not match again.
+			full := false
 			for i := range w.r {
-				if idOf(w.r[i]) == id && len(w.r[i].Baseline) < position.MaxBaseline {
-					w.r[i].Baseline = append(w.r[i].Baseline, position.VersionHash(c.key, c.versionID, c.etag, c.modified))
+				if idOf(w.r[i]) != id {
+					continue
 				}
+				if len(w.r[i].Baseline) >= position.MaxBaseline {
+					full = true
+					break
+				}
+				w.r[i].Baseline = append(w.r[i].Baseline, position.VersionHash(c.key, c.versionID, c.etag, c.modified))
 			}
-			continue
+			if !full {
+				continue
+			}
+			// No room to remember c: drop the entry rather than deliver c
+			// again on every poll. The upload's own version may then be
+			// missed, which is what the error says.
+			w.sampled.Error().Str("code", "s3.source.upload_identity_unavailable").Str("key", c.key).
+				Msg("more multipart versions of this key share the initiation second of a tracked upload than a position can hold: the upload is no longer tracked, so its own version can be missed; check the key's final state")
 		}
 		w.dropTracked(id)
 	}
