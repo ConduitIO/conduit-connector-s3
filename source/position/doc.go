@@ -19,7 +19,11 @@
 //   - v1 (`<key>_s<unix seconds>` / `<key>_c<unix seconds>`), written by
 //     v0.9.x. It is parsed only to upgrade a pipeline (see Parse).
 //   - v2 (binary, starts with 0x00, ends with a CRC-32C and 0x00): the state the
-//     source needs to resume exactly. A snapshot position holds the snapshot
+//     source needs to resume exactly. Its second byte is the format version:
+//     0x03 is written; 0x02, written by v0.11.0 to v0.11.2, is still read (its
+//     tracked uploads carry no identity and are unverified, see TrackedUpload).
+//     A 0x03 position cannot be read by v0.11.x: downgrading needs a position
+//     reset. A snapshot position holds the snapshot
 //     cut, the last key delivered and the tracked uploads (SnapshotV2). A
 //     change capture position holds the settled cut S, the early set E and the
 //     tracked uploads R (CDCV2).

@@ -274,7 +274,7 @@ func (w *SnapshotIterator) belongsToSnapshot(o types.Object) bool {
 	if o.LastModified == nil || o.LastModified.After(w.cut) {
 		return false
 	}
-	return !matchesTracked(w.tracked, aws.ToString(o.Key), *o.LastModified, aws.ToString(o.ETag))
+	return !matchesTracked(w.tracked, aws.ToString(o.Key), "", *o.LastModified, aws.ToString(o.ETag))
 }
 
 // read fetches the listed version. skip is true when the object changed or
