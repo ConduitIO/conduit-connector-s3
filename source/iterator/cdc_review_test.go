@@ -252,3 +252,91 @@ func TestCDC_SameSecondProbeIsCached(t *testing.T) {
 	d.poll()
 	is.Equal(len(d.it.sameSecond), 0)
 }
+
+func legacyState(m *awsModel, ups ...*mUpload) position.CDCV2 {
+	st := position.CDCV2{S: position.Tuple{Time: m.clock().Add(-lb).UTC().Truncate(time.Second), Inf: true}}
+	for _, u := range ups {
+		st.Tracked = append(st.Tracked, position.TrackedUpload{KeyHash: position.KeyHash(u.key), Initiated: u.initiated})
+	}
+	return st
+}
+
+func requireFinalOnce(t *testing.T, m *awsModel, d *driver, k string) {
+	t.Helper()
+	all := d.finish()
+	if got, want := lastBody(all, k), tipBody(m, k); got != want {
+		t.Errorf("the final version %q of %s was never delivered (last %q)", want, k, got)
+	}
+	requireExactlyOnce(t, all, m.deletes)
+}
+
+// The upload completes between the baseline's versions listing and the
+// re-list of the uploads, so the baseline cannot be trusted. The entry must not
+// match anything in that poll: the earlier version (the tip in this poll's
+// listing) used to match it, which spent the entry before the upload's own
+// version, stamped in the same second, could arrive.
+func TestCDC_BaselineWhileTheUploadCompletes(t *testing.T) {
+	for _, versioned := range []bool{false, true} {
+		t.Run(fmt.Sprintf("versioned=%v", versioned), func(t *testing.T) {
+			m := newAWSModel(tNow, versioned)
+			_, y := sameSecondSetup(m)
+			m.advance(lb + time.Minute)
+			d := newDriver(t, m, CDCConfig{}, legacyState(m, y))
+			base := m.versionsPages
+			m.onVersionsPage = func(n int) {
+				if n == base+2 { // main page 1, then the baseline listing of k
+					m.complete(y)
+				}
+			}
+			d.poll()
+			m.onVersionsPage = nil
+			for i := 0; i < 5; i++ {
+				m.advance(time.Minute)
+				d.poll()
+			}
+			requireFinalOnce(t, m, d, "k")
+		})
+	}
+}
+
+// A legacy entry for Y, three uploads of the key in one second: X completed
+// before the upgrade, Z completes after the baseline was taken. Z's version
+// matches Y's entry while Y still runs; it is delivered, but the entry stays
+// (its upload is listed) with Z's version added to its baseline, so Y's own
+// version is delivered when Y completes.
+func TestCDC_ThirdSameSecondUploadCompletesAfterTheBaseline(t *testing.T) {
+	for _, legacyZ := range []bool{false, true} {
+		t.Run(fmt.Sprintf("Z-also-legacy=%v", legacyZ), func(t *testing.T) {
+			m := newAWSModel(tNow, false)
+			m.advance(100 * time.Millisecond)
+			x := m.startUpload("k")
+			m.advance(100 * time.Millisecond)
+			y := m.startUpload("k")
+			m.advance(100 * time.Millisecond)
+			z := m.startUpload("k")
+			m.advance(100 * time.Millisecond)
+			m.complete(x)
+			m.advance(lb + time.Minute)
+			st := legacyState(m, y)
+			if legacyZ {
+				st = legacyState(m, y, z)
+			}
+			d := newDriver(t, m, CDCConfig{}, st)
+			for i := 0; i < 3; i++ {
+				d.poll()
+				m.advance(time.Minute)
+			}
+			m.complete(z) // a multipart version stamped in the second, after the baseline
+			for i := 0; i < 3; i++ {
+				d.poll()
+				m.advance(time.Minute)
+			}
+			m.complete(y)
+			for i := 0; i < 4; i++ {
+				d.poll()
+				m.advance(time.Minute)
+			}
+			requireFinalOnce(t, m, d, "k")
+		})
+	}
+}

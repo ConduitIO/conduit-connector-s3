@@ -108,8 +108,11 @@ type CDCIterator struct {
 	// second with nothing; base is the in-memory baseline of tracked uploads
 	// (see baselines); listed is the set of uploads of the current poll.
 	staleClean map[trackedID]struct{}
-	base       baselines
-	listed     map[trackedID]struct{}
+	// pending are the entries of this poll whose upload is listed but has no
+	// baseline (it could not be trusted); they match nothing in this poll.
+	pending map[trackedID]struct{}
+	base    baselines
+	listed  map[trackedID]struct{}
 	// upgradeFloor is set when resuming from a v1 position: the first poll
 	// lowers S below any old upload that cannot be tracked (design "Upgrade").
 	upgradeFloor bool
@@ -162,6 +165,7 @@ func newCDCIterator(cfg CDCConfig, client *s3.Client, state position.CDCV2, log 
 		sameSecond: map[trackedID]struct{}{},
 		holds:      newHoldWarner(),
 		staleClean: map[trackedID]struct{}{},
+		pending:    map[trackedID]struct{}{},
 		base:       baselines{},
 		listed:     map[trackedID]struct{}{},
 		buffer:     make(chan opencdc.Record, 1),
@@ -480,17 +484,30 @@ func (w *CDCIterator) dropTrackedFor(c candidate) {
 	if c.operation == opencdc.OperationDelete {
 		return
 	}
-	for _, u := range w.r {
-		if w.entryMatches(u, c) {
-			w.dropTracked(idOf(u))
-			return
+	// Every entry that c matches is settled by this delivery.
+	for _, u := range append([]position.TrackedUpload(nil), w.r...) {
+		if !w.entryMatches(u, c) {
+			continue
 		}
+		id := idOf(u)
+		if _, listed := w.listed[id]; listed {
+			// The upload is still in progress, so c is not its object (a
+			// third upload of the key stamped it in the same second). Keep the
+			// entry for the upload's own version, and remember c so that it
+			// does not match again.
+			w.base[id] = append(w.base[id], position.VersionHash(c.key, c.versionID, c.etag, c.modified))
+			continue
+		}
+		w.dropTracked(id)
 	}
 }
 
 // entryMatches reports whether c is the completed object of the tracked
 // upload u: matchesTracked's rule, minus the versions in u's baseline.
 func (w *CDCIterator) entryMatches(u position.TrackedUpload, c candidate) bool {
+	if _, pending := w.pending[idOf(u)]; pending {
+		return false
+	}
 	return matchesTracked([]position.TrackedUpload{u}, c.key, c.modified, c.etag) &&
 		!w.base.excludes(idOf(u), c.key, c.versionID, c.modified, c.etag)
 }
@@ -618,6 +635,21 @@ func (w *CDCIterator) cutFor(ctx context.Context, uploads []types.MultipartUploa
 		return time.Time{}, err
 	}
 	w.base.prune(w.r)
+	// An entry whose upload was listed at Tu but got no baseline (the upload
+	// ended while the baseline was taken) must not match anything in this poll:
+	// the tip of its key may be an earlier version. Next poll it either gets a
+	// baseline or resolves under the old rule, when its upload's version is the
+	// tip.
+	w.pending = map[trackedID]struct{}{}
+	for _, e := range w.r {
+		id := idOf(e)
+		if _, listed := w.listed[id]; !listed {
+			continue
+		}
+		if _, ok := w.base[id]; !ok {
+			w.pending[id] = struct{}{}
+		}
+	}
 	cut = cut.UTC().Truncate(time.Millisecond)
 	if w.upgradeFloor {
 		// Upgrade from v1: S may not lie above an old upload that could not

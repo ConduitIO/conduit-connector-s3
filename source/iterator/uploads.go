@@ -415,6 +415,9 @@ func uploadInProgress(ctx context.Context, client *s3.Client, bucket, key, uploa
 		if !aws.ToBool(out.IsTruncated) {
 			return false, nil
 		}
+		if aws.ToString(out.NextKeyMarker) == "" && aws.ToString(out.NextUploadIdMarker) == "" {
+			return false, fmt.Errorf("couldn't list the multipart uploads of %q: the listing is truncated but has no next marker", key)
+		}
 		in.KeyMarker, in.UploadIdMarker = out.NextKeyMarker, out.NextUploadIdMarker
 	}
 }
