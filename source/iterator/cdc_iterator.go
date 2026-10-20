@@ -560,6 +560,12 @@ type planner struct {
 	early        *maxHeap
 	room         int
 	matched      map[trackedID]struct{}
+	// evicted is the smallest tuple pushed out of the settled heap this poll.
+	// Invariant 3: the budget is in bytes and candidates differ in size, so a
+	// later, smaller candidate above an evicted one can still fit. Delivering
+	// it would move S past the evicted tuple and skip that record for good, so
+	// nothing at or above the watermark is admitted.
+	evicted *candidate
 }
 
 func (pl *planner) consider(c candidate) {
@@ -581,11 +587,18 @@ func (pl *planner) consider(c candidate) {
 		return
 	}
 	if !c.modified.After(pl.p.cut) {
+		if pl.evicted != nil && !c.less(*pl.evicted) {
+			pl.p.deferred = true
+			return
+		}
 		heap.Push(pl.settled, c)
 		pl.settledBytes += c.bytes()
 		for pl.settledBytes > w.cfg.MaxSettledBytesPerPoll && pl.settled.Len() > 1 {
 			d := heap.Pop(pl.settled).(candidate)
 			pl.settledBytes -= d.bytes()
+			if pl.evicted == nil || d.less(*pl.evicted) {
+				pl.evicted = &d
+			}
 			pl.p.deferred = true
 		}
 		return
