@@ -198,7 +198,7 @@ func (h *holdWarner) hold(now time.Time, u types.MultipartUpload, log *zerolog.L
 	}
 	h.warned[key] = now
 	log.Warn().Str("code", "s3.source.cut_held_same_second").
-		Str("key", key).Str("upload_id", aws.ToString(u.UploadId)).
+		Str("key_hash", logsafe.KeyHash([]byte(key))).Str("upload_id", aws.ToString(u.UploadId)).
 		Time("initiated", *u.Initiated).Dur("hold_age", age).
 		Msg(sameSecondHoldMsg + "; the hold has lasted longer than " + holdWarnAfter.String() + ", so objects wait longer than usual before they settle (abort the upload, or add an AbortIncompleteMultipartUpload lifecycle rule)")
 }

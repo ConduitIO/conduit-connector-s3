@@ -731,6 +731,27 @@ pipelines:
 ```
 <!-- /readmegen:destination.parameters.yaml -->
 
+### Finding an object named in a log line
+
+Log lines and errors never print an object key, a position or a record value:
+an object key is the record key, and the destination builds keys from partition
+values of the record. They carry `key_hash` (and `dir_hash`, `position_hash`
+for positions), a salted digest that is the same for the same value within one
+process, so lines about one object can be matched. The salt is random per
+process, so a hash cannot be turned back into a key, by design.
+
+To find the object a line is about, use the identifiers S3 assigned, which
+are opaque and do not contain record data: log lines also carry `version_id`
+(CDC) or `upload_id` (multipart uploads). Resolve them with your own
+credentials:
+
+```sh
+aws s3api list-multipart-uploads --bucket <bucket> --prefix <prefix>   # upload_id -> Key
+aws s3api list-object-versions   --bucket <bucket> --prefix <prefix>   # version_id -> Key
+```
+
+There is deliberately no setting that makes the connector print keys.
+
 ### How to build it
 
 Run `make`.

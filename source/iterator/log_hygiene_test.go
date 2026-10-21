@@ -17,6 +17,8 @@ package iterator
 import (
 	"bytes"
 	"context"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"net/http"
 	"strings"
 	"testing"
@@ -72,7 +74,7 @@ func TestCDC_GoneVersionLogDoesNotContainObjectKey(t *testing.T) {
 	w := newCDCIterator(cfg, st.client(), position.CDCV2{}, logger)
 
 	ok, err := w.deliver(context.Background(),
-		candidate{key: secretKey, versionID: "v-SECRET-1", operation: opencdc.OperationCreate},
+		candidate{key: secretKey, versionID: "v-opaque-1", operation: opencdc.OperationCreate},
 		func(opencdc.Record) error { return nil }, func() {})
 	is.NoErr(err)
 	is.True(!ok)
@@ -80,6 +82,7 @@ func TestCDC_GoneVersionLogDoesNotContainObjectKey(t *testing.T) {
 	out := buf.String()
 	is.True(strings.Contains(out, "version changed or was deleted"))
 	is.True(strings.Contains(out, `"key_hash"`))
+	is.True(strings.Contains(out, `"version_id":"v-opaque-1"`)) // S3-assigned, opaque: it is how an operator finds the object
 	is.True(!strings.Contains(out, "SECRET"))
 }
 
@@ -122,4 +125,23 @@ func TestCDC_FetchErrorDoesNotContainObjectKey(t *testing.T) {
 	is.True(err != nil)
 	is.True(strings.Contains(err.Error(), "could not fetch S3 object (key hash "))
 	is.True(!strings.Contains(err.Error(), "SECRET"))
+}
+
+// The hold warnings name the multipart upload by its S3-assigned upload id and
+// by key hash, never by key.
+func TestHoldWarner_WarningDoesNotContainObjectKey(t *testing.T) {
+	is := is.New(t)
+	logger, buf := debugLogger()
+	h := newHoldWarner()
+	initiated := tNow.Add(-time.Hour)
+	u := types.MultipartUpload{Key: aws.String(secretKey), UploadId: aws.String("upload-opaque-1"), Initiated: &initiated}
+
+	h.hold(tNow, u, logger)                                // first sighting
+	h.hold(tNow.Add(holdWarnAfter+time.Second), u, logger) // held for longer than holdWarnAfter
+
+	out := buf.String()
+	is.True(strings.Contains(out, "s3.source.cut_held_same_second"))
+	is.True(strings.Contains(out, `"upload_id":"upload-opaque-1"`))
+	is.True(strings.Contains(out, `"key_hash"`))
+	is.True(!strings.Contains(out, "SECRET"))
 }
