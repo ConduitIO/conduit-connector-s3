@@ -26,6 +26,7 @@ import (
 	"github.com/conduitio/conduit-commons/lang"
 	"github.com/conduitio/conduit-commons/opencdc"
 	"github.com/conduitio/conduit-connector-s3/config"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 	"github.com/conduitio/conduit-connector-s3/source/iterator"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -135,7 +136,8 @@ func (s *Source) bucketExists(ctx context.Context, bucketName string) error {
 }
 
 func (s *Source) Ack(ctx context.Context, position opencdc.Position) error {
-	sdk.Logger(ctx).Debug().Str("position", string(position)).Msg("got ack")
+	// A position holds the object key, so only its size and a hash are logged.
+	sdk.Logger(ctx).Debug().Int("position_size", len(position)).Str("position_hash", logsafe.KeyHash(position)).Msg("got ack")
 	return nil // no ack needed
 }
 

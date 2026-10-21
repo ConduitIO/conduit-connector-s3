@@ -27,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/rs/zerolog"
@@ -403,7 +404,7 @@ func (w *CDCIterator) deliver(ctx context.Context, c candidate, emit func(opencd
 		object, err := w.fetch(ctx, c)
 		if err != nil {
 			if isGone(err) || errors.Is(err, errVersionChanged) {
-				w.log.Debug().Str("key", c.key).Str("version_id", c.versionID).Msg("version changed or was deleted after it was listed; its successor is delivered instead")
+				w.log.Debug().Str("key_hash", logsafe.KeyHash([]byte(c.key))).Msg("version changed or was deleted after it was listed; its successor is delivered instead")
 				return false, nil
 			}
 			return false, fmt.Errorf("could not fetch S3 object %q: %w", c.key, err)

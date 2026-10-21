@@ -30,6 +30,7 @@ import (
 	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/rs/zerolog"
@@ -288,7 +289,7 @@ func (w *SnapshotIterator) read(ctx context.Context, listed types.Object) (rec o
 	})
 	if err != nil {
 		if isGone(err) {
-			w.log.Debug().Str("key", key).Msg("object changed or was deleted after it was listed; change capture delivers what replaced it")
+			w.log.Debug().Str("key_hash", logsafe.KeyHash([]byte(key))).Msg("object changed or was deleted after it was listed; change capture delivers what replaced it")
 			return opencdc.Record{}, true, nil
 		}
 		return opencdc.Record{}, false, fmt.Errorf("could not fetch the next object: %w", err)
@@ -297,7 +298,7 @@ func (w *SnapshotIterator) read(ctx context.Context, listed types.Object) (rec o
 	if !sameSecond(object.LastModified, listed.LastModified) {
 		// Same content written again after the listing: the ETag matches, the
 		// time does not. Delivering it here would deliver it again from CDC.
-		w.log.Debug().Str("key", key).Msg("object was overwritten with the same content after it was listed; change capture delivers it")
+		w.log.Debug().Str("key_hash", logsafe.KeyHash([]byte(key))).Msg("object was overwritten with the same content after it was listed; change capture delivers it")
 		return opencdc.Record{}, true, nil
 	}
 	body, err := io.ReadAll(object.Body)

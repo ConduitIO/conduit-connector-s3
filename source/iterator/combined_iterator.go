@@ -21,6 +21,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 	"github.com/rs/zerolog"
@@ -74,7 +75,7 @@ func NewCombinedIterator(ctx context.Context, cfg CombinedConfig, client *s3.Cli
 	case parsed.V2 != nil:
 		c.cdcIterator = NewCDCIterator(c.cdcConfig(), client, *parsed.V2.CDC, c.log)
 	case parsed.V1 != nil && parsed.V1.Type == position.TypeCDC:
-		c.log.Warn().Str("code", "s3.source.position_upgraded").Str("position", string(rp)).
+		c.log.Warn().Str("code", "s3.source.position_upgraded").Int("position_size", len(rp)).Str("position_hash", logsafe.KeyHash(rp)).
 			Msg("resuming from a change capture position written by an earlier version: the lookback window is delivered once more; positions from now on resume exactly")
 		c.cdcIterator = NewCDCIteratorFromV1(c.cdcConfig(), client, *parsed.V1, c.log)
 	default:
@@ -82,7 +83,7 @@ func NewCombinedIterator(ctx context.Context, cfg CombinedConfig, client *s3.Cli
 			// A v1 snapshot position holds no snapshot cut, so the snapshot
 			// cannot be resumed exactly; it starts over once, as v1 itself
 			// did on every restart.
-			c.log.Warn().Str("code", "s3.source.position_upgraded").Str("position", string(rp)).
+			c.log.Warn().Str("code", "s3.source.position_upgraded").Int("position_size", len(rp)).Str("position_hash", logsafe.KeyHash(rp)).
 				Msg("resuming from a snapshot position written by an earlier version: the snapshot starts over once; positions from now on resume exactly")
 		}
 		c.snapshotIterator = NewSnapshotIterator(c.snapshotConfig(), client, nil, c.log)
