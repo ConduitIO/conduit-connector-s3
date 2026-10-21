@@ -105,8 +105,8 @@ github.com/chzyer/readline v0.0.0-20180603132655-2972be24d48e/go.mod h1:nSuG5e5P
 github.com/chzyer/test v0.0.0-20180213035817-a1ea475d72b1/go.mod h1:Q3SI9o4m/ZMnBNeIyt5eFwwo7qiLfzFZmjNmxjkiQlU=
 github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDkc90ppPyw=
 github.com/colinmarc/hdfs/v2 v2.1.1/go.mod h1:M3x+k8UKKmxtFu++uAZ0OtDU8jR3jnaZIAc6yK4Ue0c=
-github.com/conduitio/conduit-commons v0.10.0 h1:b6SaTom8XS3tAWTjRBn4Quv6/sGQie3hy2sQ4h4l5ss=
-github.com/conduitio/conduit-commons v0.10.0/go.mod h1:I5BjvJ7rZzNbELaqR2rbls4Tu2o88cOcSMewLKM8pQw=
+github.com/conduitio/conduit-commons v0.11.0 h1:g/sw1PtpcfC3iPe9aGt/F2Gor8b/UNy5gOAhRXzMdeM=
+github.com/conduitio/conduit-commons v0.11.0/go.mod h1:I5BjvJ7rZzNbELaqR2rbls4Tu2o88cOcSMewLKM8pQw=
 github.com/conduitio/conduit-connector-protocol v0.11.0 h1:YNHw6LCQ7noFLdfEp5IZoAMwwFPI17FueMjDhxUjLt8=
 github.com/conduitio/conduit-connector-protocol v0.11.0/go.mod h1:Fiy2/VeW5vp9TC3Ynno8zXwtiCZsIcMcZ/OtI+Fiz+c=
 github.com/conduitio/conduit-connector-sdk v0.17.0 h1:AtN+As+/YNP5rVQ/nDP7KTZBCGxdjjpumHcB+HYkLwQ=
