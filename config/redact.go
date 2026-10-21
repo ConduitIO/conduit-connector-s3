@@ -18,29 +18,75 @@ import (
 	"errors"
 	"net/url"
 	"regexp"
+	"strings"
 )
 
 // userinfoPattern finds the user info of a URL that url.Parse rejected.
 var userinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/?#\s"'` + "`" + `]*@`)
 
-// redactURL returns raw with the user info (a user name and password written
-// as scheme://user:password@host) replaced by a placeholder, so that a URL can
-// be named in an error or a log line without its credentials. A URL without
-// user info is returned unchanged.
+// redactURL returns raw with its credentials replaced, so that a URL can be
+// named in an error or a log line:
+//   - the user info (scheme://user:password@host); the user name is replaced
+//     as well because it is often the secret (a token used as the user name);
+//   - every query parameter value and the fragment, whatever the parameter is
+//     called, because query credentials (token, key, sig, X-Amz-Signature, ...)
+//     come under too many names to match; the names are kept.
+//
+// A URL without user info, query or fragment is returned unchanged. A URL
+// that url.Parse rejects can still carry credentials, so it is redacted
+// textually.
 func redactURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		// The URL is not valid, so it can still carry credentials: cut the
-		// user info out textually.
-		return userinfoPattern.ReplaceAllString(raw, "${1}redacted:xxxxx@")
+	s := raw
+	if u, err := url.Parse(raw); err != nil {
+		s = userinfoPattern.ReplaceAllString(raw, "${1}redacted:xxxxx@")
+	} else if u.User != nil {
+		u.User = url.UserPassword("redacted", "")
+		s = u.Redacted()
 	}
-	if u.User == nil {
-		return raw
+	return maskQueryAndFragment(s)
+}
+
+// maskQueryAndFragment masks the value of every query parameter and the
+// fragment, working on the text so that it also covers URLs that do not parse.
+func maskQueryAndFragment(s string) string {
+	i := strings.IndexAny(s, "?#")
+	if i < 0 {
+		return s
 	}
-	// Redacted masks the password; the user name is replaced as well because
-	// it is often the secret (a token used as the user name).
-	u.User = url.UserPassword("redacted", "")
-	return u.Redacted()
+	head, tail := s[:i], s[i:]
+	var query, fragment string
+	if tail[0] == '?' {
+		query = tail[1:]
+		if j := strings.IndexByte(query, '#'); j >= 0 {
+			query, fragment = query[:j], query[j+1:]
+		}
+	} else {
+		fragment = tail[1:]
+	}
+
+	var b strings.Builder
+	b.WriteString(head)
+	if tail[0] == '?' {
+		b.WriteByte('?')
+		sep := "&"
+		if strings.Contains(query, ";") && !strings.Contains(query, "&") {
+			sep = ";"
+		}
+		parts := strings.FieldsFunc(query, func(r rune) bool { return r == '&' || r == ';' })
+		for k, part := range parts {
+			if k > 0 {
+				b.WriteString(sep)
+			}
+			if eq := strings.IndexByte(part, '='); eq >= 0 {
+				b.WriteString(part[:eq+1])
+			}
+			b.WriteString("xxxxx")
+		}
+	}
+	if fragment != "" {
+		b.WriteString("#xxxxx")
+	}
+	return b.String()
 }
 
 // parseCause returns the reason url.Parse rejected a URL without the URL

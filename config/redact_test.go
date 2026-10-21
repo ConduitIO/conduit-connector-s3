@@ -40,6 +40,7 @@ func TestValidateEndpoint_DoesNotEchoUserInfo(t *testing.T) {
 		{name: "bad scheme", endpoint: "ftp://" + user + ":" + pass + "@s3.example.com", wantText: "scheme must be http or https"},
 		{name: "token as user name", endpoint: "ftp://" + user + "@s3.example.com", wantText: "scheme must be http or https"},
 		{name: "host missing", endpoint: "http://" + user + ":" + pass + "@", wantText: "host is missing"},
+		{name: "query credentials", endpoint: "ftp://s3.example.com/?token=" + pass + "&X-Amz-Signature=" + user, wantText: "scheme must be http or https"},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -71,7 +72,11 @@ func TestLogEndpointWarnings_DoesNotEchoUserInfo(t *testing.T) {
 func TestRedactURL(t *testing.T) {
 	testCases := []struct{ in, want string }{
 		{"http://localhost:9000", "http://localhost:9000"},
-		{"https://s3.example.com/path?x=1", "https://s3.example.com/path?x=1"},
+		{"https://s3.example.com/path", "https://s3.example.com/path"},
+		{"https://s3.example.com/path?x=1&X-Amz-Signature=abc&flag", "https://s3.example.com/path?x=xxxxx&X-Amz-Signature=xxxxx&xxxxx"},
+		{"https://h/p?a=1;b=2", "https://h/p?a=xxxxx;b=xxxxx"},
+		{"https://h/p#access_token=abc", "https://h/p#xxxxx"},
+		{"https://u:p@h:bad/p?sig=abc#f", "https://redacted:xxxxx@h:bad/p?sig=xxxxx#xxxxx"},
 		{"http://user:pass@localhost:9000", "http://redacted:xxxxx@localhost:9000"},
 		{"http://token@localhost:9000/p", "http://redacted:xxxxx@localhost:9000/p"},
 		{"http://user:pass@localhost:badport", "http://redacted:xxxxx@localhost:badport"},
