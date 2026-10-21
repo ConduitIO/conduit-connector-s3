@@ -22,6 +22,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 	"github.com/matryer/is"
 	"github.com/rs/zerolog"
 )
@@ -52,7 +53,7 @@ func TestHoldWarner(t *testing.T) {
 	is.Equal(lines(), 0) // exactly 15 minutes: not yet
 	poll(16*time.Minute, a, b)
 	is.Equal(lines(), 1) // a only: b is first seen now
-	is.True(strings.Contains(buf.String(), `"key":"a"`))
+	is.True(strings.Contains(buf.String(), `"key_hash":"`+logsafe.KeyHash([]byte("a"))+`"`))
 	is.True(strings.Contains(buf.String(), `"hold_age":960000`)) // 16m in ms
 	poll(30*time.Minute, a, b)
 	is.Equal(lines(), 1) // a warned 14m ago, b is 14m old
@@ -85,7 +86,7 @@ func TestCDC_SameSecondHoldWarnsEvery15Minutes(t *testing.T) {
 	}
 	out := buf.String()
 	is.Equal(strings.Count(out, "s3.source.cut_held_same_second"), 2)
-	is.True(strings.Contains(out, `"key":"k"`))
+	is.True(strings.Contains(out, `"key_hash":"`+logsafe.KeyHash([]byte("k"))+`"`))
 	m.complete(u1)
 	m.complete(u2)
 	for i := 0; i < 12; i++ {
