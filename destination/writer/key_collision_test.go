@@ -254,6 +254,13 @@ func TestS3_ConditionalWriteErrors(t *testing.T) {
 			if w.Position != nil || len(w.FilesWritten) != 0 {
 				t.Fatalf("a failed write must not record a position or a file: %v %v", w.Position, w.FilesWritten)
 			}
+			// The object key is derived from record data (partition values), so
+			// errors name it by hash only.
+			if tc.want == ErrKeyExists || tc.want == ErrConditionalConflict {
+				if !strings.Contains(err.Error(), "key hash ") || strings.Contains(err.Error(), ".json") {
+					t.Fatalf("error should name the object by key hash, not by key: %v", err)
+				}
+			}
 		})
 	}
 }

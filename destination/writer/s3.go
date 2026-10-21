@@ -34,6 +34,7 @@ import (
 	"github.com/conduitio/conduit-commons/opencdc"
 	s3config "github.com/conduitio/conduit-connector-s3/config"
 	"github.com/conduitio/conduit-connector-s3/destination/format"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 )
 
 // S3FilesWrittenLength defines the number of last filenames an S3 Writer keep
@@ -316,14 +317,14 @@ func (w *S3) conditionalWriteError(err error, key string) error {
 	case code == "PreconditionFailed" || status == http.StatusPreconditionFailed:
 		// Invariant 1: the records are nacked, never acked against an
 		// object this write did not create.
-		return fmt.Errorf("%w: the object %q already exists (bucket %q), so it was not overwritten and the records are not acknowledged. "+
+		return fmt.Errorf("%w: the object already exists (bucket %q, key hash %s), so it was not overwritten and the records are not acknowledged. "+
 			"Either another writer used the same key, or the AWS SDK retried this writer's own PutObject after its response was lost and the first attempt had succeeded: "+
 			"then the records are stored once already, and redelivering them writes a duplicate under a new key (at-least-once): %w",
-			ErrKeyExists, key, w.Bucket, err)
+			ErrKeyExists, w.Bucket, logsafe.KeyHash([]byte(key)), err)
 	case code == "ConditionalRequestConflict" || status == http.StatusConflict:
-		return fmt.Errorf("%w: the store refused the conditional PutObject of %q because a conflicting operation on that key was in progress; "+
+		return fmt.Errorf("%w: the store refused the conditional PutObject of the object with key hash %s because a conflicting operation on that key was in progress; "+
 			"this is transient: the records are not acknowledged, and a retry writes them under a new key: %w",
-			ErrConditionalConflict, key, err)
+			ErrConditionalConflict, logsafe.KeyHash([]byte(key)), err)
 	case code == "NotImplemented" || status == http.StatusNotImplemented,
 		(code == "InvalidArgument" || code == "InvalidRequest" || status == http.StatusBadRequest || status == http.StatusMethodNotAllowed) && mentionsCondition(msg):
 		return fmt.Errorf("%w: the store does not support conditional writes (If-None-Match: *): %s; set conditionalWrites to false to write without them (keys stay unique by construction): %w",

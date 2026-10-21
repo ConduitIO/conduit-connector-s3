@@ -26,6 +26,7 @@ import (
 	"github.com/conduitio/conduit-connector-s3/destination/format"
 	"github.com/conduitio/conduit-connector-s3/destination/partitioner"
 	"github.com/conduitio/conduit-connector-s3/destination/writer"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
 
@@ -231,9 +232,9 @@ func (d *Destination) writePartitioned(ctx context.Context, records []opencdc.Re
 			// for a refusal inside the group, which the check above makes
 			// unreachable: part of the group may be stored, but nothing of it
 			// is reported (a duplicate on retry, never a loss).
-			return g.first, fmt.Errorf("writing %d records to %s: %w", len(g.records), g.dir, err)
+			return g.first, fmt.Errorf("writing %d records to the directory with key hash %s: %w", len(g.records), logsafe.KeyHash([]byte(g.dir)), err)
 		}
-		sdk.Logger(ctx).Debug().Str("dir", g.dir).Int("records", len(g.records)).Msg("wrote object")
+		sdk.Logger(ctx).Debug().Str("dir_hash", logsafe.KeyHash([]byte(g.dir))).Int("records", len(g.records)).Msg("wrote object")
 	}
 	if stopErr != nil {
 		return limit, stopErr

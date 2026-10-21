@@ -25,6 +25,7 @@ import (
 
 	"github.com/conduitio/conduit-commons/opencdc"
 	opencdcv1 "github.com/conduitio/conduit-commons/proto/opencdc/v1"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 	"github.com/matryer/is"
 	"github.com/xitongsys/parquet-go-source/buffer"
 	"github.com/xitongsys/parquet-go/parquet"
@@ -154,9 +155,9 @@ func TestEncoder_ByteArrayNullValueStoresThePrefix(t *testing.T) {
 	is.True(errors.As(err, &re))
 	is.Equal(re.Index, 2)
 	is.True(strings.HasPrefix(re.Err.Error(), CodeNullValue))
-	is.True(strings.Contains(err.Error(), `"p2"`))   // names the position
-	is.True(strings.Contains(err.Error(), "filter")) // suggests the fix
-	is.Equal(string(b), "a\nb\n")                    // exactly the records before it
+	is.True(strings.Contains(err.Error(), logsafe.KeyHash([]byte("p2")))) // names the position
+	is.True(strings.Contains(err.Error(), "filter"))                      // suggests the fix
+	is.Equal(string(b), "a\nb\n")                                         // exactly the records before it
 
 	b, err = e.MakeBytes([]opencdc.Record{del})
 	is.True(errors.As(err, &re))

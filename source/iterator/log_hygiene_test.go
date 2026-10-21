@@ -105,3 +105,21 @@ func TestCombined_UpgradeWarningsDoNotContainThePosition(t *testing.T) {
 		})
 	}
 }
+
+// Errors reach the DLQ, the API and CLI output, so a failed fetch names the
+// object by key hash only.
+func TestCDC_FetchErrorDoesNotContainObjectKey(t *testing.T) {
+	is := is.New(t)
+	st := &fakeStore{handler: func(*http.Request) *http.Response {
+		return errResp(500)
+	}}
+	cfg := CDCConfig{Bucket: "b", Lookback: time.Minute, PollingPeriod: time.Hour, Now: func() time.Time { return tNow }}
+	w := newCDCIterator(cfg, st.client(), position.CDCV2{}, nil)
+
+	_, err := w.deliver(context.Background(),
+		candidate{key: secretKey, versionID: "v1", operation: opencdc.OperationCreate},
+		func(opencdc.Record) error { return nil }, func() {})
+	is.True(err != nil)
+	is.True(strings.Contains(err.Error(), "could not fetch S3 object (key hash "))
+	is.True(!strings.Contains(err.Error(), "SECRET"))
+}

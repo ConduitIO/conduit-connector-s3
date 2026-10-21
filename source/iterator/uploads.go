@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	"github.com/rs/zerolog"
 )
@@ -136,14 +137,14 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 				o.Held(u)
 			} else {
 				log.Warn().Str("code", "s3.source.cut_held_same_second").
-					Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+					Str("key_hash", logsafe.KeyHash([]byte(aws.ToString(u.Key)))).Str("upload_id", aws.ToString(u.UploadId)).
 					Time("initiated", *u.Initiated).
 					Msg(sameSecondHoldMsg)
 			}
 			break
 		}
 		log.Warn().Str("code", "s3.source.cut_held").
-			Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+			Str("key_hash", logsafe.KeyHash([]byte(aws.ToString(u.Key)))).Str("upload_id", aws.ToString(u.UploadId)).
 			Time("initiated", *u.Initiated).Int("max_tracked_uploads", o.MaxTracked).
 			Msg("more long-running multipart uploads than cdc.maxTrackedUploads: this one holds the settled cut, so objects wait longer before they settle")
 		break // older ones were handled; the hold is the oldest untracked
@@ -245,14 +246,14 @@ func releaseStale(u types.MultipartUpload, groupConflict, room bool, o trackOpts
 		}
 		if ambiguous {
 			log.Warn().Str("code", "s3.source.stale_upload_tracked").
-				Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+				Str("key_hash", logsafe.KeyHash([]byte(aws.ToString(u.Key)))).Str("upload_id", aws.ToString(u.UploadId)).
 				Time("initiated", *u.Initiated).Dur("max_pending_upload_age", o.MaxAge).
 				Msg("a multipart upload older than cdc.maxPendingUploadAge shares its initiation second with another object of its key: it no longer holds the settled cut and is tracked instead")
 			return true, nil
 		}
 	}
 	log.Error().Str("code", "s3.source.stale_upload_ignored").
-		Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+		Str("key_hash", logsafe.KeyHash([]byte(aws.ToString(u.Key)))).Str("upload_id", aws.ToString(u.UploadId)).
 		Time("initiated", *u.Initiated).Dur("max_pending_upload_age", o.MaxAge).
 		Msg("a multipart upload older than cdc.maxPendingUploadAge is not tracked; if it still completes, its object can be missed (abort it, or add an AbortIncompleteMultipartUpload lifecycle rule, see the README)")
 	return false, nil

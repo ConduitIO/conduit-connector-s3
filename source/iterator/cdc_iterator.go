@@ -407,12 +407,12 @@ func (w *CDCIterator) deliver(ctx context.Context, c candidate, emit func(opencd
 				w.log.Debug().Str("key_hash", logsafe.KeyHash([]byte(c.key))).Msg("version changed or was deleted after it was listed; its successor is delivered instead")
 				return false, nil
 			}
-			return false, fmt.Errorf("could not fetch S3 object %q: %w", c.key, err)
+			return false, fmt.Errorf("could not fetch S3 object (key hash %s): %w", logsafe.KeyHash([]byte(c.key)), err)
 		}
 		defer object.Body.Close()
 		body, err = io.ReadAll(object.Body)
 		if err != nil {
-			return false, fmt.Errorf("could not read S3 object %q: %w", c.key, err)
+			return false, fmt.Errorf("could not read S3 object (key hash %s): %w", logsafe.KeyHash([]byte(c.key)), err)
 		}
 		meta = opencdc.Metadata{MetadataS3HeaderPrefix + MetadataContentType: aws.ToString(object.ContentType)}
 		for k, v := range object.Metadata {
@@ -730,7 +730,7 @@ func (pl *planner) consider(c candidate) {
 						// its object: it should have been in the baseline. Report
 						// it; the delivery is a duplicate at worst.
 						w.sampled.Error().Str("code", "s3.source.tracked_match_while_upload_listed").
-							Str("key", c.key).Str("version_id", c.versionID).
+							Str("key_hash", logsafe.KeyHash([]byte(c.key))).
 							Msg("a version at or below S matched a tracked multipart upload that is still in progress; the key's final state should be checked")
 					}
 				}

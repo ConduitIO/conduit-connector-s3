@@ -307,7 +307,7 @@ func (w *SnapshotIterator) read(ctx context.Context, listed types.Object) (rec o
 	}
 	p, err := position.SnapshotV2{Cut: w.cut, LastKey: key, Tracked: w.tracked}.ToRecordPosition()
 	if err != nil {
-		return opencdc.Record{}, false, fmt.Errorf("could not encode the position for %q: %w", key, err)
+		return opencdc.Record{}, false, fmt.Errorf("could not encode the position for the object with key hash %s: %w", logsafe.KeyHash([]byte(key)), err)
 	}
 	m := opencdc.Metadata{MetadataS3HeaderPrefix + MetadataContentType: aws.ToString(object.ContentType)}
 	for k, v := range object.Metadata {
