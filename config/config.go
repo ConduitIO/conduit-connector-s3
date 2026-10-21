@@ -150,15 +150,15 @@ func ValidateEndpoint(endpoint string) error {
 		// Keep the url.Parse cause: without it the user only learns that the
 		// URL is invalid, not what is wrong with it.
 		return fmt.Errorf("%s: invalid endpoint URL %q: %w (set it to a URL such as http://localhost:9000, or leave it empty to use the default AWS endpoints): %w",
-			ConfigKeyAWSEndpoint, endpoint, err, cconfig.ErrInvalidParameterValue)
+			ConfigKeyAWSEndpoint, redactURL(endpoint), parseCause(err), cconfig.ErrInvalidParameterValue)
 	}
 	if u.Scheme != schemeHTTP && u.Scheme != schemeHTTPS {
 		return fmt.Errorf("%s: invalid endpoint URL %q, scheme must be http or https (set it to a URL such as http://localhost:9000): %w",
-			ConfigKeyAWSEndpoint, endpoint, cconfig.ErrInvalidParameterValue)
+			ConfigKeyAWSEndpoint, redactURL(endpoint), cconfig.ErrInvalidParameterValue)
 	}
 	if u.Host == "" {
 		return fmt.Errorf("%s: invalid endpoint URL %q, host is missing (set it to a URL such as http://localhost:9000): %w",
-			ConfigKeyAWSEndpoint, endpoint, cconfig.ErrInvalidParameterValue)
+			ConfigKeyAWSEndpoint, redactURL(endpoint), cconfig.ErrInvalidParameterValue)
 	}
 	return nil
 }
@@ -182,7 +182,7 @@ func (c Config) LogEndpointWarnings(ctx context.Context) {
 
 	if u.Scheme == schemeHTTP && !isLoopbackHost(u.Hostname()) {
 		sdk.Logger(ctx).Warn().
-			Str(ConfigKeyAWSEndpoint, c.AWSEndpoint).
+			Str(ConfigKeyAWSEndpoint, redactURL(c.AWSEndpoint)).
 			Msg("connecting to a plaintext http endpoint: requests, including the SigV4 Authorization header that carries the access key ID, are sent unencrypted and can be read on the wire; use an https endpoint unless the store is on localhost")
 	}
 
@@ -191,7 +191,7 @@ func (c Config) LogEndpointWarnings(ctx context.Context) {
 	// so telling those users to set aws.pathStyle would be wrong.
 	if !c.AWSPathStyle && !isAWSS3Host(u.Hostname()) {
 		sdk.Logger(ctx).Warn().
-			Str(ConfigKeyAWSEndpoint, c.AWSEndpoint).
+			Str(ConfigKeyAWSEndpoint, redactURL(c.AWSEndpoint)).
 			Bool(ConfigKeyAWSPathStyle, c.AWSPathStyle).
 			Msg("aws.endpoint is set but aws.pathStyle is false: requests are addressed virtual-hosted style (http://<bucket>.<endpoint>/<key>), which many S3-compatible stores do not support; if requests fail to resolve the host or come back with 404 NoSuchBucket or 400 MalformedXML, set aws.pathStyle to true")
 	}
