@@ -142,6 +142,7 @@ func NewS3Client(ctx context.Context, p ClientParams, purpose Purpose) (*s3.Clie
 				o.BaseEndpoint = aws.String(p.Endpoint)
 			}
 			o.UsePathStyle = p.PathStyle
+			o.HTTPClient = HideObjectKeyInErrors(awsCfg.HTTPClient)
 		}), Auth{}, nil
 	}
 	client, err := newAmbientClient(ctx, p, purpose)
@@ -199,7 +200,7 @@ func newAmbientClient(ctx context.Context, p ClientParams, purpose Purpose) (*s3
 		// The guards go on the S3 service client only. awsCfg.HTTPClient is
 		// what the credential providers (IMDS, ECS, STS) use, and they must
 		// reach exactly the link-local addresses DialControl refuses.
-		o.HTTPClient = guardedHTTPClient(awsCfg.HTTPClient)
+		o.HTTPClient = HideObjectKeyInErrors(guardedHTTPClient(awsCfg.HTTPClient))
 		o.EndpointResolverV2 = &checkingResolver{next: s3.NewDefaultEndpointResolverV2(), policy: pol, configured: p.Endpoint}
 	})
 
@@ -336,7 +337,12 @@ func (e *scrubbedError) Unwrap() error { return e.err }
 // engine log, which the operator owns. With static credentials the identity
 // is the pipeline author's own, and err is returned unchanged.
 func (a Auth) Scrub(ctx context.Context, err error) error {
-	if err == nil || !a.ambient {
+	if err == nil {
+		return nil
+	}
+	// Whatever the credentials: the store's message text is not passed on.
+	err = withholdStoreMessage(err)
+	if !a.ambient {
 		return err
 	}
 	msg := err.Error()

@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 )
 
 // Kinds of partitioner, the values of the destination setting `partitioner`.
@@ -175,7 +176,7 @@ func configErr(path, format string, args ...any) error {
 }
 
 func valueErr(r opencdc.Record, path, format string, args ...any) error {
-	return fmt.Errorf("%w: record at position %q: %s (config path: %s)", ErrPartitionValue, string(r.Position), fmt.Sprintf(format, args...), path)
+	return fmt.Errorf("%w: record at position hash %s: %s (config path: %s)", ErrPartitionValue, logsafe.KeyHash([]byte(r.Position)), fmt.Sprintf(format, args...), path)
 }
 
 func cleanFields(in []string) ([]string, error) {
@@ -298,7 +299,7 @@ func newExtractor(cfg Config) (func(opencdc.Record, time.Time) (time.Time, error
 			}
 			t, err := r.Metadata.GetCreatedAt()
 			if err != nil {
-				return time.Time{}, valueErr(r, keyExtractor, "%s metadata: %v", opencdc.MetadataCreatedAt, err)
+				return time.Time{}, valueErr(r, keyExtractor, "%s metadata is not a valid timestamp (%d bytes)", opencdc.MetadataCreatedAt, len(r.Metadata[opencdc.MetadataCreatedAt]))
 			}
 			return t, nil
 		}, nil
@@ -412,13 +413,13 @@ func toTime(v any) (time.Time, error) {
 	case string:
 		t, err := time.Parse(time.RFC3339Nano, x)
 		if err != nil {
-			return time.Time{}, fmt.Errorf("%q is not an RFC 3339 time", x)
+			return time.Time{}, fmt.Errorf("a %d byte string is not an RFC 3339 time", len(x))
 		}
 		return t, nil
 	case json.Number:
 		ms, err := x.Int64()
 		if err != nil {
-			return time.Time{}, fmt.Errorf("%s is not an integer number of epoch milliseconds", x)
+			return time.Time{}, fmt.Errorf("a %d byte number is not an integer number of epoch milliseconds", len(x))
 		}
 		return time.UnixMilli(ms), nil
 	case int:
@@ -431,7 +432,7 @@ func toTime(v any) (time.Time, error) {
 		return time.UnixMilli(int64(x)), nil
 	case float64:
 		if x != float64(int64(x)) {
-			return time.Time{}, fmt.Errorf("%v is not an integer number of epoch milliseconds", x)
+			return time.Time{}, fmt.Errorf("a %T value is not an integer number of epoch milliseconds", x)
 		}
 		return time.UnixMilli(int64(x)), nil
 	}

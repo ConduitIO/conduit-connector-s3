@@ -24,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 	"github.com/conduitio/conduit-connector-s3/source/position"
 	"github.com/rs/zerolog"
 )
@@ -136,14 +137,14 @@ func cutAndTrack(t time.Time, lookback time.Duration, tu time.Time, uploads []ty
 				o.Held(u)
 			} else {
 				log.Warn().Str("code", "s3.source.cut_held_same_second").
-					Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+					Str("key_hash", logsafe.KeyHash([]byte(aws.ToString(u.Key)))).Str("upload_id", aws.ToString(u.UploadId)).
 					Time("initiated", *u.Initiated).
 					Msg(sameSecondHoldMsg)
 			}
 			break
 		}
 		log.Warn().Str("code", "s3.source.cut_held").
-			Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+			Str("key_hash", logsafe.KeyHash([]byte(aws.ToString(u.Key)))).Str("upload_id", aws.ToString(u.UploadId)).
 			Time("initiated", *u.Initiated).Int("max_tracked_uploads", o.MaxTracked).
 			Msg("more long-running multipart uploads than cdc.maxTrackedUploads: this one holds the settled cut, so objects wait longer before they settle")
 		break // older ones were handled; the hold is the oldest untracked
@@ -197,7 +198,7 @@ func (h *holdWarner) hold(now time.Time, u types.MultipartUpload, log *zerolog.L
 	}
 	h.warned[key] = now
 	log.Warn().Str("code", "s3.source.cut_held_same_second").
-		Str("key", key).Str("upload_id", aws.ToString(u.UploadId)).
+		Str("key_hash", logsafe.KeyHash([]byte(key))).Str("upload_id", aws.ToString(u.UploadId)).
 		Time("initiated", *u.Initiated).Dur("hold_age", age).
 		Msg(sameSecondHoldMsg + "; the hold has lasted longer than " + holdWarnAfter.String() + ", so objects wait longer than usual before they settle (abort the upload, or add an AbortIncompleteMultipartUpload lifecycle rule)")
 }
@@ -245,14 +246,14 @@ func releaseStale(u types.MultipartUpload, groupConflict, room bool, o trackOpts
 		}
 		if ambiguous {
 			log.Warn().Str("code", "s3.source.stale_upload_tracked").
-				Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+				Str("key_hash", logsafe.KeyHash([]byte(aws.ToString(u.Key)))).Str("upload_id", aws.ToString(u.UploadId)).
 				Time("initiated", *u.Initiated).Dur("max_pending_upload_age", o.MaxAge).
 				Msg("a multipart upload older than cdc.maxPendingUploadAge shares its initiation second with another object of its key: it no longer holds the settled cut and is tracked instead")
 			return true, nil
 		}
 	}
 	log.Error().Str("code", "s3.source.stale_upload_ignored").
-		Str("key", aws.ToString(u.Key)).Str("upload_id", aws.ToString(u.UploadId)).
+		Str("key_hash", logsafe.KeyHash([]byte(aws.ToString(u.Key)))).Str("upload_id", aws.ToString(u.UploadId)).
 		Time("initiated", *u.Initiated).Dur("max_pending_upload_age", o.MaxAge).
 		Msg("a multipart upload older than cdc.maxPendingUploadAge is not tracked; if it still completes, its object can be missed (abort it, or add an AbortIncompleteMultipartUpload lifecycle rule, see the README)")
 	return false, nil
@@ -346,7 +347,7 @@ func listKeyVersions(ctx context.Context, client *s3.Client, bucket, key string,
 	for {
 		out, err := client.ListObjectVersions(ctx, in)
 		if err != nil {
-			return fmt.Errorf("couldn't list the versions of %q: %w", key, err)
+			return fmt.Errorf("couldn't list the versions of the object with key hash %s: %w", logsafe.KeyHash([]byte(key)), err)
 		}
 		past := false
 		for _, v := range out.Versions {
@@ -381,7 +382,7 @@ func listKeyVersions(ctx context.Context, client *s3.Client, bucket, key string,
 			return nil
 		}
 		if aws.ToString(out.NextKeyMarker) == "" && aws.ToString(out.NextVersionIdMarker) == "" {
-			return fmt.Errorf("couldn't list the versions of %q: the listing is truncated but has no next marker", key)
+			return fmt.Errorf("couldn't list the versions of the object with key hash %s: the listing is truncated but has no next marker", logsafe.KeyHash([]byte(key)))
 		}
 		in.KeyMarker, in.VersionIdMarker = out.NextKeyMarker, out.NextVersionIdMarker
 	}
@@ -405,7 +406,7 @@ func uploadInProgress(ctx context.Context, client *s3.Client, bucket, key, uploa
 	for {
 		out, err := client.ListMultipartUploads(ctx, in)
 		if err != nil {
-			return false, fmt.Errorf("couldn't list the multipart uploads of %q: %w", key, err)
+			return false, fmt.Errorf("couldn't list the multipart uploads of the object with key hash %s: %w", logsafe.KeyHash([]byte(key)), err)
 		}
 		for _, u := range out.Uploads {
 			if aws.ToString(u.Key) == key && aws.ToString(u.UploadId) == uploadID {
@@ -416,7 +417,7 @@ func uploadInProgress(ctx context.Context, client *s3.Client, bucket, key, uploa
 			return false, nil
 		}
 		if aws.ToString(out.NextKeyMarker) == "" && aws.ToString(out.NextUploadIdMarker) == "" {
-			return false, fmt.Errorf("couldn't list the multipart uploads of %q: the listing is truncated but has no next marker", key)
+			return false, fmt.Errorf("couldn't list the multipart uploads of the object with key hash %s: the listing is truncated but has no next marker", logsafe.KeyHash([]byte(key)))
 		}
 		in.KeyMarker, in.UploadIdMarker = out.NextKeyMarker, out.NextUploadIdMarker
 	}

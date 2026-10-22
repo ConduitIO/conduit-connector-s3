@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 )
 
 func rec(meta map[string]string, after opencdc.Data) opencdc.Record {
@@ -192,7 +193,7 @@ func TestPartitioners_MissingValueIsAnError(t *testing.T) {
 			if !errors.Is(err, ErrPartitionValue) {
 				t.Fatalf("error does not carry the code: %v", err)
 			}
-			if !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), `"pos-1"`) {
+			if !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), logsafe.KeyHash([]byte("pos-1"))) {
 				t.Fatalf("error %q should mention %q and the record position", err, tc.want)
 			}
 		})

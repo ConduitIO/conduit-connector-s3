@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/conduitio/conduit-commons/opencdc"
+	"github.com/conduitio/conduit-connector-s3/internal/logsafe"
 )
 
 // Format defines the format the data will be persisted in by Destination
@@ -249,7 +250,7 @@ type RecordError struct {
 }
 
 func (e *RecordError) Error() string {
-	return fmt.Sprintf("record %d (position %q): %v", e.Index, e.Position, e.Err)
+	return fmt.Sprintf("record %d (position hash %s): %v", e.Index, logsafe.KeyHash([]byte(e.Position)), e.Err)
 }
 
 func (e *RecordError) Unwrap() error { return e.Err }
