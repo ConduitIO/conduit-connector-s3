@@ -18,9 +18,11 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+	"github.com/aws/smithy-go"
 )
 
 // keyHidingHTTPClient wraps the HTTP client of an S3 client so that a failed
@@ -64,4 +66,37 @@ func hideURLPath(err error) error {
 		hidden = u.Scheme + "://" + u.Host + "/(object key hidden)"
 	}
 	return &url.Error{Op: ue.Op, URL: hidden, Err: ue.Err}
+}
+
+// storeMessageError is an error of the store without the text of its message.
+type storeMessageError struct {
+	msg string
+	err error
+}
+
+func (e *storeMessageError) Error() string { return e.msg }
+func (e *storeMessageError) Unwrap() error { return e.err }
+
+// withholdStoreMessage returns err with the message of the store's answer
+// (the <Message> of the S3 error response) replaced, keeping the operation, the
+// HTTP status and the error code. S3-compatible stores put the object key,
+// parts of the request and sometimes values into it, and errors reach the DLQ,
+// the API and CLI output. The original error stays in the chain.
+func withholdStoreMessage(err error) error {
+	var already *storeMessageError
+	if errors.As(err, &already) {
+		return err
+	}
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	text := err.Error()
+	if m := apiErr.ErrorMessage(); m != "" {
+		text = strings.ReplaceAll(text, m, "(message withheld: it can quote object keys)")
+	}
+	if text == err.Error() {
+		return err
+	}
+	return &storeMessageError{msg: text, err: err}
 }

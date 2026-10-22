@@ -337,7 +337,12 @@ func (e *scrubbedError) Unwrap() error { return e.err }
 // engine log, which the operator owns. With static credentials the identity
 // is the pipeline author's own, and err is returned unchanged.
 func (a Auth) Scrub(ctx context.Context, err error) error {
-	if err == nil || !a.ambient {
+	if err == nil {
+		return nil
+	}
+	// Whatever the credentials: the store's message text is not passed on.
+	err = withholdStoreMessage(err)
+	if !a.ambient {
 		return err
 	}
 	msg := err.Error()

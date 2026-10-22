@@ -16,6 +16,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/matryer/is"
 )
 
@@ -66,6 +68,39 @@ func TestS3Client_TransportErrorsDoNotContainTheObjectKey(t *testing.T) {
 			is.True(err != nil)
 			is.True(!strings.Contains(err.Error(), "SECRET"))
 			is.True(!strings.Contains(err.Error(), "invoice"))
+		})
+	}
+}
+
+// S3-compatible stores put the object key and parts of the request into the
+// <Message> of an error response. The code and the status stay; the message
+// goes.
+func TestScrub_WithholdsTheStoreMessage(t *testing.T) {
+	const key = "customers/SECRET-acme/invoice-4711.csv"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`<?xml version="1.0"?><Error><Code>InvalidObjectName</Code><Message>Object name ` + key + ` contains unsupported characters</Message></Error>`))
+	}))
+	defer srv.Close()
+
+	for name, params := range map[string]ClientParams{
+		"static keys": {AccessKeyID: "a", SecretAccessKey: "b", Region: "us-east-1", Bucket: "b", Endpoint: srv.URL, PathStyle: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			is := is.New(t)
+			client, auth, err := NewS3Client(context.Background(), params, PurposeOpen)
+			is.NoErr(err)
+			_, err = client.GetObject(context.Background(), &s3.GetObjectInput{Bucket: aws.String("b"), Key: aws.String(key)})
+			is.True(err != nil)
+			is.True(strings.Contains(err.Error(), "SECRET")) // the premise: the store's message reaches the error
+
+			got := auth.Scrub(context.Background(), err)
+			is.True(!strings.Contains(got.Error(), "SECRET"))
+			is.True(strings.Contains(got.Error(), "InvalidObjectName")) // the code stays
+			is.True(strings.Contains(got.Error(), "StatusCode: 400"))   // and the status
+			var apiErr smithy.APIError
+			is.True(errors.As(got, &apiErr)) // and the chain, for classification
 		})
 	}
 }

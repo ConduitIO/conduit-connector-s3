@@ -145,3 +145,22 @@ func TestHoldWarner_WarningDoesNotContainObjectKey(t *testing.T) {
 	is.True(strings.Contains(out, `"key_hash"`))
 	is.True(!strings.Contains(out, "SECRET"))
 }
+
+// The listing errors name the object whose versions or uploads are listed:
+// by key hash, never by key.
+func TestListErrors_DoNotContainTheObjectKey(t *testing.T) {
+	is := is.New(t)
+	st := &fakeStore{handler: func(*http.Request) *http.Response { return errResp(500) }}
+	st.uploads = func(*http.Request) *http.Response { return errResp(500) }
+	client := st.client()
+
+	err := listKeyVersions(context.Background(), client, "b", secretKey, func(keyVersion) bool { return false })
+	is.True(err != nil)
+	is.True(strings.Contains(err.Error(), "key hash "))
+	is.True(!strings.Contains(err.Error(), "SECRET"))
+
+	_, err = uploadInProgress(context.Background(), client, "b", secretKey, "u1")
+	is.True(err != nil)
+	is.True(strings.Contains(err.Error(), "key hash "))
+	is.True(!strings.Contains(err.Error(), "SECRET"))
+}

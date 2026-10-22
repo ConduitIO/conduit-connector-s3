@@ -347,7 +347,7 @@ func listKeyVersions(ctx context.Context, client *s3.Client, bucket, key string,
 	for {
 		out, err := client.ListObjectVersions(ctx, in)
 		if err != nil {
-			return fmt.Errorf("couldn't list the versions of %q: %w", key, err)
+			return fmt.Errorf("couldn't list the versions of the object with key hash %s: %w", logsafe.KeyHash([]byte(key)), err)
 		}
 		past := false
 		for _, v := range out.Versions {
@@ -382,7 +382,7 @@ func listKeyVersions(ctx context.Context, client *s3.Client, bucket, key string,
 			return nil
 		}
 		if aws.ToString(out.NextKeyMarker) == "" && aws.ToString(out.NextVersionIdMarker) == "" {
-			return fmt.Errorf("couldn't list the versions of %q: the listing is truncated but has no next marker", key)
+			return fmt.Errorf("couldn't list the versions of the object with key hash %s: the listing is truncated but has no next marker", logsafe.KeyHash([]byte(key)))
 		}
 		in.KeyMarker, in.VersionIdMarker = out.NextKeyMarker, out.NextVersionIdMarker
 	}
@@ -406,7 +406,7 @@ func uploadInProgress(ctx context.Context, client *s3.Client, bucket, key, uploa
 	for {
 		out, err := client.ListMultipartUploads(ctx, in)
 		if err != nil {
-			return false, fmt.Errorf("couldn't list the multipart uploads of %q: %w", key, err)
+			return false, fmt.Errorf("couldn't list the multipart uploads of the object with key hash %s: %w", logsafe.KeyHash([]byte(key)), err)
 		}
 		for _, u := range out.Uploads {
 			if aws.ToString(u.Key) == key && aws.ToString(u.UploadId) == uploadID {
@@ -417,7 +417,7 @@ func uploadInProgress(ctx context.Context, client *s3.Client, bucket, key, uploa
 			return false, nil
 		}
 		if aws.ToString(out.NextKeyMarker) == "" && aws.ToString(out.NextUploadIdMarker) == "" {
-			return false, fmt.Errorf("couldn't list the multipart uploads of %q: the listing is truncated but has no next marker", key)
+			return false, fmt.Errorf("couldn't list the multipart uploads of the object with key hash %s: the listing is truncated but has no next marker", logsafe.KeyHash([]byte(key)))
 		}
 		in.KeyMarker, in.UploadIdMarker = out.NextKeyMarker, out.NextUploadIdMarker
 	}

@@ -234,7 +234,7 @@ func TestS3_ConditionalWriteErrors(t *testing.T) {
 		{"400 naming If-None-Match", 400, s3Error("InvalidArgument", "Unsupported header If-None-Match"), ErrConditionalWritesUnsupported, "conditionalWrites"},
 		{"400 naming conditional writes", 400, s3Error("InvalidRequest", "Conditional writes are not supported"), ErrConditionalWritesUnsupported, "conditionalWrites"},
 		{"405 naming If-None-Match", 405, s3Error("MethodNotAllowed", "If-None-Match not allowed"), ErrConditionalWritesUnsupported, "conditionalWrites"},
-		{"400 about something else", 400, s3Error("InvalidArgument", "Invalid canned ACL"), nil, "Invalid canned ACL"},
+		{"400 about something else", 400, s3Error("InvalidArgument", "Invalid canned ACL"), nil, "InvalidArgument"},
 		{"403 access denied", 403, s3Error("AccessDenied", "Access Denied"), nil, "AccessDenied"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
