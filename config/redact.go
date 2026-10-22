@@ -21,9 +21,6 @@ import (
 	"strings"
 )
 
-// userinfoPattern finds the user info of a URL that url.Parse rejected.
-var userinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/?#\s"'` + "`" + `]*@`)
-
 // redactURL returns raw with its credentials replaced, so that a URL can be
 // named in an error or a log line:
 //   - the user info (scheme://user:password@host); the user name is replaced
@@ -37,14 +34,25 @@ var userinfoPattern = regexp.MustCompile(`(?i)([a-z][a-z0-9+.-]*://)[^/?#\s"'` +
 // textually.
 func redactURL(raw string) string {
 	s := raw
-	if u, err := url.Parse(raw); err != nil {
-		s = userinfoPattern.ReplaceAllString(raw, "${1}redacted:xxxxx@")
-	} else if u.User != nil {
+	u, err := url.Parse(raw)
+	switch {
+	case err == nil && u.User != nil && u.Scheme != "" && u.Host != "":
 		u.User = url.UserPassword("redacted", "")
 		s = u.Redacted()
+	case strings.Contains(raw, "@"):
+		// A password with an unencoded '/', '?' or '#', a URL without a scheme
+		// or one that does not parse: url.Parse does not find the user info,
+		// or finds only part of it. Cut everything up to the last '@'. This can
+		// hide more than the credentials (an '@' in a path), which is the safe
+		// side of the trade.
+		at := strings.LastIndex(raw, "@")
+		s = schemePrefix.FindString(raw) + "redacted:xxxxx@" + raw[at+1:]
 	}
 	return maskQueryAndFragment(s)
 }
+
+// schemePrefix matches an optional "scheme://" at the start of a URL.
+var schemePrefix = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://`)
 
 // maskQueryAndFragment masks the value of every query parameter and the
 // fragment, working on the text so that it also covers URLs that do not parse.
@@ -89,12 +97,9 @@ func maskQueryAndFragment(s string) string {
 	return b.String()
 }
 
-// parseCause returns the reason url.Parse rejected a URL without the URL
-// itself, which url.Error repeats in its message, user info included.
-func parseCause(err error) error {
-	var ue *url.Error
-	if errors.As(err, &ue) {
-		return ue.Err
-	}
-	return err
+// parseCause returns what is safe to say about why a URL did not parse. The
+// url.Error text quotes parts of the URL (the port, an escape) and the URL may
+// be broken in a way that hides its user info, so it is not shown.
+func parseCause(error) error {
+	return errors.New("the URL cannot be parsed")
 }

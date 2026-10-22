@@ -35,11 +35,14 @@ func TestValidateEndpoint_DoesNotEchoUserInfo(t *testing.T) {
 		endpoint string
 		wantText string // the remaining, non-secret part that must stay
 	}{
-		{name: "unparseable port", endpoint: "http://" + user + ":" + pass + "@localhost:badport", wantText: "invalid port"},
-		{name: "unparseable host", endpoint: "http://" + user + ":" + pass + "@[::1", wantText: "missing ']' in host"},
+		{name: "unparseable port", endpoint: "http://" + user + ":" + pass + "@localhost:badport", wantText: "cannot be parsed"},
+		{name: "unparseable host", endpoint: "http://" + user + ":" + pass + "@[::1", wantText: "cannot be parsed"},
 		{name: "bad scheme", endpoint: "ftp://" + user + ":" + pass + "@s3.example.com", wantText: "scheme must be http or https"},
 		{name: "token as user name", endpoint: "ftp://" + user + "@s3.example.com", wantText: "scheme must be http or https"},
 		{name: "host missing", endpoint: "http://" + user + ":" + pass + "@", wantText: "host is missing"},
+		{name: "password with an unencoded slash", endpoint: "ftp://" + user + ":SECRET/pass@s3.example.com", wantText: "cannot be parsed"},
+		{name: "password with an unencoded hash", endpoint: "ftp://" + user + ":SECRET#pass@s3.example.com", wantText: "cannot be parsed"},
+		{name: "no scheme", endpoint: user + ":" + pass + "@s3.example.com:9000", wantText: "scheme must be http or https"},
 		{name: "query credentials", endpoint: "ftp://s3.example.com/?token=" + pass + "&X-Amz-Signature=" + user, wantText: "scheme must be http or https"},
 	}
 	for _, tc := range testCases {
@@ -81,6 +84,14 @@ func TestRedactURL(t *testing.T) {
 		{"http://token@localhost:9000/p", "http://redacted:xxxxx@localhost:9000/p"},
 		{"http://user:pass@localhost:badport", "http://redacted:xxxxx@localhost:badport"},
 		{"not a url", "not a url"},
+		{"https://user:pa/ss@host/p", "https://redacted:xxxxx@host/p"},
+		{"https://user:pa#ss@host/p", "https://redacted:xxxxx@host/p"},
+		{"https://user:pa?ss@host/p", "https://redacted:xxxxx@host/p"},
+		{"postgres://user:p/a#s?s@host:5432/db", "postgres://redacted:xxxxx@host:5432/db"},
+		{"user:pass@host", "redacted:xxxxx@host"},
+		{"user:pass@host:9000/b", "redacted:xxxxx@host:9000/b"},
+		{"https://user:p@ss@host/p", "https://redacted:xxxxx@host/p"},
+		{"ghp_TOKEN@host/p", "redacted:xxxxx@host/p"},
 		{"", ""},
 	}
 	for _, tc := range testCases {
