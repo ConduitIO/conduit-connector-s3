@@ -419,7 +419,7 @@ func toTime(v any) (time.Time, error) {
 	case json.Number:
 		ms, err := x.Int64()
 		if err != nil {
-			return time.Time{}, fmt.Errorf("%s is not an integer number of epoch milliseconds", x)
+			return time.Time{}, fmt.Errorf("a %d byte number is not an integer number of epoch milliseconds", len(x))
 		}
 		return time.UnixMilli(ms), nil
 	case int:

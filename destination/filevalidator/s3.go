@@ -23,6 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3config "github.com/conduitio/conduit-connector-s3/config"
 )
 
 // S3 validates S3 files
@@ -59,6 +60,7 @@ func (v *S3) Validate(name string, reference []byte) error {
 			o.BaseEndpoint = aws.String(v.Endpoint)
 			o.UsePathStyle = true
 		}
+		o.HTTPClient = s3config.HideObjectKeyInErrors(awsConfig.HTTPClient)
 	})
 
 	object, err := client.GetObject(
