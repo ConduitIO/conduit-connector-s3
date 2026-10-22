@@ -42,6 +42,7 @@ func TestValidateEndpoint_DoesNotEchoUserInfo(t *testing.T) {
 		{name: "host missing", endpoint: "http://" + user + ":" + pass + "@", wantText: "host is missing"},
 		{name: "password with an unencoded slash", endpoint: "ftp://" + user + ":SECRET/pass@s3.example.com", wantText: "cannot be parsed"},
 		{name: "password with an unencoded hash", endpoint: "ftp://" + user + ":SECRET#pass@s3.example.com", wantText: "cannot be parsed"},
+		{name: "password with an at sign and a slash", endpoint: "ftp://" + user + ":p@ss/word@s3.example.com", wantText: "scheme must be http or https"},
 		{name: "no scheme", endpoint: user + ":" + pass + "@s3.example.com:9000", wantText: "scheme must be http or https"},
 		{name: "query credentials", endpoint: "ftp://s3.example.com/?token=" + pass + "&X-Amz-Signature=" + user, wantText: "scheme must be http or https"},
 	}
@@ -92,6 +93,9 @@ func TestRedactURL(t *testing.T) {
 		{"user:pass@host:9000/b", "redacted:xxxxx@host:9000/b"},
 		{"https://user:p@ss@host/p", "https://redacted:xxxxx@host/p"},
 		{"ghp_TOKEN@host/p", "redacted:xxxxx@host/p"},
+		{"https://user:p@ss/word@host/p", "https://redacted:xxxxx@host/p"},
+		{"https://user:p@ss?word@host/p", "https://redacted:xxxxx@host/p"},
+		{"https://user:p@ss#word@host/p", "https://redacted:xxxxx@host/p"},
 		{"", ""},
 	}
 	for _, tc := range testCases {
