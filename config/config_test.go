@@ -89,7 +89,7 @@ func TestValidateAWSEndpoint(t *testing.T) {
 		endpoint string
 		wantErr  bool
 		// wantCause, when set, must appear in the error message: it pins that
-		// the underlying url.Parse failure is reported, not swallowed.
+		// a parse failure is reported as such, without the URL text it quotes.
 		wantCause string
 	}{
 		{name: "empty", endpoint: "", wantErr: false},
@@ -98,7 +98,7 @@ func TestValidateAWSEndpoint(t *testing.T) {
 		{name: "scheme missing", endpoint: "localhost:9000", wantErr: true},
 		{name: "unsupported scheme", endpoint: "ftp://s3.example.com", wantErr: true},
 		{name: "not a URL", endpoint: "not a url", wantErr: true},
-		{name: "unparseable", endpoint: "http://[::1", wantErr: true, wantCause: "missing ']' in host"},
+		{name: "unparseable", endpoint: "http://[::1", wantErr: true, wantCause: "cannot be parsed"},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
