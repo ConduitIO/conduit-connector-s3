@@ -338,6 +338,22 @@ nothing is acknowledged. Scope the host role's IAM policy to the listed buckets;
 the allowlist does not replace it. See Conduit's
 [ambient credentials runbook](https://github.com/ConduitIO/conduit/blob/main/docs/operations/ambient-credentials.md).
 
+### Dialer supplied by the host
+
+When the host that runs the connector puts a dialer on the context of the call
+that builds the S3 client (`dialer.WithDialContext` from
+`github.com/conduitio/conduit-commons/dialer`), every network connection the
+connector opens goes through it: the S3 requests of the source and the
+destination, and the credential providers (STS for AssumeRole and web identity,
+SSO, EC2 instance metadata, the container credentials endpoint). The dialer is
+read once, when the client is built. Without one the connector behaves as
+before.
+
+With a host dialer the connector no longer applies its own dial-time address
+refusal, which only runs inside a `net.Dialer`; the host dialer decides which
+addresses it connects to. The redirect and endpoint checks stay in place. While
+a host dialer is in use, `AWS_DEFAULTS_MODE` is not applied.
+
 ## Source Configuration Parameters
 
 <!-- readmegen:source.parameters.yaml -->

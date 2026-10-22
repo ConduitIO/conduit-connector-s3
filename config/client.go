@@ -29,6 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	smithyendpoints "github.com/aws/smithy-go/endpoints"
 	cconfig "github.com/conduitio/conduit-commons/config"
+	"github.com/conduitio/conduit-commons/dialer"
 	"github.com/conduitio/conduit-commons/hostpolicy"
 	sdk "github.com/conduitio/conduit-connector-sdk"
 )
@@ -187,6 +188,8 @@ func newAmbientClient(ctx context.Context, p ClientParams, purpose Purpose) (*s3
 		return nil, deny(ctx, pol, err, ConfigKeyAWSEndpoint)
 	}
 
+	// The host dialer, if any, is read here and captured by the clients below.
+	dial, _ := hostDialer(ctx)
 	awsCfg, err := LoadAWSConfig(ctx, p.Region, "", "", "")
 	if err != nil {
 		return nil, err
@@ -200,7 +203,7 @@ func newAmbientClient(ctx context.Context, p ClientParams, purpose Purpose) (*s3
 		// The guards go on the S3 service client only. awsCfg.HTTPClient is
 		// what the credential providers (IMDS, ECS, STS) use, and they must
 		// reach exactly the link-local addresses DialControl refuses.
-		o.HTTPClient = HideObjectKeyInErrors(guardedHTTPClient(awsCfg.HTTPClient))
+		o.HTTPClient = HideObjectKeyInErrors(guardedHTTPClient(awsCfg.HTTPClient, dial))
 		o.EndpointResolverV2 = &checkingResolver{next: s3.NewDefaultEndpointResolverV2(), policy: pol, configured: p.Endpoint}
 	})
 
@@ -248,14 +251,24 @@ func endpointLabel(path string) string {
 // Same-host redirects follow the SDK's own rule (only 307 and 308, which keep
 // the method). WithDialerOptions clones, so base itself, which the credential
 // providers use, stays unguarded.
-func guardedHTTPClient(base aws.HTTPClient) *http.Client {
+//
+// When dial is non-nil (the host supplied a dialer) the connection is made by
+// dial instead. net.Dialer.Control only runs inside a net.Dialer, so the
+// dial-time address refusal does not apply on that path: the host dialer is
+// then responsible for vetting the addresses it connects to. The redirect
+// guard and the endpoint checks do not depend on the dialer and stay active.
+func guardedHTTPClient(base aws.HTTPClient, dial dialer.DialContextFunc) *http.Client {
 	b, ok := base.(*awshttp.BuildableClient)
 	if !ok {
 		b = awshttp.NewBuildableClient()
 	}
-	b = b.WithDialerOptions(func(d *net.Dialer) {
-		d.Control = hostpolicy.DialControl()
-	})
+	if dial != nil {
+		b = withDialContext(b, dial)
+	} else {
+		b = b.WithDialerOptions(func(d *net.Dialer) {
+			d.Control = hostpolicy.DialControl()
+		})
+	}
 	guard := hostpolicy.RedirectGuard()
 	return &http.Client{
 		Timeout:   b.GetTimeout(),
