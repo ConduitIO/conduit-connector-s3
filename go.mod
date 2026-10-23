@@ -11,7 +11,7 @@ require (
 	github.com/aws/smithy-go v1.28.5
 	github.com/conduitio/conduit-commons v0.12.0
 	github.com/conduitio/conduit-connector-protocol v0.11.1
-	github.com/conduitio/conduit-connector-sdk v0.17.1
+	github.com/conduitio/conduit-connector-sdk v0.17.2
 	github.com/google/uuid v1.6.0
 	github.com/matryer/is v1.4.1
 	github.com/rs/zerolog v1.35.1
