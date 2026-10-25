@@ -293,7 +293,7 @@ specification:
 
     `builtin:kafka` does not set `kafka.partition` yet, so `partitioner: default`
     needs it set by a processor until it does.
-  version: v0.11.2
+  version: v0.12.0
   author: Meroxa, Inc.
   source:
     parameters:
