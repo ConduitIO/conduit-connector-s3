@@ -121,8 +121,16 @@ func (c Config) ValidateAuth(ctx context.Context) error {
 // environment variables, shared config and credentials files, web identity
 // (IRSA), then the ECS or EC2 instance role. Credentials are resolved lazily
 // by the SDK on the first request, not here.
+//
+// When the host put a dialer on ctx (dialer.WithDialContext), the HTTP clients
+// of the service clients and of the credential providers dial through it.
 func LoadAWSConfig(ctx context.Context, region, accessKeyID, secretAccessKey, sessionToken string) (aws.Config, error) {
 	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(region)}
+	// Host dialer: install it on the HTTP client of the service clients and of
+	// the credential providers (see dialer.go).
+	if dial, ok := hostDialer(ctx); ok {
+		opts = append(opts, dialerLoadOptions(dial)...)
+	}
 	if accessKeyID != "" || secretAccessKey != "" {
 		opts = append(opts, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(accessKeyID, secretAccessKey, sessionToken),
