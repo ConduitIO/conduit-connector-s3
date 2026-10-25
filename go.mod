@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.0
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.4
 	github.com/aws/smithy-go v1.28.5
-	github.com/conduitio/conduit-commons v0.12.2-0.20261022184221-cf8b4b45491e
+	github.com/conduitio/conduit-commons v0.13.0
 	github.com/conduitio/conduit-connector-protocol v0.11.1
 	github.com/conduitio/conduit-connector-sdk v0.17.2
 	github.com/google/uuid v1.6.0
