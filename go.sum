@@ -107,10 +107,10 @@ github.com/client9/misspell v0.3.4/go.mod h1:qj6jICC3Q7zFZvVWo7KLAzC3yx5G7kyvSDk
 github.com/colinmarc/hdfs/v2 v2.1.1/go.mod h1:M3x+k8UKKmxtFu++uAZ0OtDU8jR3jnaZIAc6yK4Ue0c=
 github.com/conduitio/conduit-commons v0.13.0 h1:t6m4wnXSxX8DOonc+BfBBTB364YiQXr5g04S13Jh3Hc=
 github.com/conduitio/conduit-commons v0.13.0/go.mod h1:I5BjvJ7rZzNbELaqR2rbls4Tu2o88cOcSMewLKM8pQw=
-github.com/conduitio/conduit-connector-protocol v0.11.1 h1:eZezxQ4SBpVP0T7c17B3cCvDnahW4dJ2BnoTZabwEhY=
-github.com/conduitio/conduit-connector-protocol v0.11.1/go.mod h1:gUnoXOfz9ug9CEQoa4Dv88jj7kDf83o7aPj1ibCWjos=
-github.com/conduitio/conduit-connector-sdk v0.17.2 h1:xoVWdPKtxS+Rg+LCnQ0DwN5dfSLlXM+geX9fZhzcw24=
-github.com/conduitio/conduit-connector-sdk v0.17.2/go.mod h1:sTiM/rF5v+TVL5R1//IcR8D+N8ga7sixKb1c4+QKCCw=
+github.com/conduitio/conduit-connector-protocol v0.12.0 h1:4a1j0kh2p3c7BbLZhsCUxK7o/sS+dmrAT5nUovjwjAQ=
+github.com/conduitio/conduit-connector-protocol v0.12.0/go.mod h1:SyQNCgrGnm4VhaAioAOrGbyzEPIqRcPIbsxD3vMyYUA=
+github.com/conduitio/conduit-connector-sdk v0.18.0 h1:5btkrRuMajSjU4aqyxUF+Yy8pAekwjN8dPRpGPc/tRc=
+github.com/conduitio/conduit-connector-sdk v0.18.0/go.mod h1:g1NUIYJfyKPgA22gAKzBmke6mFq6mHk6i+oXv3+2h/0=
 github.com/conduitio/evolviconf v0.1.1 h1:IKacjKLc8r0h0Epi0Eo1O4/aoZLb4Z7JFb3xKd6gCTw=
 github.com/conduitio/evolviconf v0.1.1/go.mod h1:y8ogfy/dDvXKWzKVUKY8089qPV61OvoKLnyyiGJNuwo=
 github.com/conduitio/evolviconf/evolviyaml v0.1.0 h1:nMW7CROIMtHhscm/QLMpMs7uCPp6O2dS4CfU9bhugd4=
@@ -202,8 +202,8 @@ github.com/jhump/protoreflect v1.17.0/go.mod h1:h9+vUUL38jiBzck8ck+6G/aeMX8Z4QUY
 github.com/jmespath/go-jmespath v0.3.0/go.mod h1:9QtRXoHjLGCJ5IBSaohpXITPlowMeeYCZ7fLUTSywik=
 github.com/jmespath/go-jmespath v0.4.0/go.mod h1:T8mJZnbsbmF+m6zOOFylbeCJqk5+pHWvzYPziyZiYoo=
 github.com/jmespath/go-jmespath/internal/testify v1.5.1/go.mod h1:L3OGu8Wl2/fWfCI6z80xFu9LTZmf1ZRjMHUOPmWr69U=
-github.com/jpillora/backoff v1.0.0 h1:uvFg412JmmHBHw7iwprIxkPMI+sGQ4kzOWsMeHnm2EA=
-github.com/jpillora/backoff v1.0.0/go.mod h1:J/6gKK9jxlEcS3zixgDgUAsiuZ7yrSoa/FX5e0EB2j4=
+github.com/jpillora/backoff v1.1.0 h1:9LWA6DCcU2qxTLK7iOxvuIQvuIe/twLJHryAcA3JFAs=
+github.com/jpillora/backoff v1.1.0/go.mod h1:InzEM6zwRZT3SOZRzyrihzVj4k8KKFicc+XgkyHOgNM=
 github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnrnM=
 github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
 github.com/jstemmer/go-junit-report v0.0.0-20190106144839-af01ea7f8024/go.mod h1:6v2b51hI/fHJwM22ozAgKL4VKDeJcHhJFhtBdhmNjmU=

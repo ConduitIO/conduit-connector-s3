@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -52,6 +53,20 @@ func NewSource() sdk.Source {
 		&Source{
 			config: Config{
 				DefaultSourceMiddleware: sdk.DefaultSourceMiddleware{
+					// Pin the SDK's source batching off (sdk.batch.size 0, delay 0),
+					// which is what this connector shipped with. Since SDK v0.18.0
+					// the default is 100 (adaptive drain), and each S3 record holds a
+					// whole object in memory (io.ReadAll), so read-ahead of up to
+					// ~3x100 objects has no byte bound. Revisit when source batches
+					// have one (design: docs/design-documents/
+					// 20261027-default-source-batching.md in ConduitIO/conduit).
+					// Non-nil pointers to 0 are what make specgen emit the zero
+					// default into connector.yaml. TestSourceSpec_BatchingPinned
+					// guards this.
+					SourceWithBatch: sdk.SourceWithBatch{
+						BatchSize:  lang.Ptr(0),
+						BatchDelay: lang.Ptr(time.Duration(0)),
+					},
 					SourceWithSchemaExtraction: sdk.SourceWithSchemaExtraction{
 						PayloadEnabled: lang.Ptr(false),
 						KeyEnabled:     lang.Ptr(false),
