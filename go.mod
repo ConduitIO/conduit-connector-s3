@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.20.8
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.9
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.9
-	github.com/aws/smithy-go v1.28.8
+	github.com/aws/smithy-go v1.28.9
 	github.com/conduitio/conduit-commons v0.13.0
 	github.com/conduitio/conduit-connector-protocol v0.12.0
 	github.com/conduitio/conduit-connector-sdk v0.18.1
