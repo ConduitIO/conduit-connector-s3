@@ -1,6 +1,6 @@
 module github.com/conduitio/conduit-connector-s3
 
-go 1.26.9
+go 1.26.11
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.48.0
@@ -10,7 +10,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.10
 	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0
 	github.com/aws/smithy-go v1.28.9
-	github.com/conduitio/conduit-commons v0.13.0
+	github.com/conduitio/conduit-commons v0.13.1
 	github.com/conduitio/conduit-connector-protocol v0.12.0
 	github.com/conduitio/conduit-connector-sdk v0.18.1
 	github.com/google/uuid v1.6.0
@@ -55,7 +55,7 @@ require (
 	github.com/iskorotkov/avro/v2 v2.34.0 // indirect
 	github.com/jpillora/backoff v1.1.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.18.2 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mitchellh/copystructure v1.2.0 // indirect
